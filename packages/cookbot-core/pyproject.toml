@@ -1,0 +1,26 @@
+[project]
+name = "cookbot-core"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-ai>=0.0.14",
+    "pydantic-settings>=2.3",
+    "google-cloud-firestore>=2.16",
+    "asyncpg>=0.29",
+    "openai>=1.35",
+    "structlog>=24.2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cookbot"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
