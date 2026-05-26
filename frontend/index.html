@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TastyHub — Recipes You'll Love</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Georgia, serif;
+      background: #fffdf8;
+      color: #2d2d2d;
+    }
+
+    /* ── Mock cooking website content ─────────────────────────────── */
+    header {
+      background: #c0392b;
+      color: #fff;
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 1.6rem; letter-spacing: 1px; }
+    header span { font-size: 0.85rem; opacity: 0.85; }
+
+    main {
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 0 24px;
+    }
+    .hero {
+      background: #fff3e0;
+      border-radius: 12px;
+      padding: 32px;
+      margin-bottom: 32px;
+      text-align: center;
+    }
+    .hero h2 { font-size: 1.8rem; margin-bottom: 8px; }
+    .hero p { color: #666; }
+
+    .recipe-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    .recipe-card {
+      background: #fff;
+      border: 1px solid #e8e0d8;
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .recipe-card h3 { font-size: 1rem; margin-bottom: 6px; }
+    .recipe-card p { font-size: 0.82rem; color: #888; }
+
+    /* ── Chat button ───────────────────────────────────────────────── */
+    #chat-btn {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      background: #c0392b;
+      color: #fff;
+      border: none;
+      border-radius: 50px;
+      padding: 14px 22px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+      z-index: 100;
+    }
+    #chat-btn:hover { background: #a93226; }
+
+    /* ── Chat panel ────────────────────────────────────────────────── */
+    #chat-panel {
+      display: none;
+      position: fixed;
+      bottom: 90px;
+      right: 28px;
+      width: 380px;
+      max-height: 560px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 14px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+      z-index: 101;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #chat-panel.open { display: flex; }
+
+    #chat-header {
+      background: #c0392b;
+      color: #fff;
+      padding: 12px 16px;
+      font-size: 0.95rem;
+      font-family: sans-serif;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #chat-header button {
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+
+    #chat-status {
+      font-size: 0.75rem;
+      padding: 4px 16px;
+      background: #fef9f0;
+      color: #999;
+      font-family: sans-serif;
+      border-bottom: 1px solid #f0e8d8;
+    }
+
+    #chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-family: sans-serif;
+      font-size: 0.88rem;
+    }
+
+    .msg { padding: 8px 12px; border-radius: 8px; max-width: 92%; word-wrap: break-word; }
+    .msg.user  { background: #fff3e0; align-self: flex-end; border: 1px solid #f0dcc0; }
+    .msg.bot   { background: #f5f5f5; align-self: flex-start; }
+    .msg.token { background: #eaf4ff; align-self: flex-start; font-style: italic; color: #456; }
+    .msg.error { background: #fdecea; align-self: flex-start; color: #c0392b; }
+
+    /* Recipe card */
+    .recipe-out {
+      background: #fffbf2;
+      border: 1px solid #e8d8b0;
+      border-radius: 10px;
+      padding: 14px;
+      align-self: stretch;
+      font-family: sans-serif;
+      font-size: 0.85rem;
+    }
+    .recipe-out h4 { font-size: 1rem; margin-bottom: 6px; }
+    .recipe-out .badge {
+      display: inline-block;
+      background: #c0392b;
+      color: #fff;
+      border-radius: 4px;
+      padding: 1px 7px;
+      font-size: 0.72rem;
+      margin-bottom: 8px;
+    }
+    .recipe-out ul, .recipe-out ol { padding-left: 18px; margin: 6px 0; }
+    .recipe-out li { margin-bottom: 3px; }
+    .recipe-out .meta { color: #888; font-size: 0.78rem; margin-top: 6px; }
+
+    /* HITL card */
+    .hitl-card {
+      background: #f0f8ff;
+      border: 1px solid #b0d4f1;
+      border-radius: 10px;
+      padding: 14px;
+      align-self: stretch;
+      font-family: sans-serif;
+      font-size: 0.85rem;
+    }
+    .hitl-card h4 { margin-bottom: 6px; }
+    .hitl-card p { color: #555; margin-bottom: 10px; }
+    .hitl-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .hitl-actions button {
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    .btn-approve { background: #27ae60; color: #fff; }
+    .btn-modify  { background: #f39c12; color: #fff; }
+    .btn-reject  { background: #c0392b; color: #fff; }
+    .hitl-modify-row { display: none; margin-top: 8px; gap: 6px; }
+    .hitl-modify-row input {
+      flex: 1;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.82rem;
+    }
+    .hitl-modify-row button { background: #2980b9; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+
+    /* Input row */
+    #chat-input-row {
+      display: flex;
+      padding: 10px;
+      gap: 8px;
+      border-top: 1px solid #eee;
+      background: #fafafa;
+    }
+    #chat-input {
+      flex: 1;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.88rem;
+      font-family: sans-serif;
+    }
+    #chat-send {
+      background: #c0392b;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 0.88rem;
+    }
+    #chat-send:disabled { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>TastyHub</h1>
+  <span>Recipes You'll Love</span>
+</header>
+
+<main>
+  <div class="hero">
+    <h2>What's in Your Fridge?</h2>
+    <p>Tell our AI chef what ingredients you have — get a personalised recipe in seconds.</p>
+  </div>
+
+  <div class="recipe-grid">
+    <div class="recipe-card"><h3>Garlic Butter Pasta</h3><p>Ready in 20 min · Easy</p></div>
+    <div class="recipe-card"><h3>Spinach Frittata</h3><p>Ready in 25 min · Easy</p></div>
+    <div class="recipe-card"><h3>Lemon Herb Chicken</h3><p>Ready in 35 min · Medium</p></div>
+    <div class="recipe-card"><h3>Tomato Basil Soup</h3><p>Ready in 30 min · Easy</p></div>
+    <div class="recipe-card"><h3>Mushroom Risotto</h3><p>Ready in 40 min · Medium</p></div>
+    <div class="recipe-card"><h3>Avocado Toast Deluxe</h3><p>Ready in 10 min · Easy</p></div>
+  </div>
+</main>
+
+<!-- Floating chat button -->
+<button id="chat-btn">🍳 Ask Chef Bot</button>
+
+<!-- Chat panel -->
+<div id="chat-panel">
+  <div id="chat-header">
+    <span>Chef Bot — TastyHub</span>
+    <button id="chat-close" title="Close">✕</button>
+  </div>
+  <div id="chat-status">Connecting…</div>
+  <div id="chat-messages"></div>
+  <div id="chat-input-row">
+    <input id="chat-input" type="text" placeholder="List your ingredients…" disabled />
+    <button id="chat-send" disabled>Send</button>
+  </div>
+</div>
+
+<script>
+const API_KEY  = 'tk_dev_local';   // matches .env API_KEY for local dev
+const API_BASE = 'http://localhost:8000';
+const WS_BASE  = 'ws://localhost:8000';
+
+const btn       = document.getElementById('chat-btn');
+const panel     = document.getElementById('chat-panel');
+const closeBtn  = document.getElementById('chat-close');
+const messages  = document.getElementById('chat-messages');
+const input     = document.getElementById('chat-input');
+const sendBtn   = document.getElementById('chat-send');
+const statusBar = document.getElementById('chat-status');
+
+let ws = null;
+let sessionId = null;
+
+btn.addEventListener('click', () => { panel.classList.add('open'); initSession(); });
+closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+
+async function initSession() {
+  if (sessionId) return;
+  setStatus('Creating session…');
+  try {
+    const resp = await fetch(`${API_BASE}/v1/sessions`, {
+      method: 'POST',
+      headers: { 'x-api-key': API_KEY },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    sessionId = data.session_id;
+    connectWS();
+  } catch (e) {
+    setStatus(`Error: ${e.message}`);
+  }
+}
+
+function connectWS() {
+  setStatus('Connecting WebSocket…');
+  ws = new WebSocket(`${WS_BASE}/v1/ws/${sessionId}`);
+
+  ws.onopen = () => setStatus('Connected');
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      handleMessage(msg);
+    } catch {
+      appendMsg('bot', evt.data);
+    }
+  };
+
+  ws.onerror = () => setStatus('WebSocket error');
+
+  ws.onclose = (evt) => {
+    setStatus(`Disconnected (code ${evt.code})`);
+    input.disabled = true;
+    sendBtn.disabled = true;
+  };
+}
+
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'token':
+      appendMsg('token', msg.content);
+      input.disabled = false;
+      sendBtn.disabled = false;
+      break;
+
+    case 'agent_update':
+      setStatus(`Agent: ${msg.agent} — ${msg.status}`);
+      break;
+
+    case 'final_recipe':
+      renderRecipe(msg.recipe, msg.source);
+      input.disabled = false;
+      sendBtn.disabled = false;
+      break;
+
+    case 'hitl_checkpoint':
+      renderHITL(msg.recipe, msg.round, msg.labels);
+      break;
+
+    case 'error':
+      appendMsg('error', `Error: ${msg.message}`);
+      break;
+
+    default:
+      appendMsg('bot', JSON.stringify(msg));
+  }
+}
+
+function appendMsg(cls, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${cls}`;
+  div.textContent = text;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function renderRecipe(recipe, source) {
+  const div = document.createElement('div');
+  div.className = 'recipe-out';
+  div.innerHTML = `
+    <h4>${esc(recipe.name)}</h4>
+    <span class="badge">${esc(source)}</span>
+    <p>${esc(recipe.description)}</p>
+    <strong>Ingredients</strong>
+    <ul>${recipe.ingredients.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+    <strong>Steps</strong>
+    <ol>${recipe.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
+    <div class="meta">⏱ Prep ${recipe.prep_time_minutes} min · Cook ${recipe.cook_time_minutes} min · ${esc(recipe.difficulty)} · Serves ${recipe.servings}</div>
+  `;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function renderHITL(recipe, round, labels) {
+  const div = document.createElement('div');
+  div.className = 'hitl-card';
+  div.innerHTML = `
+    <h4>${esc(labels.heading.replace('{round}', round))}</h4>
+    <p><strong>${esc(recipe.name)}</strong> — ${esc(recipe.description)}</p>
+    <div class="hitl-actions">
+      <button class="btn-approve">${esc(labels.approve)}</button>
+      <button class="btn-modify">${esc(labels.modify)}</button>
+      <button class="btn-reject">${esc(labels.reject)}</button>
+    </div>
+    <div class="hitl-modify-row">
+      <input type="text" placeholder="${esc(labels.modify_placeholder)}" />
+      <button>${esc(labels.modify_send)}</button>
+    </div>
+  `;
+
+  const [approveBtn, modifyBtn, rejectBtn] = div.querySelectorAll('.hitl-actions button');
+  const modifyRow   = div.querySelector('.hitl-modify-row');
+  const modifyInput = modifyRow.querySelector('input');
+  const modifySend  = modifyRow.querySelector('button');
+
+  approveBtn.addEventListener('click', () => {
+    sendWS({ type: 'hitl_response', approved: true });
+    lockHITL(div, labels.approved_note);
+  });
+
+  modifyBtn.addEventListener('click', () => {
+    modifyRow.style.display = 'flex';
+    modifyInput.focus();
+  });
+
+  modifySend.addEventListener('click', () => {
+    const text = modifyInput.value.trim();
+    if (!text) return;
+    sendWS({ type: 'hitl_response', approved: false, modification: text });
+    lockHITL(div, labels.modification_note.replace('{text}', text));
+  });
+
+  rejectBtn.addEventListener('click', () => {
+    sendWS({ type: 'hitl_response', approved: false });
+    lockHITL(div, labels.rejected_note);
+  });
+
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function lockHITL(div, label) {
+  div.querySelector('.hitl-actions').style.display = 'none';
+  div.querySelector('.hitl-modify-row').style.display = 'none';
+  const note = document.createElement('p');
+  note.style.cssText = 'color:#888;font-size:0.8rem;margin-top:6px;';
+  note.textContent = label;
+  div.appendChild(note);
+}
+
+sendBtn.addEventListener('click', sendMessage);
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
+
+function sendMessage() {
+  const text = input.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  appendMsg('user', text);
+  sendWS({ type: 'message', content: text });
+  input.value = '';
+  input.disabled = true;
+  sendBtn.disabled = true;
+}
+
+function sendWS(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function setStatus(text) { statusBar.textContent = text; }
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

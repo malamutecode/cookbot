@@ -26,10 +26,10 @@ Your instinct is correct and aligns well with production best practices:
 | Service | Role | Phase | Est. cost |
 |---|---|---|---|
 | **Cloud Run** | One service per client app | MVP | ~$0 (scale-to-zero) |
-| **Cloud SQL (PostgreSQL + pgvector)** | Recipe KB, shared instance, schema per client | MVP | ~$10/mo shared |
 | **Firestore** | Session history, HITL checkpoint persistence | MVP | ~$0 (free tier) |
-| **Cloud Storage** | widget.js hosting, indexer artifacts | MVP | ~$0 (free tier) |
-| **Cloud Run Jobs** | Nightly recipe indexer (crawl→embed→store) | MVP | ~$0 (billed per run) |
+| **Cloud Storage** | widget.js hosting | MVP | ~$0 (free tier) |
+| **Cloud SQL (PostgreSQL + pgvector)** | Client-specific recipe KB | Phase 2 | ~$10/mo shared |
+| **Cloud Run Jobs** | Nightly recipe indexer (crawl→embed→store) | Phase 2 | ~$0 (billed per run) |
 | **Secret Manager** | API keys, DB passwords per client | MVP | ~$0 |
 | **Artifact Registry** | Docker images | MVP | ~$0 (0.5GB free) |
 | **Cloud Build** | CI/CD: build → push → deploy | MVP | ~$0 (120min/day free) |
@@ -72,7 +72,9 @@ Add Redis only when you have >50 concurrent active sessions or rate limiting at 
 │                    packages/cookbot-core  (shared library)           │
 │                                                                      │
 │  SessionOrchestrator                                                 │
-│  IngredientAgent ──→ RecipeSearchAgent ──→ RecipeGenAgent            │
+│  IngredientAgent ──→ WebSearchAgent ──→ RecipeGenAgent               │
+│                      (web search tool;    (fallback if no            │
+│                       returns best match   web result found)         │
 │                              ↓                                       │
 │                    ┌─────────────────┐                               │
 │                    │  HITL Gate      │  ← asyncio.Queue pair         │
@@ -96,14 +98,12 @@ Add Redis only when you have >50 concurrent active sessions or rate limiting at 
 │      messages[] │                  │  schema: client_recipeshub      │
 │      hitl_state │                  │    recipes (id, embedding, data)│
 └─────────────────┘                  └────────────────────────────────┘
-                                               ↑
+                                          (Phase 2 — not in MVP)
                                      ┌─────────────────┐
                                      │ Cloud Run Job   │
                                      │ recipe-indexer  │
                                      │ (nightly cron)  │
-                                     │                 │
-                                     │ crawl → embed   │
-                                     │ → pgvector store│
+                                     │ Phase 2 only    │
                                      └─────────────────┘
 ```
 
@@ -119,9 +119,10 @@ cookbot/                                  ← git monorepo
 │       ├── cookbot/
 │       │   ├── agents/
 │       │   │   ├── ingredient.py         ★ MVP
-│       │   │   ├── recipe_search.py      ★ MVP
-│       │   │   ├── recipe_gen.py         ★ MVP
+│       │   │   ├── web_search.py         ★ MVP — web search before AI generation
+│       │   │   ├── recipe_gen.py         ★ MVP — fallback when search finds nothing
 │       │   │   ├── refinement.py         ★ MVP
+│       │   │   ├── recipe_search.py      ○ Phase 2 — pgvector search
 │       │   │   └── nutrition.py          ○ Phase 2
 │       │   ├── hitl/
 │       │   │   ├── gate.py               ★ MVP — asyncio.Queue HITL logic
@@ -135,7 +136,7 @@ cookbot/                                  ← git monorepo
 │       │   │   └── session.py            ★ MVP — SessionOrchestrator
 │       │   ├── services/
 │       │   │   ├── firestore.py          ★ MVP — history + HITL state
-│       │   │   ├── vector_search.py      ★ MVP — pgvector wrapper
+│       │   │   ├── vector_search.py      ○ Phase 2 — pgvector wrapper
 │       │   │   └── redis.py              ○ Phase 2
 │       │   └── protocols/
 │       │       └── ws_messages.py        ★ MVP — typed WS message schema
@@ -151,7 +152,7 @@ cookbot/                                  ← git monorepo
 │       │   ├── config/
 │       │   │   └── tenant.py             ★ MVP — TastyHub TenantConfig
 │       │   ├── indexer/
-│       │   │   └── recipes.py            ★ MVP — crawl tastyhub sitemap
+│       │   │   └── recipes.py            ○ Phase 2 — crawl tastyhub sitemap
 │       │   └── middleware/
 │       │       └── auth.py               ★ MVP — API key validation
 │       ├── Dockerfile
@@ -180,32 +181,32 @@ RULE: cookbot-core NEVER imports from clients/. Direction is one-way only.
 ### What you MUST build to have a working testable product:
 
 ```
-[1] TenantConfig model          →  drives all agent + API behavior
-[2] FastAPI app (tastyhub)      →  POST /sessions + WS endpoint
-    └─ API key auth middleware
-[3] WebSocket message protocol  →  typed message schema (ws_messages.py)
-[4] SessionOrchestrator         →  spawns pipeline task, bridges WS ↔ agents
-[5] asyncio.Queue HITL gate     →  pipeline suspension + resume logic
-[6] Firestore persistence       →  HITL checkpoint survives restart
-[7] IngredientAgent             →  parse fridge input
-[8] RecipeGenAgent              →  generate recipe (AI)
-[9] RefinementAgent             →  apply human modification
-[10] RecipeSearchAgent          →  pgvector search (can return empty, fallback to Gen)
-[11] Recipe indexer (manual)    →  populate pgvector for tastyhub recipes
-[12] Simple test frontend       →  mock site + widget.js for manual testing
-[13] docker-compose.yml         →  local dev (api + postgres)
-[14] Cloud Run deployment       →  one service for tastyhub
-[15] Cloud SQL + pgvector       →  recipe knowledge base
+[1]  TenantConfig model         →  drives all agent + API behavior
+[2]  FastAPI app (tastyhub)     →  POST /sessions + WS endpoint
+     └─ API key auth middleware
+[3]  WebSocket message protocol →  typed message schema (ws_messages.py)
+[4]  SessionOrchestrator        →  spawns pipeline task, bridges WS ↔ agents
+[5]  asyncio.Queue HITL gate    →  pipeline suspension + resume logic
+[6]  Firestore persistence      →  HITL checkpoint survives restart
+[7]  IngredientAgent            →  parse fridge input
+[8]  WebSearchAgent             →  search web for matching recipe (PydanticAI tool)
+[9]  RecipeGenAgent             →  generate recipe when search returns nothing
+[10] RefinementAgent            →  apply human modification
+[11] Simple test frontend       →  mock site + widget.js for manual testing
+[12] docker-compose.yml         →  local dev (api + firestore emulator)
+[13] Cloud Run deployment       →  one service for tastyhub
 ```
 
 ### What is deliberately deferred:
 
+- pgvector / Cloud SQL recipe knowledge base (replaced by web search in MVP)
+- Recipe indexer / crawler
 - NutritionAgent
 - Cloud CDN / Load Balancer (use Cloud Run URL directly)
 - Memorystore Redis
 - Terraform / infra-as-code
 - Rate limiting (add when you have real clients)
-- Automated nightly indexer (trigger manually first)
+- Automated nightly indexer
 - new_client.sh scaffold script
 - Vertex AI Vector Search
 
@@ -253,13 +254,13 @@ Assumptions: 500 chat sessions/month, 8 agent calls/session, 2K tokens/call.
 | Item | Cost |
 |---|---|
 | Cloud Run (scale-to-zero) | ~$0 |
-| Cloud SQL db-f1-micro (shared ÷ clients) | ~$7–10 |
 | Firestore (within free tier) | ~$0 |
 | Cloud Storage | ~$0 |
-| Cloud Run Jobs (indexer) | ~$0 |
 | OpenAI GPT-4o-mini (500×8×2K tokens) | ~$1.20 |
-| OpenAI embeddings (one-time indexing) | ~$0.10 |
-| **Total** | **~$9–12/mo per client** |
+| OpenAI web search tool calls (500×~3 searches) | ~$0.75 |
+| **Total** | **~$2/mo per client** |
+
+> Phase 2 will add Cloud SQL (~$7–10/mo shared) once the recipe KB is built.
 
 At $50-100/mo per client SaaS fee → healthy margin from day one.
 
@@ -275,20 +276,18 @@ At $50-100/mo per client SaaS fee → healthy margin from day one.
 - [ ] FastAPI skeleton: POST /v1/sessions, WS /v1/ws/{session_id}
 - [ ] API key auth middleware
 - [ ] Firestore service (save/load session history + HITL state)
-- [ ] Cloud SQL + pgvector schema + migration
-- [ ] docker-compose for local dev
+- [ ] docker-compose (Firestore emulator only — no postgres)
 
 **Week 2: Agents + HITL**
 - [ ] IngredientAgent (PydanticAI, cookbot-core)
-- [ ] RecipeSearchAgent + pgvector tool (cookbot-core)
-- [ ] RecipeGenAgent with persona injection (cookbot-core)
+- [ ] WebSearchAgent — PydanticAI web search tool (cookbot-core)
+- [ ] RecipeGenAgent with persona injection — fallback (cookbot-core)
 - [ ] RefinementAgent (cookbot-core)
 - [ ] SessionOrchestrator with asyncio.Queue HITL gate (cookbot-core)
 - [ ] HITL persistence to Firestore (checkpoint save/load)
 - [ ] WS message protocol + streaming tokens
 
 **Week 3: Integration + Deployment**
-- [ ] TastyHub recipe indexer (crawl sitemap → embed → pgvector)
 - [ ] Simple test frontend (index.html + widget.js)
 - [ ] Dockerfile for tastyhub client
 - [ ] Cloud Build → Artifact Registry → Cloud Run deploy
@@ -297,6 +296,9 @@ At $50-100/mo per client SaaS fee → healthy margin from day one.
 
 ### Phase 2 — Production Hardening (Weeks 4–6)
 
+- [ ] Cloud SQL + pgvector schema + migration
+- [ ] TastyHub recipe indexer (crawl sitemap → embed → pgvector)
+- [ ] RecipeSearchAgent + pgvector tool (replace/complement WebSearchAgent)
 - [ ] Cloud Scheduler trigger for nightly recipe indexer
 - [ ] Rate limiting (Firestore counters or upgrade to Redis)
 - [ ] Cloud Monitoring dashboards with client_id label filters

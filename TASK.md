@@ -19,7 +19,7 @@
 
 ---
 
-## Current Step: → STEP 2 — not started
+## Current Step: → STEP 12 — done, awaiting next
 
 Update this line as you progress. When pausing, write:
 `Current Step: → STEP N — waiting for feedback`
@@ -120,24 +120,24 @@ No agent logic yet — just the data shapes.
       feature_nutrition: bool  # Phase 2 flag, default False
   ```
 
-- [ ] `cookbot/models/recipe.py` — models:
-  - `ParsedIngredients(BaseModel)` — items, dietary_hints, missing_staples
+- [X] `cookbot/models/recipe.py` — models:
+  - `ParsedIngredients(BaseModel)` — items, must_use, dietary_hints, missing_staples
   - `Recipe(BaseModel)` — name, description, ingredients, steps,
     prep_time_minutes, cook_time_minutes, difficulty, servings, tips
   - `RecipeSource` — `Enum`: `TENANT_KB`, `AI_GENERATED`
   - `RecipeSearchResult(BaseModel)` — recipe, source, similarity_score
 
-- [ ] `cookbot/models/session.py` — models:
+- [X] `cookbot/models/session.py` — models:
   - `Message(BaseModel)` — role (`user`|`assistant`), content, timestamp
   - `Session(BaseModel)` — session_id, tenant_id, messages, created_at, expires_at
   - `SessionStatus` — `Enum`: `ACTIVE`, `WAITING_HITL`, `COMPLETED`, `EXPIRED`
 
-- [ ] `cookbot/hitl/models.py` — models:
+- [X] `cookbot/hitl/models.py` — models:
   - `HITLCheckpoint(BaseModel)` — checkpoint_id, session_id, recipe, round_number, created_at
   - `HITLResponse(BaseModel)` — approved: bool, modification: str | None
   - `HITLOutcome` — `Enum`: `APPROVED`, `MODIFIED`, `REJECTED`
 
-- [ ] `cookbot/protocols/ws_messages.py` — typed WS message models:
+- [X] `cookbot/protocols/ws_messages.py` — typed WS message models:
   - `WsMessageType` — `Enum` with all types: `MESSAGE`, `TOKEN`, `AGENT_UPDATE`,
     `HITL_CHECKPOINT`, `HITL_RESPONSE`, `FINAL_RECIPE`, `ERROR`
   - `WsInbound(BaseModel)` — type, content, approved, modification (all optional)
@@ -148,10 +148,10 @@ No agent logic yet — just the data shapes.
     `ws_send_hitl_checkpoint()`, `ws_send_final_recipe()`, `ws_send_error()`
     — all `async def`, take `WebSocket` + model-specific params
 
-- [ ] `clients/tastyhub/app/config/tenant.py` — `TASTYHUB_CONFIG: TenantConfig` instance
+- [X] `clients/tastyhub/app/config/tenant.py` — `TASTYHUB_CONFIG: TenantConfig` instance
   (values from ENV via `pydantic-settings`, with sensible defaults)
 
-- [ ] `packages/cookbot-core/tests/test_models.py` — basic instantiation tests for all models
+- [X] `packages/cookbot-core/tests/test_models.py` — basic instantiation tests for all models
 
 ### Verify
 
@@ -181,7 +181,7 @@ All other code will depend on this.
 
 ### Tasks
 
-- [ ] `cookbot/services/firestore.py` — `FirestoreService` class:
+- [X] `cookbot/services/firestore.py` — `FirestoreService` class:
   - `__init__(project_id, database_id, tenant_id)` — creates `AsyncClient`
   - `async save_message(session_id, message: Message) -> None`
   - `async get_messages(session_id) -> list[Message]`
@@ -194,21 +194,22 @@ All other code will depend on this.
 
   Collection path: `sessions/{tenant_id}/{session_id}`
 
-- [ ] `cookbot/services/__init__.py` — re-export `FirestoreService`
+- [X] `cookbot/services/__init__.py` — re-export `FirestoreService`
 
-- [ ] `packages/cookbot-core/tests/test_firestore.py`:
+- [X] `packages/cookbot-core/tests/test_firestore.py`:
   - All tests use Firestore emulator (`FIRESTORE_EMULATOR_HOST` env var)
   - `pytest.mark.skipif` if emulator not available
   - Test: save + load message round-trip
   - Test: save + load HITL checkpoint, then clear
   - Test: `get_session` returns `None` for unknown session_id
 
-- [ ] `docker-compose.yml` — add Firestore emulator service:
+- [X] `docker-compose.yml` — Firestore emulator only (no postgres in MVP):
   ```yaml
-  firestore-emulator:
-    image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
-    command: gcloud beta emulators firestore start --host-port=0.0.0.0:8080
-    ports: ["8080:8080"]
+  services:
+    firestore-emulator:
+      image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
+      command: gcloud beta emulators firestore start --host-port=0.0.0.0:8080
+      ports: ["8080:8080"]
   ```
 
 ### Verify
@@ -216,7 +217,8 @@ All other code will depend on this.
 ```bash
 # Start emulator
 docker-compose up -d firestore-emulator
-export FIRESTORE_EMULATOR_HOST=localhost:8080
+# Windows PowerShell: $env:FIRESTORE_EMULATOR_HOST="localhost:8080"
+# bash/zsh: export FIRESTORE_EMULATOR_HOST=localhost:8080
 
 cd packages/cookbot-core
 uv run pytest tests/test_firestore.py -v
@@ -235,7 +237,7 @@ sessions can be created. No WebSocket or agents yet.
 
 ### Tasks
 
-- [ ] `clients/tastyhub/app/main.py` — FastAPI app with lifespan:
+- [X] `clients/tastyhub/app/main.py` — FastAPI app with lifespan:
   ```python
   @asynccontextmanager
   async def lifespan(app: FastAPI):
@@ -247,51 +249,51 @@ sessions can be created. No WebSocket or agents yet.
   - Global exception handlers for `TenantNotFoundError`, `SessionExpiredError`
   - Structured logging with `structlog`
 
-- [ ] `clients/tastyhub/app/middleware/auth.py` — FastAPI dependency:
+- [X] `clients/tastyhub/app/middleware/auth.py` — FastAPI dependency:
   - `get_tenant_config(x_api_key: str = Header(...)) -> TenantConfig`
   - Validates key against `API_KEY` env var
   - Raises HTTP 401 with clear message on failure
   - Returns `TASTYHUB_CONFIG`
 
-- [ ] `clients/tastyhub/app/api/sessions.py`:
+- [X] `clients/tastyhub/app/api/sessions.py`:
   - `POST /v1/sessions` → creates session in Firestore, returns `{session_id, expires_at}`
   - Requires valid API key header
   - Session ID = `uuid4()`
 
-- [ ] `GET /health` → `{status: "ok", tenant: "tastyhub", version: "0.1.0"}`
+- [X] `GET /health` → `{status: "ok", tenant: "tastyhub", version: "0.1.0"}`
 
-- [ ] `clients/tastyhub/app/config/settings.py` — `pydantic-settings` `Settings` class
+- [X] `clients/tastyhub/app/config/settings.py` — `pydantic-settings` `Settings` class
   loading all ENV vars, validated at startup (fail fast on missing required vars)
 
-- [ ] `clients/tastyhub/tests/test_api.py`:
+- [X] `clients/tastyhub/tests/test_api.py`:
   - Test `/health` returns 200
   - Test `POST /v1/sessions` with valid API key returns session_id
   - Test `POST /v1/sessions` with invalid API key returns 401
 
 ### Verify
 
-```bash
+```powershell
 cd clients/tastyhub
 
 # Copy and fill env
-cp ../../.env.example .env
-# (edit .env: set OPENAI_API_KEY, TENANT_ID=tastyhub, API_KEY=tk_dev_local,
-#  DATABASE_URL=postgresql+asyncpg://cookbot:cookbot@localhost:5432/cookbot)
+Copy-Item ..\..\env.example .env
+# (edit .env: set OPENAI_API_KEY, TENANT_ID=tastyhub, API_KEY=tk_dev_local)
 
-docker-compose up -d postgres
+docker-compose up -d firestore-emulator
 
-uv run uvicorn app.main:app --reload --port 8000 &
+# Start server in a separate terminal
+uv run uvicorn app.main:app --reload --port 8000
 
 # Health check
-curl -s http://localhost:8000/health | python -m json.tool
+curl.exe -s http://localhost:8000/health | python -m json.tool
 
 # Create session (valid key)
-curl -s -X POST http://localhost:8000/v1/sessions \
-  -H "X-API-Key: tk_dev_local" | python -m json.tool
+curl.exe -s -X POST http://localhost:8000/v1/sessions `
+  -H "x-api-key: tk_dev_local" | python -m json.tool
 
 # Reject invalid key
-curl -s -X POST http://localhost:8000/v1/sessions \
-  -H "X-API-Key: wrong" -w "\nHTTP %{http_code}\n"
+curl.exe -s -X POST http://localhost:8000/v1/sessions `
+  -H "x-api-key: wrong" -w "\nHTTP %{http_code}\n"
 
 # Run tests
 uv run pytest tests/test_api.py -v
@@ -312,7 +314,7 @@ this validates the transport before adding complexity.
 
 ### Tasks
 
-- [ ] `clients/tastyhub/app/api/websocket.py`:
+- [X] `clients/tastyhub/app/api/websocket.py`:
   - `WS /v1/ws/{session_id}` endpoint
   - On connect: validate session exists in Firestore, load messages
   - Echo mode: for now, receive any message and send back
@@ -321,7 +323,7 @@ this validates the transport before adding complexity.
   - Use typed helpers from `ws_messages.py` — never raw `websocket.send_json({})`
   - Handle disconnect gracefully (catch `WebSocketDisconnect`)
 
-- [ ] `frontend/index.html` — mock cooking website:
+- [X] `frontend/index.html` — mock cooking website:
   - Simple HTML page that looks like a cooking website (static content)
   - Floating "Ask Chef Bot" button bottom-right
   - On click: opens chat panel (div, not iframe yet)
@@ -334,33 +336,34 @@ this validates the transport before adding complexity.
   - On Approve: sends `{type: "hitl_response", approved: true}`
   - On Modify: shows text input → sends `{type: "hitl_response", approved: false, modification: "..."}`
 
-- [ ] `frontend/widget.js` — placeholder only (just logs "CookBot widget loaded"):
+- [X] `frontend/widget.js` — placeholder only (just logs "CookBot widget loaded"):
   ```javascript
   // Full widget.js implementation is Phase 2 (iframe + embed)
   console.log('[CookBot] widget.js loaded for tenant:', document.currentScript.dataset.tenantId);
   ```
 
-- [ ] `clients/tastyhub/tests/test_websocket.py`:
+- [X] `clients/tastyhub/tests/test_websocket.py`:
   - Test: WS connect to valid session → receives welcome token
   - Test: WS connect to unknown session_id → closes with 4004 code
   - Test: send message → receives echo response
 
 ### Verify
 
-```bash
+```powershell
 # Server must be running (Step 4)
 
-# Test with wscat (install: npm install -g wscat)
-SESSION=$(curl -s -X POST http://localhost:8000/v1/sessions \
-  -H "X-API-Key: tk_dev_local" | python -c "import sys,json; print(json.load(sys.stdin)['session_id'])")
+# Get a session ID
+$SESSION = (curl.exe -s -X POST http://localhost:8000/v1/sessions `
+  -H "x-api-key: tk_dev_local" | python -c "import sys,json; print(json.load(sys.stdin)['session_id'])")
 echo "Session: $SESSION"
 
-npx wscat -c "ws://localhost:8000/v1/ws/$SESSION" \
-  --execute '{"type":"message","content":"I have chicken and spinach"}'
+# Test with wscat (install: npm install -g wscat)
+npx wscat -c "ws://localhost:8000/v1/ws/$SESSION" `
+  --execute '{\"type\":\"message\",\"content\":\"I have chicken and spinach\"}'
 # Should receive: echo token + placeholder final_recipe
 
-# Open browser test
-open frontend/index.html
+# Open browser test (double-click or:)
+Start-Process frontend\index.html
 # → type a message → should see echoed response in chat
 ```
 
@@ -382,15 +385,15 @@ Test it in isolation before wiring into the full pipeline.
 
 ### Tasks
 
-- [ ] `cookbot/agents/ingredient.py`:
+- [X] `cookbot/agents/ingredient.py`:
   - `build_ingredient_agent(config: TenantConfig) -> Agent[None, ParsedIngredients]`
   - System prompt uses `config.persona` and `config.language`
   - Must handle edge cases: empty input, single ingredient, foreign language input
   - Return `missing_staples` only if highly confident (salt, oil, pepper — not specialty items)
 
-- [ ] `cookbot/agents/__init__.py` — export `build_ingredient_agent`
+- [X] `cookbot/agents/__init__.py` — export `build_ingredient_agent`
 
-- [ ] `packages/cookbot-core/tests/test_agents/test_ingredient.py`:
+- [X] `packages/cookbot-core/tests/test_agents/test_ingredient.py`:
   - All tests use `pydantic_ai.models.test.TestModel` — no real API calls
   - Test: "I have chicken, spinach, garlic and I'm vegan" → items contain all three,
     dietary_hints contains "vegan"
@@ -436,9 +439,69 @@ asyncio.run(main())
 
 ---
 
-## STEP 7 ★ — RecipeGenAgent
+## STEP 7 ★ — WebSearchAgent
+
+**Goal:** Before generating a recipe from scratch, search the web for an existing one.
+Returns a structured `Recipe` from web results, or `None` if nothing useful is found,
+causing the orchestrator to fall back to `RecipeGenAgent`.
+
+### Tasks
+
+- [ ] `cookbot/agents/web_search.py`:
+  - `build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]`
+  - Register PydanticAI's built-in web search tool on the agent
+  - System prompt: search for a recipe matching the given ingredients, return a structured
+    `Recipe` if a good match is found, or `None` if results are irrelevant/empty
+  - Input prompt: `f"Find a recipe using these ingredients: {ingredients.items}. Dietary: {ingredients.dietary_hints}."`
+  - Agent must fill all `Recipe` fields from the search result (name, steps, times, etc.)
+
+- [ ] `cookbot/models/recipe.py` — add `WEB_SEARCH` to `RecipeSource` enum
+
+- [ ] `cookbot/agents/__init__.py` — export `build_web_search_agent`
+
+- [ ] `packages/cookbot-core/tests/test_agents/test_web_search.py`:
+  - All tests use `TestModel` — no real API/network calls
+  - Test: agent returns a valid `Recipe` when TestModel provides structured output
+  - Test: agent returns `None`-equivalent when TestModel signals no result
+
+### Verify
+
+```bash
+cd packages/cookbot-core
+uv run pytest tests/test_agents/test_web_search.py -v
+
+# Live test (uses real OpenAI + web search)
+uv run python -c "
+import asyncio, os
+from cookbot.agents.web_search import build_web_search_agent
+from cookbot.models.tenant import TenantConfig
+from cookbot.models.recipe import ParsedIngredients
+
+config = TenantConfig(
+    tenant_id='test', persona='You are a helpful chef', language='en',
+    recipe_source_url='', allowed_origins=[], model='gpt-4o-mini',
+    embedding_model='text-embedding-3-small', max_hitl_rounds=3, feature_nutrition=False,
+)
+agent = build_web_search_agent(config)
+
+async def main():
+    result = await agent.run('Find a recipe using these ingredients: chicken, spinach, garlic. Dietary: none.')
+    print(result.data.model_dump_json(indent=2) if result.data else 'No result found')
+
+asyncio.run(main())
+"
+```
+
+### ⏸ PAUSE 7
+**Report:** Test output + live test result. Did the web search return a real recipe?
+**Human decides:** Web search quality OK? Should the fallback threshold be tuned?
+
+---
+
+## STEP 8 ★ — RecipeGenAgent
 
 **Goal:** Takes `ParsedIngredients` + `TenantConfig`, generates a structured `Recipe`.
+This is the fallback when `WebSearchAgent` returns nothing.
 
 ### Tasks
 
@@ -468,13 +531,13 @@ from cookbot.agents.recipe_gen import build_recipe_gen_agent
 "
 ```
 
-### ⏸ PAUSE 7
+### ⏸ PAUSE 8
 **Report:** Paste live recipe JSON. Does the generated recipe look good?
 **Human decides:** Recipe quality OK? Any prompt tuning needed? Should steps be more/less detailed?
 
 ---
 
-## STEP 8 ★ — RefinementAgent
+## STEP 9 ★ — RefinementAgent
 
 **Goal:** Takes an existing `Recipe` + a human modification request, returns updated `Recipe`.
 
@@ -497,13 +560,13 @@ from cookbot.agents.recipe_gen import build_recipe_gen_agent
 uv run pytest tests/test_agents/test_refinement.py -v
 ```
 
-### ⏸ PAUSE 8
+### ⏸ PAUSE 9
 **Report:** Test output. Paste a live refinement example if possible.
 **Human decides:** Modification quality satisfactory? Any prompt changes?
 
 ---
 
-## STEP 9 ★ — HITL Gate
+## STEP 10 ★ — HITL Gate
 
 **Goal:** The pipeline can suspend and resume. This is the most critical piece.
 
@@ -562,13 +625,13 @@ uv run pytest tests/test_hitl/ -v
 # All tests must pass, including the concurrency test
 ```
 
-### ⏸ PAUSE 9
+### ⏸ PAUSE 10
 **Report:** Test output. Any concerns about the asyncio.Queue approach?
 **Human decides:** HITL timeout of 1 hour correct? Should rejected sessions be handled differently?
 
 ---
 
-## STEP 10 ★ — SessionOrchestrator
+## STEP 11 ★ — SessionOrchestrator
 
 **Goal:** All agents wired together with the HITL gate. The full pipeline runs as a
 background task. Can be tested end-to-end without WebSocket.
@@ -598,8 +661,8 @@ background task. Can be tested end-to-end without WebSocket.
 
   Pipeline:
   1. `IngredientAgent` → `ParsedIngredients`
-  2. `RecipeSearchAgent` → `list[RecipeSearchResult]` (may be empty)
-  3. If good results exist → use best match; else `RecipeGenAgent`
+  2. `WebSearchAgent` → `Recipe | None` (web search for matching recipe)
+  3. If web search returned a recipe → use it; else `RecipeGenAgent` → `Recipe`
   4. HITL gate: call `on_hitl_checkpoint(checkpoint)`, then `await on_hitl_response_needed()`
   5. If approved → done
   6. If modified → `RefinementAgent`, loop back to step 4 (max `config.max_hitl_rounds`)
@@ -629,13 +692,13 @@ from cookbot.orchestrator.session import SessionOrchestrator
 "
 ```
 
-### ⏸ PAUSE 10
+### ⏸ PAUSE 11
 **Report:** Test output + paste CLI test run showing the full pipeline.
 **Human decides:** Pipeline flow correct? Agent update messages useful? Any orchestration changes?
 
 ---
 
-## STEP 11 ★ — Full WebSocket Integration
+## STEP 12 ★ — Full WebSocket Integration
 
 **Goal:** Replace the echo stub from Step 5 with the real orchestrator.
 End-to-end: browser types fridge contents → agents run → HITL card appears → approve → recipe.
@@ -680,145 +743,19 @@ open frontend/index.html
 # 6. New recipe appears, approve it
 ```
 
-### ⏸ PAUSE 11 ★ MAJOR CHECKPOINT
+### ⏸ PAUSE 12 ★ MAJOR CHECKPOINT
 **Report:** Describe the full manual test run. Did the HITL flow work?
 Screenshot or describe the frontend state at each step.
 **Human decides:** This is the core product working. Is the agent quality good?
-Is the HITL UX right? Any fundamental changes before adding the recipe knowledge base?
+Is the HITL UX right? Any changes needed before deployment?
 
 ---
 
-# PHASE 3 — RECIPE KNOWLEDGE BASE
+# PHASE 3 — PACKAGING & DEPLOYMENT
 
 ---
 
-## STEP 12 ★ — PostgreSQL + pgvector Schema
-
-**Goal:** Database schema in place. Recipes can be stored and queried by vector similarity.
-
-### Tasks
-
-- [ ] `docker-compose.yml` — add postgres service:
-  ```yaml
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: cookbot
-      POSTGRES_USER: cookbot
-      POSTGRES_PASSWORD: cookbot
-    ports: ["5432:5432"]
-    volumes: ["pgdata:/var/lib/postgresql/data"]
-  ```
-
-- [ ] `cookbot/services/database.py` — `DatabaseService`:
-  - `create_pool(dsn: str) -> asyncpg.Pool`
-  - `close_pool(pool) -> None`
-
-- [ ] `cookbot/services/vector_search.py` — `RecipeVectorSearch`:
-  - `async setup_schema(pool, schema_name: str)` — creates schema + table:
-    ```sql
-    CREATE SCHEMA IF NOT EXISTS {schema};
-    CREATE EXTENSION IF NOT EXISTS vector;
-    CREATE TABLE IF NOT EXISTS {schema}.recipes (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        title TEXT NOT NULL,
-        url TEXT,
-        ingredients TEXT[],
-        content_text TEXT,           -- full recipe text for embedding
-        embedding vector(1536),      -- text-embedding-3-small dimension
-        metadata JSONB,
-        created_at TIMESTAMPTZ DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS recipes_embedding_idx
-        ON {schema}.recipes USING ivfflat (embedding vector_cosine_ops);
-    ```
-  - `async upsert_recipe(pool, schema, recipe_data: dict, embedding: list[float])`
-  - `async search(pool, schema, query_embedding: list[float], limit=5) -> list[RecipeSearchResult]`
-
-- [ ] Migration script `scripts/migrate.py` — run `setup_schema` for a given tenant
-
-- [ ] `packages/cookbot-core/tests/test_services/test_vector_search.py`:
-  - Use real postgres (docker-compose) — `pytest.mark.integration`
-  - Test: insert 3 recipes, search returns most relevant one
-  - Test: empty DB returns empty list (no error)
-
-### Verify
-
-```bash
-docker-compose up -d postgres
-sleep 3
-
-cd packages/cookbot-core
-uv run python scripts/migrate.py --tenant tastyhub
-uv run pytest tests/test_services/test_vector_search.py -v -m integration
-```
-
-### ⏸ PAUSE 12
-**Report:** Migration output. Test results.
-**Human decides:** Schema OK? Index type correct (ivfflat vs hnsw)?
-
----
-
-## STEP 13 ★ — RecipeSearchAgent + Indexer
-
-**Goal:** TastyHub recipes are indexed in pgvector. The search agent finds relevant recipes
-before falling back to AI generation.
-
-### Tasks
-
-- [ ] `cookbot/agents/recipe_search.py`:
-  - `build_recipe_search_agent(config, vector_search: RecipeVectorSearch, pool) -> Agent`
-  - Tool: `search_recipes(query: str) -> list[RecipeSearchResult]`
-    - Embeds `query` with `text-embedding-3-small`
-    - Calls `vector_search.search()`
-    - Returns top-3 results with `similarity_score`
-  - Agent decides: if best score < 0.75, return empty list (trigger AI generation)
-  - Result type: `list[RecipeSearchResult]` (may be empty)
-
-- [ ] `clients/tastyhub/app/indexer/recipes.py` — `TastyHubIndexer`:
-  - `async run(pool, vector_search, openai_client)`:
-    1. Fetch TastyHub sitemap from `config.recipe_source_url`
-    2. For each recipe URL (limit 100 for MVP):
-       - Fetch HTML, parse with BeautifulSoup
-       - Extract: title, ingredients list, steps text
-       - Embed `f"{title}. Ingredients: {ingredients}. Steps: {steps}"`
-       - `upsert_recipe(...)` into pgvector
-    3. Log progress, return count of indexed recipes
-  - `if __name__ == "__main__"`: runnable as standalone script
-
-- [ ] Update `SessionOrchestrator`: wire `RecipeSearchAgent` before `RecipeGenAgent`
-
-- [ ] `clients/tastyhub/tests/test_indexer.py`:
-  - Mock HTTP requests (don't hit real tastyhub.com)
-  - Test: parses HTML correctly, extracts title + ingredients
-  - Test: handles 404 URLs gracefully (skip, log, continue)
-
-### Verify
-
-```bash
-# Run indexer against real TastyHub (or a local mock HTML file)
-cd clients/tastyhub
-uv run python -m app.indexer.recipes
-# Should print: "Indexed N recipes for tastyhub"
-
-# Then test search via the full pipeline:
-# Type in the chat: "I have salmon and lemon"
-# If TastyHub has salmon recipes, should now show source: "TENANT_KB"
-# instead of "AI_GENERATED"
-```
-
-### ⏸ PAUSE 13
-**Report:** How many recipes were indexed? Did a real recipe from the KB appear in the chat?
-Was the similarity score reasonable?
-**Human decides:** Indexing quality OK? Similarity threshold (0.75) right? Should more recipes be indexed?
-
----
-
-# PHASE 4 — PACKAGING & DEPLOYMENT
-
----
-
-## STEP 14 ★ — Docker + Local Full Stack
+## STEP 13 ★ — Docker + Local Full Stack
 
 **Goal:** Entire stack runs with one command. Proves the container will work on Cloud Run.
 
@@ -846,7 +783,7 @@ Was the similarity score reasonable?
       dockerfile: clients/tastyhub/Dockerfile
     ports: ["8000:8080"]
     env_file: .env
-    depends_on: [postgres, firestore-emulator]
+    depends_on: [firestore-emulator]
   ```
 
 - [ ] Update `frontend/index.html` — make API URL configurable via JS variable
@@ -863,13 +800,13 @@ docker-compose up --build
 curl http://localhost:8000/health
 ```
 
-### ⏸ PAUSE 14
+### ⏸ PAUSE 13
 **Report:** Does `docker-compose up --build` work cleanly? Any image size concerns?
 **Human decides:** Ready to deploy to GCP?
 
 ---
 
-## STEP 15 ★ — Cloud Run Deployment
+## STEP 14 ★ — Cloud Run Deployment
 
 **Goal:** The app is live on GCP. Can be tested with the real frontend.
 
@@ -898,7 +835,6 @@ curl http://localhost:8000/health
   ```
 
 - [ ] `infrastructure/scripts/setup_gcp.sh` — one-time GCP setup:
-  - Create Cloud SQL instance + `cookbot` DB + pgvector extension
   - Create Firestore DB
   - Create secrets in Secret Manager
   - Enable required APIs
@@ -923,7 +859,7 @@ CLOUD_RUN_URL=$(gcloud run services describe cookbot-tastyhub \
 curl $CLOUD_RUN_URL/health
 ```
 
-### ⏸ PAUSE 15 — FINAL MVP CHECKPOINT
+### ⏸ PAUSE 14 — FINAL MVP CHECKPOINT
 **Report:** Cloud Run URL. Health check output. Full manual test on live URL.
 **Human decides:** MVP complete? What are the top 3 things to improve for Phase 2?
 
@@ -933,6 +869,9 @@ curl $CLOUD_RUN_URL/health
 
 These are listed here so the agent knows they exist and should NOT be implemented:
 
+- `○` Cloud SQL + pgvector schema + migration
+- `○` TastyHub recipe indexer (crawl sitemap → embed → pgvector)
+- `○` RecipeSearchAgent — pgvector-backed, replaces/complements WebSearchAgent
 - `○` NutritionAgent
 - `○` Automated nightly indexer via Cloud Scheduler
 - `○` Rate limiting (Redis or Firestore counters)

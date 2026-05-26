@@ -15,7 +15,7 @@ get a popup chat that finds or generates recipes based on what's in their fridge
 **Key product concept:**
 - Each client (cooking website) runs as its own **Cloud Run service**
 - All AI agent logic lives in **`packages/cookbot-core`** — a shared Python library
-- Client apps in **`clients/{name}/`** import core and add client-specific config + indexing
+- Client apps in **`clients/{name}/`** import core and add client-specific config
 - This repo is structured so `cookbot-core` can eventually be published to PyPI
 
 ---
@@ -32,7 +32,7 @@ cookbot/
 │       │   ├── models/        # Pydantic data models
 │       │   ├── orchestrator/  # SessionOrchestrator
 │       │   ├── protocols/     # WebSocket message schema
-│       │   └── services/      # Firestore, pgvector wrappers
+│       │   └── services/      # Firestore wrapper
 │       └── pyproject.toml
 │
 ├── clients/
@@ -41,7 +41,6 @@ cookbot/
 │       │   ├── main.py        # FastAPI entry point
 │       │   ├── api/           # REST + WebSocket endpoints
 │       │   ├── config/        # TastyHub TenantConfig instance
-│       │   ├── indexer/       # recipe crawler + embedder
 │       │   └── middleware/    # API key auth
 │       ├── Dockerfile
 │       ├── cloudbuild.yaml
@@ -54,7 +53,7 @@ cookbot/
 ├── infrastructure/
 │   └── terraform/             # Phase 2 — do not touch yet
 │
-├── docker-compose.yml         # local dev: api + postgres
+├── docker-compose.yml         # local dev: api + firestore emulator
 ├── .env.example
 └── TASK.md                    # incremental build tasks — read before coding
 ```
@@ -99,9 +98,9 @@ These are hard constraints. Never violate them, even if it seems convenient.
 | Web framework | FastAPI 0.115+ | Use lifespan context managers, not `@app.on_event` |
 | AI agents | PydanticAI 0.0.14+ | Typed `result_type=`, use `agent.run_stream()` for streaming |
 | LLM | OpenAI `gpt-4o-mini` | Default for all agents — cost-effective, good structured output |
-| Embeddings | OpenAI `text-embedding-3-small` | For recipe indexing |
+| Web search | PydanticAI web search tool | Recipe lookup before AI generation — MVP |
 | Session store | Firestore (native async SDK) | `google-cloud-firestore` with `AsyncClient` |
-| Vector search | pgvector via `asyncpg` | Direct SQL, no ORM for vector queries |
+| Vector search | pgvector via `asyncpg` | Phase 2 — client-specific recipe KB |
 | Config | `pydantic-settings` | All config from ENV, validated at startup |
 | Linting | `ruff` | Run before every commit |
 | Type checking | `pyright` (strict) | All public functions must have type annotations |
@@ -114,15 +113,12 @@ These are hard constraints. Never violate them, even if it seems convenient.
 **Required for any client app to start:**
 
 ```bash
-# LLM
+# LLM + web search
 OPENAI_API_KEY=sk-...
 
 # GCP
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 FIRESTORE_DATABASE=(default)          # or named DB
-
-# PostgreSQL + pgvector
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/cookbot
 
 # Client identity
 TENANT_ID=tastyhub
@@ -131,9 +127,12 @@ API_KEY=tk_live_...                   # the key embedded in widget script tag
 # Optional — override defaults
 LOG_LEVEL=INFO
 OPENAI_MODEL=gpt-4o-mini
-EMBEDDING_MODEL=text-embedding-3-small
 MAX_HITL_ROUNDS=3
 SESSION_TTL_HOURS=24
+
+# Phase 2 only — not required for MVP
+# DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/cookbot
+# EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 **Local dev:** copy `.env.example` to `.env`, fill in values, docker-compose loads it automatically.
@@ -144,8 +143,8 @@ SESSION_TTL_HOURS=24
 ## Running Locally
 
 ```bash
-# 1. Start dependencies
-docker-compose up -d postgres
+# 1. Start dependencies (Firestore emulator only — no postgres needed for MVP)
+docker-compose up -d firestore-emulator
 
 # 2. Install (from repo root)
 cd packages/cookbot-core && uv sync
@@ -157,9 +156,6 @@ uv run uvicorn app.main:app --reload --port 8000
 
 # 4. Open test frontend
 open frontend/index.html   # or serve it: python -m http.server 3000 -d frontend/
-
-# 5. Run recipe indexer manually (optional, requires postgres running)
-uv run python -m app.indexer.recipes
 ```
 
 **Quick health check:**
@@ -256,9 +252,10 @@ from cookbot.exceptions import (
 
 1. Copy `clients/tastyhub/` → `clients/{new_client}/`
 2. Update `clients/{new_client}/app/config/tenant.py` with client-specific `TenantConfig`
-3. Update `clients/{new_client}/app/indexer/recipes.py` with their recipe source URL
-4. Update `clients/{new_client}/Dockerfile` and `cloudbuild.yaml` with new service name
-5. Deploy: `gcloud run deploy cookbot-{new_client} ...`
+3. Update `clients/{new_client}/Dockerfile` and `cloudbuild.yaml` with new service name
+4. Deploy: `gcloud run deploy cookbot-{new_client} ...`
+
+> Phase 2: add a client-specific recipe indexer to populate pgvector KB.
 
 cookbot-core requires **zero changes** to add a new client.
 
@@ -309,6 +306,7 @@ gcloud run deploy cookbot-tastyhub \
 - **Don't make real LLM calls in tests** — always use `TestModel`
 - **Don't add client-specific logic to cookbot-core** — it goes in clients/
 - **Don't skip type annotations** — pyright strict mode will fail CI
+- **Don't build pgvector/indexer in MVP** — web search covers recipe lookup until Phase 2
 
 ---
 
@@ -324,11 +322,8 @@ uv run pyright
 uv run pydeps cookbot --max-bacon=3 --noshow
 
 # Start Firestore emulator for tests
-gcloud beta emulators firestore start --host-port=localhost:8080
+docker-compose up -d firestore-emulator
 export FIRESTORE_EMULATOR_HOST=localhost:8080
-
-# Reset local postgres
-docker-compose down -v && docker-compose up -d postgres
 
 # Inspect WebSocket manually
 npx wscat -c ws://localhost:8000/v1/ws/test-session-id \
