@@ -29,3 +29,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend (Vite)
+frontend/node_modules/
+frontend/dist/

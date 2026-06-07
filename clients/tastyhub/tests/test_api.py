@@ -36,7 +36,11 @@ def _make_mock_settings() -> MagicMock:
     s.google_cloud_project = "test-project"
     s.firestore_database = "(default)"
     s.openai_api_key = "sk-test"
-    s.openai_model = "gpt-4o-mini"
+    s.model_chat = "gpt-4o-mini"
+    s.model_recipe_gen = "gpt-4o-mini"
+    s.model_web_search = "gpt-4o-mini"
+    s.model_recipe_options = "gpt-4o-mini"
+    s.model_shopping_list = "gpt-4o-mini"
     s.max_hitl_rounds = 3
     s.firestore_emulator_host = ""
     return s
@@ -102,9 +106,10 @@ def test_create_session_invalid_key_returns_401(client_no_override: TestClient) 
     assert "Invalid API key" in resp.json()["detail"]
 
 
-def test_create_session_missing_key_returns_422(client_no_override: TestClient) -> None:
+def test_create_session_missing_auth_returns_401(client_no_override: TestClient) -> None:
+    # No x-api-key and no Authorization header → 401 (not 422, since both headers are optional)
     resp = client_no_override.post("/v1/sessions")
-    assert resp.status_code == 422
+    assert resp.status_code == 401
 
 
 def test_create_session_valid_key_no_override(client_no_override: TestClient) -> None:

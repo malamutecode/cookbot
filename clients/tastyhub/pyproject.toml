@@ -9,6 +9,8 @@ dependencies = [
     "websockets>=12.0",
     "httpx>=0.27",
     "beautifulsoup4>=4.12",
+    "firebase-admin>=6.5",
+    "pydantic-ai-slim[web-fetch]>=1.102.0",
 ]
 
 [tool.uv.sources]

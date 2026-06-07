@@ -23,16 +23,33 @@ class UiStrings:
     max_rounds_reached: str
     intake_questions: list[str]
     hitl: HitlLabels
+    # Spiżarnia UI labels
+    spizarnia_heading: str = "Spiżarnia"
+    spizarnia_empty: str = "Twoja spiżarnia jest pusta"
+    spizarnia_toggle: str = "Użyj składników ze spiżarni"
+    spizarnia_add_placeholder: str = "Dodaj składnik…"
+    spizarnia_add_button: str = "Dodaj"
+    shopping_list_heading: str = "Lista zakupów"
+    shopping_list_clear: str = "Wyczyść zaznaczone"
+    spizarnia_offer_add: str = "Dodać brakujące do listy zakupów?"
+    spizarnia_offer_remove: str = "Usunąć zużyte składniki ze spiżarni?"
+    spizarnia_offer_confirm: str = "Tak"
+    spizarnia_offer_skip: str = "Nie"
+    login_heading: str = "Zaloguj się"
+    login_email: str = "E-mail"
+    login_password: str = "Hasło"
+    login_button: str = "Zaloguj się"
+    logout_button: str = "Wyloguj"
 
 
 _PL = UiStrings(
-    greeting="Cześć! Jestem Twoim asystentem kulinarnym. Odpowiedz na kilka pytań, a znajdę Ci idealny przepis!",
+    greeting="Cześć! Jestem Twoim asystentem kulinarnym. Napisz co chcesz ugotować, a znajdę Ci przepis — mogę też dodać danie do kalendarza lub przygotować listę zakupów.",
     thinking="Rozumiem! Chwila, zaraz coś wymyślę…",
     summary_prefix="Świetnie! Danie: {dish}, czas: {time} min, składniki: {items}. Szukam przepisu…",
     searching="Szukam przepisu…",
     max_rounds_reached="Osiągnięto maksymalną liczbę rund dopracowania — używam najlepszej wersji.",
     intake_questions=[
-        "Co chcesz dzisiaj ugotować? (np. pasta, zupa, sałatka — lub powiedz 'zaproponuj coś' / 'zaproponuj na podstawie moich składników')",
+        "Co chcesz dzisiaj ugotować? (np. makaron, zupa, sałatka — lub powiedz 'zaproponuj coś' / 'zaproponuj na podstawie moich składników')",
         "Ile porcji potrzebujesz? (np. 1, 2, 4 — lub 'tylko dla mnie')",
         "Ile masz czasu? (np. 20 minut, 1 godzina — lub 'bez pośpiechu')",
         "Czy masz jakieś składniki, które chcesz wykorzystać? Wymień je lub powiedz 'nie'.",
@@ -52,7 +69,7 @@ _PL = UiStrings(
 )
 
 _EN = UiStrings(
-    greeting="Hi! I'm your cooking helper. Answer a few quick questions and I'll find you the perfect recipe!",
+    greeting="Hi! I'm your cooking assistant. Tell me what you'd like to cook and I'll find a recipe — I can also add meals to your calendar or build a shopping list.",
     thinking="Got it! Let me work out what we can make…",
     summary_prefix="Understood! Dish: {dish}, time: {time} min, using: {items}. Searching for a recipe now…",
     searching="Searching for a recipe now…",
@@ -75,6 +92,22 @@ _EN = UiStrings(
         rejected_note="Rejected",
         modification_note='Modification: "{text}"',
     ),
+    spizarnia_heading="Pantry",
+    spizarnia_empty="Your pantry is empty",
+    spizarnia_toggle="Use pantry ingredients",
+    spizarnia_add_placeholder="Add ingredient…",
+    spizarnia_add_button="Add",
+    shopping_list_heading="Shopping list",
+    shopping_list_clear="Clear checked",
+    spizarnia_offer_add="Add missing ingredients to shopping list?",
+    spizarnia_offer_remove="Remove used items from pantry?",
+    spizarnia_offer_confirm="Yes",
+    spizarnia_offer_skip="No",
+    login_heading="Sign in",
+    login_email="Email",
+    login_password="Password",
+    login_button="Sign in",
+    logout_button="Sign out",
 )
 
 _STRINGS: dict[str, UiStrings] = {"pl": _PL, "en": _EN}

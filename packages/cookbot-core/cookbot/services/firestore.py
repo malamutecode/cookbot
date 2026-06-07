@@ -5,6 +5,8 @@ from google.cloud.firestore_v1.async_client import AsyncClient
 
 from cookbot.hitl.models import HITLCheckpoint
 from cookbot.models.session import Message, Session, SessionStatus
+from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
+from cookbot.models.user import DEFAULT_SOURCES, UserProfile, UserSearchPrefs
 
 log = structlog.get_logger()
 
@@ -62,6 +64,68 @@ class FirestoreService:
         from google.cloud.firestore_v1 import DELETE_FIELD
 
         await self._session_ref(session_id).update({"hitl_checkpoint": DELETE_FIELD})
+
+    def _user_ref(self, uid: str):  # type: ignore[return]
+        return self._client.collection("users").document(uid)
+
+    async def save_user_profile(self, profile: UserProfile) -> None:
+        await self._user_ref(profile.uid).set(profile.model_dump(mode="json"))
+
+    async def get_user_profile(self, uid: str) -> UserProfile | None:
+        doc = await self._user_ref(uid).get()
+        if not doc.exists:
+            return None
+        return UserProfile.model_validate(doc.to_dict())
+
+    def _spizarnia_ref(self, uid: str):  # type: ignore[return]
+        return self._client.collection("users").document(uid).collection("spizarnia").document("items")
+
+    async def get_spizarnia(self, uid: str) -> Spizarnia:
+        doc = await self._spizarnia_ref(uid).get()
+        if not doc.exists:
+            return Spizarnia(uid=uid)
+        return Spizarnia.model_validate({**doc.to_dict(), "uid": uid})
+
+    async def save_spizarnia(self, spizarnia: Spizarnia) -> None:
+        await self._spizarnia_ref(spizarnia.uid).set(spizarnia.model_dump(mode="json"))
+
+    async def add_spizarnia_items(self, uid: str, items: list[SpizarniaItem]) -> None:
+        spizarnia = await self.get_spizarnia(uid)
+        by_name = {item.name.lower(): item for item in spizarnia.items}
+        for new_item in items:
+            key = new_item.name.lower()
+            if key in by_name:
+                by_name[key] = SpizarniaItem(
+                    name=by_name[key].name,
+                    quantity=new_item.quantity,
+                    added_at=by_name[key].added_at,
+                )
+            else:
+                by_name[key] = new_item
+        spizarnia.items = list(by_name.values())
+        spizarnia.updated_at = datetime.now(UTC)
+        await self.save_spizarnia(spizarnia)
+
+    async def remove_spizarnia_item(self, uid: str, item_name: str) -> None:
+        spizarnia = await self.get_spizarnia(uid)
+        key = item_name.lower()
+        spizarnia.items = [i for i in spizarnia.items if i.name.lower() != key]
+        spizarnia.updated_at = datetime.now(UTC)
+        await self.save_spizarnia(spizarnia)
+
+    def _search_prefs_ref(self, uid: str):  # type: ignore[return]
+        return self._client.collection("users").document(uid).collection("prefs").document("search")
+
+    async def get_search_prefs(self, uid: str) -> UserSearchPrefs:
+        doc = await self._search_prefs_ref(uid).get()
+        if not doc.exists:
+            prefs = UserSearchPrefs(uid=uid, sources=list(DEFAULT_SOURCES))
+            await self.save_search_prefs(prefs)
+            return prefs
+        return UserSearchPrefs.model_validate({**doc.to_dict(), "uid": uid})
+
+    async def save_search_prefs(self, prefs: UserSearchPrefs) -> None:
+        await self._search_prefs_ref(prefs.uid).set(prefs.model_dump(mode="json"))
 
     async def expire_old_sessions(self, ttl_hours: int) -> int:
         cutoff = datetime.now(UTC) - timedelta(hours=ttl_hours)

@@ -1,36 +1,29 @@
-import asyncio
-from datetime import UTC, datetime
-
 import structlog
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from datetime import UTC, datetime
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from cookbot.agents.ingredient import build_ingredient_agent, intent_to_prompt
-from cookbot.agents.intake import build_intake_agent
-from cookbot.hitl.gate import HITLGate
-from cookbot.hitl.models import HITLResponse
+from app.config.settings import get_settings
+from cookbot.agents.chat import ChatAgentDeps, OnboardingState, build_chat_agent, stream_chat_response
 from cookbot.hitl.persistence import restore_checkpoint
-from cookbot.models.recipe import Recipe, RecipeSource, UserIntent
-from cookbot.orchestrator.session import SessionOrchestrator
+from cookbot.models.calendar import CalendarState
+from cookbot.models.spizarnia import SpizarniaItem
+from cookbot.models.recipe import RecipeSource
+from cookbot.models.user import DEFAULT_SOURCES, UserSearchPrefs
 from cookbot.protocols.ws_messages import (
     WsInbound,
     WsMessageType,
-    ws_send_agent_update,
+    ws_send_calendar_add,
+    ws_send_calendar_remove,
     ws_send_error,
     ws_send_final_recipe,
     ws_send_hitl_checkpoint,
+    ws_send_recipe_options,
+    ws_send_shopping_list_update,
     ws_send_token,
 )
 
 log = structlog.get_logger()
 router = APIRouter()
-
-
-async def _receive_text(websocket: WebSocket) -> str:
-    raw = await websocket.receive_text()
-    try:
-        return WsInbound.model_validate_json(raw).content or ""
-    except Exception:
-        return raw.strip()
 
 
 async def _receive_inbound(websocket: WebSocket) -> WsInbound:
@@ -42,9 +35,13 @@ async def _receive_inbound(websocket: WebSocket) -> WsInbound:
 
 
 @router.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
+async def websocket_endpoint(
+    websocket: WebSocket,
+    session_id: str,
+    use_spizarnia: bool = Query(default=False),
+    dev_uid: str = Query(default=""),
+) -> None:
     firestore = websocket.app.state.firestore
-    settings = websocket.app.state.settings
 
     session = await firestore.get_session(session_id)
     if session is None:
@@ -55,108 +52,141 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=4003)
         return
 
+    # Resolve uid — try Bearer token first, then DEV_UID bypass (header or query param)
+    uid: str | None = None
+    settings = get_settings()
+    auth_header = websocket.headers.get("authorization", "")
+    x_dev_uid = websocket.headers.get("x-dev-uid", "") or dev_uid
+    if x_dev_uid and settings.dev_uid and x_dev_uid == settings.dev_uid:
+        uid = x_dev_uid
+    elif auth_header.startswith("Bearer "):
+        token = auth_header.removeprefix("Bearer ").strip()
+        try:
+            import firebase_admin.auth
+            from app.middleware.auth import _get_firebase_app
+            _get_firebase_app()
+            decoded = firebase_admin.auth.verify_id_token(token)
+            uid = decoded["uid"]
+        except Exception:
+            pass
+
+    if session.uid is not None and uid != session.uid:
+        await websocket.close(code=4001)
+        return
+
     await websocket.accept()
 
     config = _get_tenant_config()
     ui = config.ui
 
+    # Load spiżarnia items if toggle is on
+    spizarnia_items: list[SpizarniaItem] = []
+    if use_spizarnia and uid is not None:
+        spizarnia = await firestore.get_spizarnia(uid)
+        spizarnia_items = spizarnia.items
+
+    # Load search prefs — use user's saved prefs if authenticated, else fall back to defaults
+    if uid is not None:
+        prefs = await firestore.get_search_prefs(uid)
+    else:
+        prefs = UserSearchPrefs(uid="", sources=list(DEFAULT_SOURCES))
+    search_site_filter = prefs.site_filter()
+    allow_ai_generated = prefs.allow_ai_generated
+
     try:
-        # ── Reconnect: re-send pending HITL checkpoint if one exists ─────
+        # Re-send pending HITL checkpoint on reconnect
         pending = await restore_checkpoint(session_id, firestore)
         if pending is not None:
             await ws_send_hitl_checkpoint(websocket, pending, ui.hitl)
 
+        # Send greeting (and spiżarnia announcement if applicable)
         await ws_send_token(websocket, content=ui.greeting)
+        if use_spizarnia and spizarnia_items:
+            items_str = ", ".join(i.name for i in spizarnia_items)
+            await ws_send_token(websocket, content=f"Używam składników z Twojej spiżarni: {items_str}.")
 
-        # ── Onboarding: 5 questions ──────────────────────────────────────
-        answers: list[str] = []
-        for question in ui.intake_questions:
-            await ws_send_token(websocket, content=question)
-            answers.append(await _receive_text(websocket))
-
-        await ws_send_token(websocket, content=ui.thinking)
-
-        # ── IntakeAgent: answers → UserIntent ────────────────────────────
-        intake_agent = build_intake_agent(config)
-        combined = "\n".join(
-            f"Q: {q}\nA: {a}" for q, a in zip(ui.intake_questions, answers)
+        # ── Connection-scoped state ───────────────────────────────────────
+        # These live for the entire WebSocket connection lifetime.
+        # deps.onboarding accumulates across turns; message_history grows each turn.
+        agent = build_chat_agent(config)
+        deps = ChatAgentDeps(
+            config=config,
+            search_site_filter=search_site_filter,
+            allow_ai_generated=allow_ai_generated,
         )
-        intake_result = await intake_agent.run(combined)
-        intent: UserIntent = intake_result.output
+        message_history: list = []
 
-        # ── IngredientAgent: UserIntent → ParsedIngredients ──────────────
-        ingredient_agent = build_ingredient_agent(config)
-        ing_result = await ingredient_agent.run(intent_to_prompt(intent))
-        ingredients = ing_result.output
-
-        time_str = str(intent.max_time_minutes) if intent.max_time_minutes else "—"
-        items_str = ", ".join(ingredients.items) or "—"
-        await ws_send_token(
-            websocket,
-            content=ui.summary_prefix.format(
-                dish=intent.dish_type, time=time_str, items=items_str
-            ),
+        spiz_suffix = (
+            f"\n[Pantry: {', '.join(i.name for i in spizarnia_items)}]"
+            if spizarnia_items else ""
         )
 
-        # ── Set up HITL gate ─────────────────────────────────────────────
-        gate = HITLGate(session_id=session_id, firestore=firestore)
+        # ── Main chat loop ────────────────────────────────────────────────
+        while True:
+            msg = await _receive_inbound(websocket)
 
-        # ── WS-side HITL driver (concurrent with orchestrator) ───────────
-        # Runs as a background task: waits for each checkpoint, sends it to
-        # the client, waits for the HITL_RESPONSE message, forwards it to gate.
-        hitl_done = asyncio.Event()
+            if msg.type in (WsMessageType.HITL_RESPONSE, WsMessageType.SPIZARNIA_RESPONSE):
+                continue
 
-        async def hitl_driver() -> None:
-            try:
-                while not hitl_done.is_set():
-                    try:
-                        checkpoint = await asyncio.wait_for(gate.get_checkpoint(), timeout=3600.0)
-                    except asyncio.TimeoutError:
-                        break
-                    await ws_send_hitl_checkpoint(websocket, checkpoint, ui.hitl)
-                    msg = await _receive_inbound(websocket)
-                    approved = msg.approved if msg.approved is not None else False
-                    response = HITLResponse(approved=approved, modification=msg.modification)
-                    await gate.submit_response(response)
-            except WebSocketDisconnect:
-                pass
-            except Exception as exc:
-                log.exception("hitl_driver_error", session_id=session_id, error=str(exc))
+            user_text = (msg.content or "").strip()
+            if not user_text:
+                continue
 
-        hitl_task = asyncio.create_task(hitl_driver())
+            # Refresh calendar from this message (frontend sends current state)
+            deps.calendar = msg.calendar or CalendarState()
 
-        # ── Orchestrator callbacks ───────────────────────────────────────
-        async def on_token(content: str) -> None:
-            await ws_send_token(websocket, content=content)
+            # Reset per-turn side-effect collectors
+            deps.calendar_adds = []
+            deps.calendar_removes = []
+            deps.shopping_list_items = None
+            deps.recipe_options = []
+            deps.recipe_ready_this_turn = False
 
-        async def on_agent_update(agent: str, status: str) -> None:
-            await ws_send_agent_update(websocket, agent=agent, status=status)
+            # Keep history bounded — drop oldest user/assistant pairs but never cut
+            # mid-tool-call (a tool result must always follow its tool_calls message).
+            if len(message_history) > 10:
+                # Find the first index where we can safely start: a ModelRequest (user turn).
+                # ModelRequest has kind="request", ModelResponse has kind="response".
+                cut = len(message_history) - 10
+                while cut < len(message_history) and getattr(message_history[cut], 'kind', None) != 'request':
+                    cut += 1
+                message_history[:] = message_history[cut:]
 
-        async def on_final_recipe(recipe: Recipe, source: RecipeSource) -> None:
-            await ws_send_final_recipe(websocket, recipe=recipe, source=source)
+            # Stream agent response — message_history is updated inside the block
+            async with stream_chat_response(
+                agent, deps, message_history, user_text + spiz_suffix
+            ) as tokens:
+                async for token in tokens:
+                    await ws_send_token(websocket, content=token)
 
-        async def on_error(message: str) -> None:
-            await ws_send_error(websocket, message=message)
-
-        # ── Run orchestrator ─────────────────────────────────────────────
-        orchestrator = SessionOrchestrator(config, firestore)
-        await orchestrator.run(
-            session_id=session_id,
-            intent=intent,
-            ingredients=ingredients,
-            gate=gate,
-            on_token=on_token,
-            on_agent_update=on_agent_update,
-            on_final_recipe=on_final_recipe,
-            on_error=on_error,
-        )
-
-        hitl_done.set()
-        hitl_task.cancel()
-        try:
-            await hitl_task
-        except asyncio.CancelledError:
-            pass
+            # Emit side-effects
+            log.info("ws_turn_end",
+                recipe_ready=deps.recipe_ready_this_turn,
+                last_recipe_source=deps.last_recipe.source if deps.last_recipe else None,
+                recipe_options_count=len(deps.recipe_options),
+                calendar_adds=len(deps.calendar_adds),
+            )
+            # final_recipe first — recipe card must appear before any new proposals
+            if deps.recipe_ready_this_turn and deps.last_recipe is not None and deps.last_recipe.source != "not_found":
+                source_enum = (
+                    RecipeSource.WEB_SEARCH
+                    if deps.last_recipe.source == "web_search"
+                    else RecipeSource.AI_GENERATED
+                )
+                await ws_send_final_recipe(websocket, deps.last_recipe.recipe, source_enum)
+            if deps.recipe_options:
+                await ws_send_recipe_options(websocket, deps.recipe_options)
+            seen_cal_ids: set[str] = set()
+            for entry in deps.calendar_adds:
+                if entry.id not in seen_cal_ids:
+                    seen_cal_ids.add(entry.id)
+                    await ws_send_calendar_add(websocket, entry)
+            for entry_id in deps.calendar_removes:
+                await ws_send_calendar_remove(websocket, entry_id)
+            if deps.shopping_list_items is not None:
+                sl = deps.shopping_list_items
+                flat = [i.name for i in sl.items]
+                await ws_send_shopping_list_update(websocket, flat, replace=True, structured=sl)
 
     except WebSocketDisconnect:
         log.info("ws_disconnect", session_id=session_id)

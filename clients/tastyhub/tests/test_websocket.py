@@ -1,5 +1,5 @@
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch, AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,12 +7,10 @@ from fastapi.testclient import TestClient
 from app.config.settings import Settings
 from app.main import app
 from app.middleware.auth import get_tenant_config
-from cookbot.models.recipe import ParsedIngredients, Recipe, UserIntent
 from cookbot.models.session import Session, SessionStatus
+from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
 from cookbot.models.tenant import TenantConfig
 from cookbot.protocols.ws_messages import WsMessageType
-
-from datetime import UTC, datetime, timedelta
 
 TEST_TENANT_ID = "tastyhub"
 TEST_API_KEY = "tk_test_key"
@@ -25,28 +23,14 @@ _test_config = TenantConfig(
     allowed_origins=[],
 )
 
-_INTENT = UserIntent(
-    dish_type="pasta",
-    servings=2,
-    max_time_minutes=30,
-    available_ingredients=["pasta"],
-    free_notes="",
-)
 
-_INGREDIENTS = ParsedIngredients(
-    items=["pasta"],
-    must_use=[],
-    dietary_hints=[],
-    missing_staples=[],
-)
-
-
-def _make_session(session_id: str, *, expired: bool = False) -> Session:
+def _make_session(session_id: str, *, expired: bool = False, uid: str | None = None) -> Session:
     now = datetime.now(UTC)
     expires_at = now - timedelta(hours=1) if expired else now + timedelta(hours=24)
     return Session(
         session_id=session_id,
         tenant_id=TEST_TENANT_ID,
+        uid=uid,
         status=SessionStatus.ACTIVE,
         created_at=now,
         expires_at=expires_at,
@@ -72,18 +56,15 @@ def _make_mock_settings() -> MagicMock:
     s.google_cloud_project = "test-project"
     s.firestore_database = "(default)"
     s.openai_api_key = "sk-test"
-    s.openai_model = "gpt-4o-mini"
+    s.model_chat = "gpt-4o-mini"
+    s.model_recipe_gen = "gpt-4o-mini"
+    s.model_web_search = "gpt-4o-mini"
+    s.model_recipe_options = "gpt-4o-mini"
+    s.model_shopping_list = "gpt-4o-mini"
     s.max_hitl_rounds = 3
     s.firestore_emulator_host = ""
+    s.dev_uid = ""
     return s
-
-
-def _agent_mock(output) -> MagicMock:
-    result = MagicMock()
-    result.output = output
-    agent = AsyncMock()
-    agent.run = AsyncMock(return_value=result)
-    return agent
 
 
 @pytest.fixture()
@@ -127,19 +108,41 @@ def client_no_session() -> TestClient:
     del app.state.firestore
 
 
-# ── WebSocket connection tests ────────────────────────────────────────────────
+# ── Fake streaming chat agent ────────────────────────────────────────────────
+
+def _patch_chat_agent(token: str = "Hello from mock agent!"):
+    """Patches build_chat_agent + stream_chat_response.
+
+    stream_chat_response is now an async context manager that yields an async
+    iterator of tokens.  The mock must match that contract.
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_stream_cm(*_a, **_kw):
+        async def _tokens():
+            yield token
+        yield _tokens()
+
+    mock_agent = MagicMock()
+    return (
+        patch("app.api.websocket.build_chat_agent", return_value=mock_agent),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream_cm),
+    )
+
+
+# ── Connection tests ─────────────────────────────────────────────────────────
 
 def test_ws_connect_valid_session_receives_greeting(
     client_with_session: TestClient, valid_session_id: str
 ) -> None:
     """First message after connect must be a greeting token."""
-    with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
-        greeting = ws.receive_json()
-        assert greeting["type"] == WsMessageType.TOKEN
-        assert len(greeting["content"]) > 10  # non-empty greeting
-        first_question = ws.receive_json()
-        assert first_question["type"] == WsMessageType.TOKEN
-        assert len(first_question["content"]) > 10  # non-empty first question
+    p1, p2 = _patch_chat_agent()
+    with p1, p2:
+        with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
+            greeting = ws.receive_json()
+            assert greeting["type"] == WsMessageType.TOKEN
+            assert len(greeting["content"]) > 5
 
 
 def test_ws_connect_expired_session_closes_4003(
@@ -156,64 +159,95 @@ def test_ws_connect_unknown_session_closes_4004(client_no_session: TestClient) -
             ws.receive_json()
 
 
-def test_ws_intake_five_questions_sent(
+def test_ws_send_message_receives_token_response(
     client_with_session: TestClient, valid_session_id: str
 ) -> None:
-    """Server sends exactly 5 questions and waits for an answer between each."""
-    with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
-        ws.receive_json()  # greeting
+    """After sending a user message, the agent response token arrives."""
+    from contextlib import asynccontextmanager
+    call_count = 0
 
-        for i in range(5):
-            q = ws.receive_json()
-            assert q["type"] == WsMessageType.TOKEN
-            assert len(q["content"]) > 10
-            ws.send_text(f'{{"type":"message","content":"answer {i}"}}')
+    @asynccontextmanager
+    async def _fake_stream(*_a, **_kw):
+        nonlocal call_count
+        call_count += 1
+        async def _tokens():
+            yield "Oto przepis na pastę!"
+        yield _tokens()
 
-
-def test_ws_full_pipeline_final_recipe_delivered(
-    client_with_session: TestClient, valid_session_id: str
-) -> None:
-    """After answering all 5 questions, the final recipe message arrives."""
-    recipe = Recipe(
-        name="Test Pasta",
-        description="A simple pasta.",
-        ingredients=["pasta", "tomato"],
-        steps=["Boil pasta.", "Add sauce.", "Serve."],
-        prep_time_minutes=5,
-        cook_time_minutes=20,
-        difficulty="Easy",
-        servings=2,
-        tips=[],
-    )
-
-    _intake_module = "app.api.websocket.build_intake_agent"
-    _ingredient_module = "app.api.websocket.build_ingredient_agent"
-    _orchestrator_module = "app.api.websocket.SessionOrchestrator"
-
-    from cookbot.models.recipe import RecipeSource
-
-    async def fake_orchestrator_run(**kwargs) -> None:
-        await kwargs["on_final_recipe"](recipe, RecipeSource.WEB_SEARCH)
-
-    mock_orchestrator = MagicMock()
-    mock_orchestrator.run = AsyncMock(side_effect=fake_orchestrator_run)
-
+    mock_agent = MagicMock()
     with (
-        patch(_intake_module, return_value=_agent_mock(_INTENT)),
-        patch(_ingredient_module, return_value=_agent_mock(_INGREDIENTS)),
-        patch(_orchestrator_module, return_value=mock_orchestrator),
+        patch("app.api.websocket.build_chat_agent", return_value=mock_agent),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
     ):
         with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
-            ws.receive_json()  # greeting
+            ws.receive_json()  # greeting token
+            ws.send_text('{"type":"message","content":"zrób mi pastę"}')
+            reply = ws.receive_json()
+            assert reply["type"] == WsMessageType.TOKEN
+            assert "pasta" in reply["content"].lower() or "przepis" in reply["content"].lower()
 
-            answers = ["pasta", "2", "30 minutes", "spinach", "no"]
-            for answer in answers:
-                ws.receive_json()  # question
-                ws.send_text(f'{{"type":"message","content":"{answer}"}}')
+    assert call_count == 1
 
-            ws.receive_json()  # "Got it! Let me work out..."
-            ws.receive_json()  # "Understood! Dish: ..."
 
-            final = ws.receive_json()
-            assert final["type"] == WsMessageType.FINAL_RECIPE
-            assert final["recipe"]["name"] == "Test Pasta"
+# ── Spiżarnia toggle tests ────────────────────────────────────────────────────
+
+_SPIZ_UID = "spiz-user-001"
+_SPIZARNIA = Spizarnia(
+    uid=_SPIZ_UID,
+    items=[
+        SpizarniaItem(name="kurczak", quantity="2 piersi", added_at=datetime.now(UTC)),
+        SpizarniaItem(name="szpinak", quantity="", added_at=datetime.now(UTC)),
+    ],
+)
+
+
+@pytest.fixture()
+def client_spiz_session(valid_session_id: str) -> TestClient:
+    app.state.settings = _make_mock_settings()
+    mock_fs = _make_mock_firestore(session=_make_session(valid_session_id, uid=None))
+    mock_fs.get_spizarnia = AsyncMock(return_value=_SPIZARNIA)
+    app.state.firestore = mock_fs
+    app.dependency_overrides[get_tenant_config] = lambda: _test_config
+
+    with (
+        patch("app.middleware.auth._get_firebase_app"),
+        patch("firebase_admin.auth.verify_id_token", return_value={"uid": _SPIZ_UID}),
+    ):
+        with TestClient(app, raise_server_exceptions=True) as c:
+            yield c
+
+    app.dependency_overrides.clear()
+    del app.state.settings
+    del app.state.firestore
+
+
+def test_ws_spizarnia_toggle_sends_announcement(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """With ?use_spizarnia=true the server sends a spiżarnia announcement token."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_stream(*_a, **_kw):
+        async def _tokens():
+            yield "Tutaj przepis!"
+        yield _tokens()
+
+    mock_agent = MagicMock()
+    received: list[dict] = []
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=mock_agent),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        url = f"/v1/ws/{valid_session_id}?use_spizarnia=true"
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(url, headers=headers) as ws:
+            for _ in range(5):
+                msg = ws.receive_json()
+                received.append(msg)
+
+    contents = [m.get("content", "") for m in received]
+    assert any("spiżarni" in c.lower() or "kurczak" in c.lower() for c in contents), (
+        "Expected spiżarnia announcement mentioning pantry items"
+    )

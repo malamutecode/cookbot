@@ -4,7 +4,9 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from cookbot.hitl.models import HITLCheckpoint
-from cookbot.models.recipe import Recipe, RecipeSource
+from cookbot.models.calendar import CalendarEntry, CalendarState
+from cookbot.models.recipe import Recipe, RecipeSource, RecipeSummary
+from cookbot.models.shopping import ShoppingList
 from cookbot.models.ui_strings import HitlLabels
 
 if TYPE_CHECKING:
@@ -18,6 +20,11 @@ class WsMessageType(str, Enum):
     HITL_CHECKPOINT = "hitl_checkpoint"
     HITL_RESPONSE = "hitl_response"
     FINAL_RECIPE = "final_recipe"
+    RECIPE_OPTIONS = "recipe_options"
+    SPIZARNIA_OFFER = "spizarnia_offer"
+    SPIZARNIA_RESPONSE = "spizarnia_response"
+    CALENDAR_UPDATE = "calendar_update"
+    SHOPPING_LIST_UPDATE = "shopping_list_update"
     ERROR = "error"
 
 
@@ -26,6 +33,9 @@ class WsInbound(BaseModel):
     content: str | None = None
     approved: bool | None = None
     modification: str | None = None
+    add_missing: bool | None = None       # for spizarnia_response
+    remove_used: bool | None = None       # for spizarnia_response
+    calendar: CalendarState | None = None  # current calendar state sent by frontend
 
 
 class WsOutToken(BaseModel):
@@ -62,6 +72,31 @@ class WsOutFinalRecipe(BaseModel):
     type: WsMessageType = WsMessageType.FINAL_RECIPE
     recipe: Recipe
     source: RecipeSource
+
+
+class WsOutSpizarniaOffer(BaseModel):
+    type: WsMessageType = WsMessageType.SPIZARNIA_OFFER
+    missing_ingredients: list[str]
+    used_from_spizarnia: list[str]
+
+
+class WsOutCalendarUpdate(BaseModel):
+    type: WsMessageType = WsMessageType.CALENDAR_UPDATE
+    action: str          # "add" | "remove"
+    entry: CalendarEntry | None = None
+    entry_id: str | None = None  # used for remove
+
+
+class WsOutRecipeOptions(BaseModel):
+    type: WsMessageType = WsMessageType.RECIPE_OPTIONS
+    proposals: list[RecipeSummary]
+
+
+class WsOutShoppingListUpdate(BaseModel):
+    type: WsMessageType = WsMessageType.SHOPPING_LIST_UPDATE
+    items: list[str]                  # flat names — always present for backward compat
+    replace: bool = False             # if True, replace all; if False, merge
+    structured: ShoppingList | None = None  # structured sections when available
 
 
 class WsOutError(BaseModel):
@@ -102,6 +137,46 @@ async def ws_send_final_recipe(
     websocket: "WebSocket", recipe: Recipe, source: RecipeSource
 ) -> None:
     await websocket.send_text(WsOutFinalRecipe(recipe=recipe, source=source).model_dump_json())
+
+
+async def ws_send_spizarnia_offer(
+    websocket: "WebSocket",
+    missing_ingredients: list[str],
+    used_from_spizarnia: list[str],
+) -> None:
+    await websocket.send_text(
+        WsOutSpizarniaOffer(
+            missing_ingredients=missing_ingredients,
+            used_from_spizarnia=used_from_spizarnia,
+        ).model_dump_json()
+    )
+
+
+async def ws_send_calendar_add(websocket: "WebSocket", entry: CalendarEntry) -> None:
+    await websocket.send_text(
+        WsOutCalendarUpdate(action="add", entry=entry).model_dump_json()
+    )
+
+
+async def ws_send_calendar_remove(websocket: "WebSocket", entry_id: str) -> None:
+    await websocket.send_text(
+        WsOutCalendarUpdate(action="remove", entry_id=entry_id).model_dump_json()
+    )
+
+
+async def ws_send_shopping_list_update(
+    websocket: "WebSocket",
+    items: list[str],
+    replace: bool = False,
+    structured: ShoppingList | None = None,
+) -> None:
+    await websocket.send_text(
+        WsOutShoppingListUpdate(items=items, replace=replace, structured=structured).model_dump_json()
+    )
+
+
+async def ws_send_recipe_options(websocket: "WebSocket", proposals: list[RecipeSummary]) -> None:
+    await websocket.send_text(WsOutRecipeOptions(proposals=proposals).model_dump_json())
 
 
 async def ws_send_error(websocket: "WebSocket", message: str) -> None:

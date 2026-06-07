@@ -28,6 +28,19 @@ class Recipe(BaseModel):
     difficulty: str  # "Easy" | "Medium" | "Hard"
     servings: int
     tips: list[str]
+    source_url: str | None = None   # set when recipe found via web search
+    image_url: str | None = None    # og:image or prominent photo from the recipe page
+
+
+class RecipeSummary(BaseModel):
+    name: str
+    description: str
+    difficulty: str          # "Łatwe" | "Średnie" | "Trudne" (or English equiv)
+    total_time_minutes: int
+    key_ingredients: list[str]
+    source: str              # "web_search" | "ai_generated"
+    source_url: str | None = None  # page URL for web_search proposals — skip re-search on pick
+    image_url: str | None = None  # dish photo thumbnail, set when available
 
 
 class RecipeSource(str, Enum):

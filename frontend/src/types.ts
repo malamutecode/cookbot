@@ -1,0 +1,109 @@
+export type Page = 'chat' | 'calendar' | 'sources'
+
+export interface SpizarniaItem {
+  name: string
+  quantity: string
+  added_at?: string
+}
+
+export interface Spizarnia {
+  uid: string
+  items: SpizarniaItem[]
+  updated_at?: string
+}
+
+export interface ShopItem {
+  name: string
+  checked: boolean
+  section?: string  // set when coming from ShoppingListAgent
+}
+
+export interface ShoppingSection {
+  name: string
+  items: ShopItem[]
+}
+
+export interface Recipe {
+  name: string
+  description: string
+  ingredients: string[]
+  steps: string[]
+  prep_time_minutes: number
+  cook_time_minutes: number
+  difficulty: string
+  servings: number
+  tips?: string[]
+  source_url?: string
+  image_url?: string
+}
+
+export interface HitlLabels {
+  heading: string
+  approve: string
+  modify: string
+  reject: string
+  modify_placeholder: string
+  modify_send: string
+  approved_note: string
+  rejected_note: string
+  modification_note: string
+}
+
+export interface UiStrings {
+  greeting?: string
+  thinking?: string
+  spizarnia_heading?: string
+  spizarnia_empty?: string
+  spizarnia_toggle?: string
+  spizarnia_add_placeholder?: string
+  spizarnia_add_button?: string
+  shopping_list_heading?: string
+  shopping_list_clear?: string
+  spizarnia_offer_add?: string
+  spizarnia_offer_remove?: string
+  spizarnia_offer_confirm?: string
+  spizarnia_offer_skip?: string
+  login_heading?: string
+  login_email?: string
+  login_password?: string
+  login_button?: string
+  logout_button?: string
+  hitl?: HitlLabels
+}
+
+export interface RecipeSummary {
+  name: string
+  description: string
+  difficulty: string
+  total_time_minutes: number
+  key_ingredients: string[]
+  source: string
+  source_url?: string
+  image_url?: string
+}
+
+// WebSocket message types
+export type WsOutMessage =
+  | { type: 'token'; content: string }
+  | { type: 'agent_update'; agent: string; status: string }
+  | { type: 'final_recipe'; recipe: Recipe; source: string }
+  | { type: 'recipe_options'; proposals: RecipeSummary[] }
+  | { type: 'hitl_checkpoint'; recipe: Recipe; round: number; labels: HitlLabels }
+  | { type: 'spizarnia_offer'; missing_ingredients: string[]; used_from_spizarnia: string[] }
+  | { type: 'calendar_update'; action: 'add' | 'remove'; entry?: CalendarEntry; entry_id?: string }
+  | { type: 'shopping_list_update'; items: string[]; replace: boolean; structured?: { items: { name: string; quantity: string; section: string }[]; sections: string[] } }
+  | { type: 'error'; message: string }
+
+export interface CalendarDay {
+  date: string // ISO date string YYYY-MM-DD
+  recipes: CalendarEntry[]
+  freeText: string
+}
+
+export interface CalendarEntry {
+  id: string
+  recipeName: string
+  ingredients: string[]
+  date?: string    // ISO YYYY-MM-DD — set when added via agent
+  recipe?: Recipe  // full recipe for detail view
+}

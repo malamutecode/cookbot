@@ -6,7 +6,7 @@ from cookbot.models.tenant import TenantConfig
 
 def build_recipe_gen_agent(config: TenantConfig) -> Agent[None, Recipe]:
     return Agent(
-        config.model,
+        config.model_recipe_gen,
         output_type=Recipe,
         defer_model_check=True,
         instructions=f"""
