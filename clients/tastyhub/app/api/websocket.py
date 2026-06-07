@@ -132,15 +132,11 @@ async def websocket_endpoint(
             if not user_text:
                 continue
 
-            # Refresh calendar from this message (frontend sends current state)
+            # Per-turn input: refresh calendar from this message (frontend sends current state)
             deps.calendar = msg.calendar or CalendarState()
 
-            # Reset per-turn side-effect collectors
-            deps.calendar_adds = []
-            deps.calendar_removes = []
-            deps.shopping_list_items = None
-            deps.recipe_options = []
-            deps.recipe_ready_this_turn = False
+            # Clear per-turn output collectors (contract lives in reset_turn)
+            deps.reset_turn()
 
             # Keep history bounded — drop oldest user/assistant pairs but never cut
             # mid-tool-call (a tool result must always follow its tool_calls message).

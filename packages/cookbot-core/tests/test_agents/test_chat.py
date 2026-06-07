@@ -125,6 +125,53 @@ def test_agent_registers_expected_tools() -> None:
     }
 
 
+# ── ChatAgentDeps.reset_turn ──────────────────────────────────────────────────
+
+def test_reset_turn_clears_collectors_and_preserves_durable() -> None:
+    from cookbot.agents.chat import FoundRecipe
+    from cookbot.models.recipe import RecipeSummary
+
+    proposal = RecipeSummary(
+        name="Pasta", description="d", difficulty="Easy",
+        total_time_minutes=20, key_ingredients=["pasta"], source="ai_generated",
+    )
+    deps = _make_deps(
+        # durable fields
+        onboarding=OnboardingState(dish_type="pasta", servings=2),
+        last_recipe=FoundRecipe(recipe=_RECIPE, source="ai_generated"),
+        last_proposals=[proposal],
+        # per-turn input
+        search_site_filter="site:example.com",
+        allow_ai_generated=False,
+        # per-turn output collectors (should all be wiped)
+        recipe_ready_this_turn=True,
+        calendar_adds=[CalendarEntry(id="1", date="2026-06-01",
+                                     recipe_name="X", ingredients=["a"])],
+        calendar_removes=["zzz"],
+        shopping_list_items=ShoppingList(items=[], sections=[]),
+        recipe_options=[proposal],
+    )
+
+    deps.reset_turn()
+
+    # Per-turn output collectors cleared
+    assert deps.recipe_ready_this_turn is False
+    assert deps.calendar_adds == []
+    assert deps.calendar_removes == []
+    assert deps.shopping_list_items is None
+    assert deps.recipe_options == []
+
+    # Connection-durable fields untouched
+    assert deps.onboarding.dish_type == "pasta"
+    assert deps.onboarding.servings == 2
+    assert deps.last_recipe is not None
+    assert deps.last_proposals == [proposal]
+
+    # Per-turn input fields untouched (handler refreshes these, not reset_turn)
+    assert deps.search_site_filter == "site:example.com"
+    assert deps.allow_ai_generated is False
+
+
 # ── update_onboarding tool ────────────────────────────────────────────────────
 
 async def test_update_onboarding_sets_fields() -> None:

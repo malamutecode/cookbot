@@ -114,31 +114,47 @@ class ShoppingListResult(BaseModel):
 
 class ChatAgentDeps(BaseModel):
     """
-    Lifetime: one instance per WebSocket connection.
+    One instance per WebSocket connection. Fields fall into three lifetimes:
 
-    - onboarding: accumulates across turns until complete.
-    - calendar: refreshed each turn from the WS message payload.
-    - calendar_adds / calendar_removes / shopping_list_items: reset each turn
-      by the WS handler before calling stream_chat_response.
+    1. Connection-durable — created once, survive every turn (do NOT reset).
+    2. Per-turn input — refreshed by the WS handler at the start of each turn
+       from the message payload / user's Firestore prefs.
+    3. Per-turn output collectors — written by tools during a turn, drained into
+       WS messages after it, then cleared by reset_turn() before the next turn.
+
+    The reset contract lives in reset_turn() (called by the WS handler), NOT as
+    loose lines scattered in the handler — add a collector here and to reset_turn()
+    together so the two never drift.
     """
     model_config = {"arbitrary_types_allowed": True}
-    config: Any                      # TenantConfig
-    calendar: CalendarState = CalendarState()
-    onboarding: OnboardingState = OnboardingState()
-    # last found recipe — set by get_recipe_details, consumed by add_to_calendar
-    last_recipe: FoundRecipe | None = None
-    # set to True by get_recipe_details each turn it runs; reset by WS handler each turn
-    recipe_ready_this_turn: bool = False
-    # proposals from propose_recipes — indexed 1-4, consumed by get_recipe_details
-    last_proposals: list[RecipeSummary] = []
-    # search prefs — injected by WS handler each turn from user's Firestore prefs
-    search_site_filter: str = ""   # e.g. "site:kwestiasmaku.com OR site:aniagotuje.pl"
-    allow_ai_generated: bool = True  # when False, skip RecipeGenAgent fallback
-    # per-turn side-effect collectors
+
+    # ── 1. Connection-durable ────────────────────────────────────────────────
+    config: Any                                        # TenantConfig
+    onboarding: OnboardingState = OnboardingState()    # accumulates until complete
+    last_recipe: FoundRecipe | None = None             # set by get_recipe_details, used by add_to_calendar
+    last_proposals: list[RecipeSummary] = []           # proposals (1-4), consumed by get_recipe_details
+
+    # ── 2. Per-turn input (refreshed each turn by the WS handler) ─────────────
+    calendar: CalendarState = CalendarState()          # current calendar from the WS payload
+    search_site_filter: str = ""                       # e.g. "site:kwestiasmaku.com OR site:aniagotuje.pl"
+    allow_ai_generated: bool = True                    # when False, skip RecipeGenAgent fallback
+
+    # ── 3. Per-turn output collectors (cleared by reset_turn) ─────────────────
+    recipe_ready_this_turn: bool = False               # set by get_recipe_details
     calendar_adds: list[CalendarEntry] = []
     calendar_removes: list[str] = []
     shopping_list_items: ShoppingList | None = None
-    recipe_options: list[RecipeSummary] = []  # set by propose_recipes, sent as WS side-effect
+    recipe_options: list[RecipeSummary] = []           # set by propose_recipes
+
+    def reset_turn(self) -> None:
+        """Clear all per-turn output collectors. Call once at the start of every
+        WS turn, before streaming the agent response. Connection-durable and
+        per-turn-input fields are intentionally left untouched."""
+        self.recipe_ready_this_turn = False
+        self.calendar_adds = []
+        self.calendar_removes = []
+        self.shopping_list_items = None
+        self.recipe_options = []
 
 
 # ── Agent factory (call once per connection) ──────────────────────────────────

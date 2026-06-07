@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 32 — ready to implement (STEP 31 done, awaiting PAUSE review)
+## Current Step: → STEP 33 — ready to implement (STEP 32 done, awaiting PAUSE review)
 
 ---
 
@@ -436,24 +436,18 @@ one flat `ChatAgentDeps`.
 
 ### Tasks
 
-- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — add a method to `ChatAgentDeps`:
-  ```python
-  def reset_turn(self) -> None:
-      """Clear all per-turn fields. Call once at the start of every WS turn."""
-      self.calendar_adds = []
-      self.calendar_removes = []
-      self.shopping_list_items = None
-      self.recipe_options = []
-      self.recipe_ready_this_turn = False
-  ```
-- [ ] Add a class docstring / comment block grouping the fields by lifetime
-      (connection-durable · per-turn input · per-turn output) so the boundary is visible.
-- [ ] `clients/tastyhub/app/api/websocket.py` — replace the 5 manual reset lines
-      with `deps.reset_turn()` (keep `deps.calendar = msg.calendar or CalendarState()`
-      separate — it's a per-turn *input*, not a collector).
-- [ ] Tests: `packages/cookbot-core/tests/test_agents/test_chat.py` — assert that
-      after `reset_turn()` every collector is empty and `last_recipe` / `onboarding`
-      are untouched (durable fields survive a reset).
+- [x] `packages/cookbot-core/cookbot/agents/chat.py` — added `reset_turn()` to
+      `ChatAgentDeps` (clears recipe_ready_this_turn, calendar_adds, calendar_removes,
+      shopping_list_items, recipe_options).
+- [x] Regrouped `ChatAgentDeps` fields into three labelled lifetime sections
+      (connection-durable · per-turn input · per-turn output) with a docstring
+      stating the reset contract lives in `reset_turn()`.
+- [x] `clients/tastyhub/app/api/websocket.py` — replaced the 5 manual reset lines
+      with `deps.reset_turn()`; kept `deps.calendar = msg.calendar or CalendarState()`
+      separate as a per-turn input.
+- [x] Test `test_reset_turn_clears_collectors_and_preserves_durable` — asserts all
+      collectors cleared and durable (onboarding/last_recipe/last_proposals) +
+      per-turn-input (search_site_filter/allow_ai_generated) fields survive.
 
 ### Verify
 ```
