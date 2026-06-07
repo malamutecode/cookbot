@@ -6,7 +6,11 @@ from cookbot.models.recipe import ParsedIngredients, Recipe, UserIntent
 from cookbot.models.tenant import TenantConfig
 
 _WEB_SEARCH_MAX_RESULTS = 5
-_MAX_PAGE_CONTENT = 12_000
+# Recipe pages (e.g. aniagotuje.pl, kwestiasmaku.com) carry heavy nav/cookie/
+# comment markup before and after the recipe; 12k often truncated the recipe
+# itself. 24k keeps the recipe body intact without ballooning per-call tokens
+# (which risks OpenAI TPM rate limits on smaller orgs).
+_MAX_PAGE_CONTENT = 24_000
 
 _EXTRACT_INSTRUCTIONS = """
 ## Steps
@@ -21,7 +25,11 @@ _EXTRACT_INSTRUCTIONS = """
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
-3. If the page has no real recipe (404, paywall, unrelated), return null.
+3. Only return null if the page genuinely has NO recipe (a 404 page, a paywall,
+   a category/listing page, or an unrelated article). A normal recipe page —
+   even one buried in lots of navigation, ads, or comments — must be extracted.
+   Recipe sites often place ingredients and steps far down the markdown; read the
+   whole page before concluding there is no recipe.
 
 ## Rules
 - NEVER invent ingredients or steps — extract only what is on the page.
@@ -95,7 +103,8 @@ def web_search_prompt(ingredients: ParsedIngredients, intent: UserIntent, site_f
     base_query = f"{dish}{ingr}"
 
     if site_filter:
-        search_query = f"({site_filter}) {base_query}"
+        # Unparenthesised — `(site:a OR site:b)` is unreliable on DDG.
+        search_query = f"{base_query} {site_filter}"
     else:
         search_query = base_query
 

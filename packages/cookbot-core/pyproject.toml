@@ -17,6 +17,9 @@ dependencies = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "integration: hits real external services (OpenAI, DuckDuckGo, Firestore emulator). Excluded from the fast unit run via `-m 'not integration'`.",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

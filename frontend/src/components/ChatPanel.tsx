@@ -2,6 +2,24 @@ import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
 import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay } from '../types'
 import { WS_BASE, DEV_MODE, DEV_UID } from '../config'
 
+// The calendar grid matches day cells by exact YYYY-MM-DD string. Coerce common
+// agent date forms (unpadded, day-first, year-less) so the entry actually shows.
+function normalizeIsoDate(raw?: string): string | undefined {
+  if (!raw) return raw
+  const s = raw.trim()
+  const thisYear = new Date().getFullYear()
+  // The LLM sometimes emits a stale past year (e.g. 2023); a meal plan is never
+  // in the past, so bump any year before the current one up to the current year.
+  const fixYear = (y: string) => String(Math.max(parseInt(y, 10), thisYear))
+  let m = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(s)       // YYYY-M-D
+  if (m) return `${fixYear(m[1])}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`
+  m = /^(\d{1,2})[./](\d{1,2})[./](\d{4})$/.exec(s)            // D.M.YYYY
+  if (m) return `${fixYear(m[3])}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`
+  m = /^(\d{1,2})[./](\d{1,2})$/.exec(s)                       // D.M (year-less)
+  if (m) return `${thisYear}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`
+  return s
+}
+
 interface Props {
   sessionId: string
   useSpizarnia: boolean
@@ -172,15 +190,17 @@ export default function ChatPanel({ sessionId, useSpizarnia, ui, shopItems, onSh
         addMsg({ kind: 'spizarnia_offer', missing: msg.missing_ingredients, used: msg.used_from_spizarnia })
         break
       case 'calendar_update':
+        console.debug('[CAL] calendar_update received:', msg.action, JSON.stringify(msg.entry ?? msg.entry_id))
         if (msg.action === 'add' && msg.entry) {
           const raw = msg.entry as CalendarEntry & { recipe_name?: string; date?: string; recipe?: Recipe }
           const entry: CalendarEntry = {
             id: raw.id,
             recipeName: raw.recipe_name ?? raw.recipeName ?? '',
             ingredients: raw.ingredients,
-            date: raw.date,
+            date: normalizeIsoDate(raw.date),
             recipe: raw.recipe ?? undefined,
           }
+          console.debug('[CAL] mapped entry → date:', entry.date, 'name:', entry.recipeName, 'rawDate:', raw.date)
           onAddToCalendarRef.current(entry)
         } else if (msg.action === 'remove' && msg.entry_id) {
           onCalendarRemoveRef.current(msg.entry_id)

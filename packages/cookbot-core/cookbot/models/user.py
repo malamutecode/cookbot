@@ -30,10 +30,26 @@ class UserSearchPrefs(BaseModel):
     allow_ai_generated: bool = True
 
     def site_filter(self) -> str:
-        """Return a DuckDuckGo site: filter string, or empty string if unrestricted."""
-        if self.search_mode == "internet_only":
+        """Hard DuckDuckGo `site:` restriction — ONLY for 'sites_only' mode.
+
+        Returns "" for 'sites_and_internet' (open web, soft preference applied via
+        preferred_sites) and 'internet_only'. A hard `site:a OR site:b` filter is
+        unreliable on DDG and can zero out results, so we only use it when the
+        user explicitly asked to restrict to their sites.
+        """
+        if self.search_mode != "sites_only":
             return ""
         enabled = [s.url for s in self.sources if s.enabled]
         if not enabled:
             return ""
         return " OR ".join(f"site:{url}" for url in enabled)
+
+    def preferred_sites(self) -> list[str]:
+        """Domains to PREFER (rank up) without excluding the open web.
+
+        Used in 'sites_and_internet' mode as a soft hint in the search prompt.
+        Empty for 'sites_only' (already hard-restricted) and 'internet_only'.
+        """
+        if self.search_mode != "sites_and_internet":
+            return []
+        return [s.url for s in self.sources if s.enabled]

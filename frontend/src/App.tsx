@@ -9,7 +9,7 @@ import CalendarPage from './components/CalendarPage'
 import SourcesPage from './components/SourcesPage'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
 import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry } from './types'
-import { API_BASE } from './config'
+import { API_BASE, TEST_USER } from './config'
 
 const CAL_KEY = 'tastyhub_calendar'
 
@@ -54,6 +54,15 @@ export default function App() {
     setLoggedIn(true)
   }
 
+  // Dev convenience: when VITE_TEST_USER=true, auto-login as the dev user so the
+  // login screen is skipped during local smoke-testing. Runs once on mount.
+  useEffect(() => {
+    if (TEST_USER && !loggedIn) {
+      handleLogin(null).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   function handleLogout() {
     setLoggedIn(false)
     setIdToken(null)
@@ -66,22 +75,41 @@ export default function App() {
     saveCalendar(days)
   }
 
+  // Functional-updater variant — safe to call from the WS message closure in
+  // ChatPanel, which may hold a stale `calDays` snapshot. Always works off the
+  // latest state, then persists it.
+  function updateCalendar(fn: (prev: CalendarDay[]) => CalendarDay[]) {
+    setCalDays(prev => {
+      const next = fn(prev)
+      saveCalendar(next)
+      return next
+    })
+  }
+
   function handleAddToCalendar(entry: CalendarEntry) {
     const targetDate = entry.date ?? new Date().toISOString().slice(0, 10)
-    const existing = calDays.find(d => d.date === targetDate)
-    if (existing) {
-      if (!existing.recipes.some(r => r.id === entry.id)) {
-        handleCalendarChange(calDays.map(d => d.date === targetDate ? { ...d, recipes: [...d.recipes, entry] } : d))
+    console.debug('[CAL] handleAddToCalendar entry:', entry.recipeName, '@', targetDate, 'id:', entry.id)
+    updateCalendar(prev => {
+      const existing = prev.find(d => d.date === targetDate)
+      let next: CalendarDay[]
+      if (existing) {
+        if (existing.recipes.some(r => r.id === entry.id)) {
+          next = prev  // already there
+        } else {
+          next = prev.map(d => d.date === targetDate ? { ...d, recipes: [...d.recipes, entry] } : d)
+        }
+      } else {
+        next = [...prev, { date: targetDate, recipes: [entry], freeText: '' }]
       }
-    } else {
-      handleCalendarChange([...calDays, { date: targetDate, recipes: [entry], freeText: '' }])
-    }
+      console.debug('[CAL] calDays after add:', next.map(d => `${d.date}:${d.recipes.length}`).join(', '))
+      return next
+    })
     setPage('calendar')
   }
 
   function handleCalendarRemove(entryId: string) {
-    handleCalendarChange(
-      calDays.map(d => ({ ...d, recipes: d.recipes.filter(r => r.id !== entryId) }))
+    updateCalendar(prev =>
+      prev.map(d => ({ ...d, recipes: d.recipes.filter(r => r.id !== entryId) }))
     )
   }
 

@@ -5,8 +5,8 @@ Architecture
 ------------
 One agent instance per WebSocket connection (built once, reused across turns).
 Deps instance is also per-connection — onboarding state accumulates there across
-turns.  Per-turn side-effect fields (calendar_adds, calendar_removes,
-shopping_list_items) are reset at the start of each turn by the WS handler.
+turns.  Per-turn side-effects are appended to deps.events (ordered) by tools and
+cleared each turn by reset_turn(); the WS handler drains them in order.
 
 Onboarding flow
 ---------------
@@ -26,7 +26,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -110,6 +110,45 @@ class ShoppingListResult(BaseModel):
     date_to: str
 
 
+# ── Turn events (ordered side-effects, drained by the WS handler) ──────────────
+# Tools append one of these to deps.events in the order they occur during a turn.
+# The WS handler emits them in that order — it no longer hand-orders side-effects.
+
+class FinalRecipeEvent(BaseModel):
+    kind: Literal["final_recipe"] = "final_recipe"
+    recipe: Recipe
+    source: str  # "web_search" | "ai_generated"
+
+
+class RecipeOptionsEvent(BaseModel):
+    kind: Literal["recipe_options"] = "recipe_options"
+    proposals: list[RecipeSummary]
+
+
+class CalendarAddEvent(BaseModel):
+    kind: Literal["calendar_add"] = "calendar_add"
+    entry: CalendarEntry
+
+
+class CalendarRemoveEvent(BaseModel):
+    kind: Literal["calendar_remove"] = "calendar_remove"
+    entry_id: str
+
+
+class ShoppingListEvent(BaseModel):
+    kind: Literal["shopping_list"] = "shopping_list"
+    shopping_list: ShoppingList
+
+
+TurnEvent = (
+    FinalRecipeEvent
+    | RecipeOptionsEvent
+    | CalendarAddEvent
+    | CalendarRemoveEvent
+    | ShoppingListEvent
+)
+
+
 # ── Agent deps (one instance per WS connection) ───────────────────────────────
 
 class ChatAgentDeps(BaseModel):
@@ -119,12 +158,13 @@ class ChatAgentDeps(BaseModel):
     1. Connection-durable — created once, survive every turn (do NOT reset).
     2. Per-turn input — refreshed by the WS handler at the start of each turn
        from the message payload / user's Firestore prefs.
-    3. Per-turn output collectors — written by tools during a turn, drained into
-       WS messages after it, then cleared by reset_turn() before the next turn.
+    3. Per-turn output — `events`, an ordered list of side-effects appended by
+       tools as they run, drained into WS messages by the handler after the turn,
+       then cleared by reset_turn() before the next turn.
 
     The reset contract lives in reset_turn() (called by the WS handler), NOT as
-    loose lines scattered in the handler — add a collector here and to reset_turn()
-    together so the two never drift.
+    loose lines scattered in the handler — add a per-turn field here and to
+    reset_turn() together so the two never drift.
     """
     model_config = {"arbitrary_types_allowed": True}
 
@@ -136,25 +176,67 @@ class ChatAgentDeps(BaseModel):
 
     # ── 2. Per-turn input (refreshed each turn by the WS handler) ─────────────
     calendar: CalendarState = CalendarState()          # current calendar from the WS payload
-    search_site_filter: str = ""                       # e.g. "site:kwestiasmaku.com OR site:aniagotuje.pl"
+    search_site_filter: str = ""                       # hard site: restriction (sites_only mode only)
+    preferred_sites: list[str] = []                    # soft-prefer domains (sites_and_internet mode)
     allow_ai_generated: bool = True                    # when False, skip RecipeGenAgent fallback
 
-    # ── 3. Per-turn output collectors (cleared by reset_turn) ─────────────────
-    recipe_ready_this_turn: bool = False               # set by get_recipe_details
-    calendar_adds: list[CalendarEntry] = []
-    calendar_removes: list[str] = []
-    shopping_list_items: ShoppingList | None = None
-    recipe_options: list[RecipeSummary] = []           # set by propose_recipes
+    # ── 3. Per-turn output (cleared by reset_turn) ────────────────────────────
+    # Ordered side-effects, appended by tools in call order, drained by the WS handler.
+    events: list[TurnEvent] = []
 
     def reset_turn(self) -> None:
-        """Clear all per-turn output collectors. Call once at the start of every
-        WS turn, before streaming the agent response. Connection-durable and
+        """Clear the per-turn output events. Call once at the start of every WS
+        turn, before streaming the agent response. Connection-durable and
         per-turn-input fields are intentionally left untouched."""
-        self.recipe_ready_this_turn = False
-        self.calendar_adds = []
-        self.calendar_removes = []
-        self.shopping_list_items = None
-        self.recipe_options = []
+        self.events = []
+
+
+# ── Date normalisation ────────────────────────────────────────────────────────
+
+def _normalize_date(raw: str) -> str:
+    """Coerce a date string into strict YYYY-MM-DD.
+
+    The frontend calendar matches day cells by exact ISO string, so a value like
+    "2026-06-4", "4.06.2026", "04/06/2026" or "4.06" (year-less) would silently
+    fail to render. We accept the common forms the LLM emits and zero-pad; a
+    year-less date assumes the current year. If we can't parse it, return the
+    input unchanged (better to pass it through than to crash the turn).
+
+    Past-year guard: the LLM frequently emits a stale year (e.g. 2023) from its
+    training prior even when told today's date. A meal plan is never in the past,
+    so any year BEFORE the current year is bumped to the current year.
+    """
+    import re  # noqa: PLC0415
+    from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+
+    s = (raw or "").strip()
+    try:
+        this_year = datetime.now(ZoneInfo("Europe/Warsaw")).year
+    except Exception:
+        this_year = datetime.now(timezone(timedelta(hours=2))).year
+
+    def _fix_year(y: int) -> int:
+        return this_year if y < this_year else y
+
+    # ISO-ish: YYYY-M-D or YYYY/M/D
+    m = re.fullmatch(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", s)
+    if m:
+        y, mo, d = (int(g) for g in m.groups())
+        return f"{_fix_year(y):04d}-{mo:02d}-{d:02d}"
+
+    # Day-first: D.M.YYYY or D/M/YYYY
+    m = re.fullmatch(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", s)
+    if m:
+        d, mo, y = (int(g) for g in m.groups())
+        return f"{_fix_year(y):04d}-{mo:02d}-{d:02d}"
+
+    # Year-less day-first: D.M or D/M → assume current year
+    m = re.fullmatch(r"(\d{1,2})[./](\d{1,2})", s)
+    if m:
+        d, mo = (int(g) for g in m.groups())
+        return f"{this_year:04d}-{mo:02d}-{d:02d}"
+
+    return s
 
 
 # ── Recipe resolution (extracted from the get_recipe_details tool) ─────────────
@@ -203,15 +285,21 @@ async def resolve_recipe(
 
     if selected and selected.source == "web_search":
         servings = ob.servings or 2
+
+        # 1. If the proposal knows its URL, fetch that page directly.
         if selected.source_url:
-            # URL already known from options step — fetch directly, no second search
             log.info("get_recipe_details_fetch_known_url", url=selected.source_url)
             fetch_agent = build_web_fetch_agent(config)
             recipe = (await fetch_agent.run(
                 web_fetch_prompt(selected.source_url, servings)
             )).output
-        else:
-            # No URL known — fall back to a new search by recipe name
+
+        # 2. If we have no recipe yet (no URL, or the fetch failed to extract),
+        #    search the web by recipe name. The user picked a WEB option, so we
+        #    keep trying the web before any AI fallback.
+        if recipe is None:
+            if selected.source_url:
+                log.info("get_recipe_details_fetch_failed_searching", url=selected.source_url)
             ws_intent = UserIntent(
                 dish_type=selected.name,
                 servings=servings,
@@ -229,6 +317,11 @@ async def resolve_recipe(
                 recipe = (await ws_agent.run(
                     web_search_prompt(ws_parsed, ws_intent, site_filter="")
                 )).output
+        # Provenance safety net: a web recipe must carry a source_url. If the
+        # extractor omitted it but the proposal knew the URL, backfill it so the
+        # frontend always shows a "Źródło" link for web recipes.
+        if recipe is not None and not recipe.source_url and selected.source_url:
+            recipe.source_url = selected.source_url
         log.info("get_recipe_details_result",
             recipe_name=selected.name,
             found=recipe is not None,
@@ -332,11 +425,21 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
     async def _current_date(_ctx: RunContext[ChatAgentDeps]) -> str:
         from datetime import datetime, timezone, timedelta  # noqa: PLC0415
         try:
-            today = datetime.now(ZoneInfo("Europe/Warsaw")).date().isoformat()
+            now = datetime.now(ZoneInfo("Europe/Warsaw")).date()
         except Exception:
             # tzdata not installed — fall back to UTC+2 (CET+1/CEST offset)
-            today = datetime.now(timezone(timedelta(hours=2))).date().isoformat()
-        return f"## Calendar\nToday is {today}. Use this exact date when the user says 'today' or 'dzisiaj'."
+            now = datetime.now(timezone(timedelta(hours=2))).date()
+        today = now.isoformat()
+        year = now.year
+        return (
+            f"## Calendar\n"
+            f"Today is {today} (current year: {year}).\n"
+            f"All calendar dates MUST use this year unless the user states a different year explicitly.\n"
+            f"- 'today' / 'dzisiaj' → {today}.\n"
+            f"- A date without a year (e.g. '06.08', '8 sierpnia', '12th') → use year {year}, "
+            f"giving YYYY-MM-DD. Never use a past year like 2023 or 2024.\n"
+            f"- If that date has already passed this year, still use {year} unless the user says otherwise."
+        )
 
     # Dynamic system prompt — injected on every turn, shows exactly what's
     # been collected and what the model MUST do next.
@@ -472,11 +575,12 @@ MANDATORY STEPS FOR THIS TURN:
                 parsed, intent,
                 site_filter=ctx.deps.search_site_filter,
                 allow_ai_generated=ctx.deps.allow_ai_generated,
+                preferred_sites=ctx.deps.preferred_sites,
             )
         )
         proposals = result.output.proposals[:4]
-        ctx.deps.last_proposals = proposals
-        ctx.deps.recipe_options = proposals
+        ctx.deps.last_proposals = proposals          # durable — consumed by get_recipe_details
+        ctx.deps.events.append(RecipeOptionsEvent(proposals=proposals))
         return {
             "count": len(proposals),
             "names": [p.name for p in proposals],
@@ -498,9 +602,11 @@ MANDATORY STEPS FOR THIS TURN:
             site_filter=ctx.deps.search_site_filter,
             allow_ai_generated=ctx.deps.allow_ai_generated,
         )
-        ctx.deps.last_recipe = found
-        ctx.deps.recipe_ready_this_turn = True
-        ctx.deps.last_proposals = []  # clear so selection prompt doesn't repeat
+        ctx.deps.last_recipe = found                 # durable — used by add_to_calendar
+        ctx.deps.last_proposals = []                 # clear so selection prompt doesn't repeat
+        # Emit the recipe card unless nothing was found (placeholder stays silent).
+        if found.source != "not_found":
+            ctx.deps.events.append(FinalRecipeEvent(recipe=found.recipe, source=found.source))
         return found
 
     @agent.tool
@@ -511,6 +617,9 @@ MANDATORY STEPS FOR THIS TURN:
         target_date: str,
     ) -> CalendarAddResult:
         """Add a recipe to the meal calendar on target_date (YYYY-MM-DD)."""
+        # Normalise the date to strict YYYY-MM-DD — the frontend calendar matches
+        # day cells by exact string, so "2026-06-4" or "4.06" would silently fail.
+        norm_date = _normalize_date(target_date)
         # Attach the full recipe from the last find_recipe call so the frontend
         # can show a detail modal when the user clicks the calendar entry.
         recipe_dict: dict | None = None
@@ -518,13 +627,18 @@ MANDATORY STEPS FOR THIS TURN:
             recipe_dict = ctx.deps.last_recipe.recipe.model_dump()
         entry = CalendarEntry(
             id=str(uuid.uuid4()),
-            date=target_date,
+            date=norm_date,
             recipe_name=recipe_name,
             ingredients=ingredients,
             recipe=recipe_dict,
         )
-        ctx.deps.calendar_adds.append(entry)
-        return CalendarAddResult(entry_id=entry.id, date=target_date, recipe_name=recipe_name)
+        # Guard against emitting the same entry id twice in one turn.
+        already = {
+            ev.entry.id for ev in ctx.deps.events if isinstance(ev, CalendarAddEvent)
+        }
+        if entry.id not in already:
+            ctx.deps.events.append(CalendarAddEvent(entry=entry))
+        return CalendarAddResult(entry_id=entry.id, date=norm_date, recipe_name=recipe_name)
 
     @agent.tool
     async def remove_from_calendar(
@@ -534,7 +648,7 @@ MANDATORY STEPS FOR THIS TURN:
         """Remove a meal from the calendar by its ID."""
         exists = any(e.id == entry_id for e in ctx.deps.calendar.entries)
         if exists:
-            ctx.deps.calendar_removes.append(entry_id)
+            ctx.deps.events.append(CalendarRemoveEvent(entry_id=entry_id))
         return CalendarRemoveResult(removed=exists, entry_id=entry_id)
 
     @agent.tool
@@ -550,13 +664,13 @@ MANDATORY STEPS FOR THIS TURN:
         ]
         all_ingredients = [ing for e in in_range for ing in e.ingredients]
         if not all_ingredients:
-            ctx.deps.shopping_list_items = ShoppingList(items=[], sections=[])
+            ctx.deps.events.append(ShoppingListEvent(shopping_list=ShoppingList(items=[], sections=[])))
             return ShoppingListResult(item_count=0, sections=[], date_from=date_from, date_to=date_to)
 
         raw_text = "\n".join(all_ingredients)
         sl_agent = build_shopping_list_agent(ctx.deps.config)
         shopping_list: ShoppingList = (await sl_agent.run(raw_text)).output
-        ctx.deps.shopping_list_items = shopping_list
+        ctx.deps.events.append(ShoppingListEvent(shopping_list=shopping_list))
         return ShoppingListResult(
             item_count=len(shopping_list.items),
             sections=shopping_list.sections,
@@ -585,7 +699,7 @@ async def stream_chat_response(
                 ...
         # After the block: history is updated in-place with this turn's messages.
 
-    Side-effects (calendar_adds etc.) are readable from deps after the block.
+    Side-effects are readable from deps.events (ordered) after the block.
     """
     async with agent.run_stream(
         user_message,

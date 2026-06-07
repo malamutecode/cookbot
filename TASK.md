@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 34 — ready to implement (STEP 33 done, awaiting PAUSE review)
+## Current Step: → STEP 35 — ready to implement (STEP 34 done; live app smoke-test due before STEP 35)
 
 ---
 
@@ -504,17 +504,20 @@ in order.
 
 ### Tasks
 
-- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — define a typed union
+- [x] `packages/cookbot-core/cookbot/agents/chat.py` — defined the typed union
       `TurnEvent = FinalRecipeEvent | RecipeOptionsEvent | CalendarAddEvent
-      | CalendarRemoveEvent | ShoppingListEvent` (Pydantic models).
-- [ ] Replace the per-turn collector fields with `events: list[TurnEvent] = []`;
-      tools append events in the order they occur. `reset_turn()` clears it.
-- [ ] `clients/tastyhub/app/api/websocket.py` — replace the 169-189 block with a
-      single loop: `for ev in deps.events: await _emit(websocket, ev)` where
-      `_emit` matches on event type. Move the recipe-before-options ordering into
-      tool call order, not the handler.
-- [ ] Keep calendar-add dedup (currently in handler) inside `add_to_calendar`.
-- [ ] Tests: assert tool calls produce the expected ordered `events` list.
+      | CalendarRemoveEvent | ShoppingListEvent` (each a Pydantic model with a
+      `kind` Literal discriminator).
+- [x] Replaced the per-turn collector fields with `events: list[TurnEvent] = []`;
+      tools append in call order; `reset_turn()` clears it. Durable `last_recipe`
+      / `last_proposals` kept (they're read across tools/turns, not emission).
+- [x] `clients/tastyhub/app/api/websocket.py` — replaced the emission block with
+      `for ev in deps.events: await _emit_event(websocket, ev)`; `_emit_event`
+      uses `match` on event type. Recipe-before-options ordering now follows tool
+      call order. final_recipe emission gated in the tool (skipped for not_found).
+- [x] Calendar-add dedup moved into `add_to_calendar` (guards duplicate entry ids).
+- [x] Tests: event presence/shape per tool + 3 ordering/gating tests
+      (final_recipe appended, not_found emits none, call-order preserved).
 
 ### Verify
 ```
@@ -620,6 +623,92 @@ uv run pytest -m "not integration" -q                         (fast, all green, 
 ```
 
 ### ⏸ PAUSE 37
+
+---
+
+## STEP 38 — Proposal card images + source link
+
+**Goal:** Recipe proposal cards should (a) show a dish image and (b) for web
+proposals, show a clickable link to the source page — like the final recipe card
+already does. Surfaced during the STEP 34 smoke-test (2026-06-07): proposal
+images never appear and proposals carry no visible source link.
+
+### Background / why deferred
+- `recipe_options.py` currently instructs the agent to leave `image_url=null`
+  and not call image search. The PydanticAI version in use exposes only
+  `duckduckgo_search_tool` (text) — there is **no image-search tool** — so the
+  original STEP 30 `search_images` approach is unavailable. TASK STEP 30's
+  "images" checkboxes are therefore stale vs. the code.
+- The final recipe card already renders `image_url` (og:image from the fetched
+  page) and a `source_url` "Źródło ↗" link; proposal cards render neither
+  consistently (image only if present; no source link at all).
+
+### Tasks
+
+- [ ] **Proposal source link (frontend, low-risk, do first):**
+      `frontend/src/components/ChatPanel.tsx` proposal card (~line 404-424) —
+      when `p.source === 'web_search' && p.source_url`, render a clickable
+      "Źródło ↗" link (reuse `styles.sourceLink`). AI proposals show no link.
+- [ ] **Proposal images — pick an approach (no image API available):**
+      Option A (preferred): during `propose_recipes`, for each web_search
+      proposal fetch the page's og:image and set `image_url`. Cost: one fetch per
+      web proposal — measure latency before committing; consider doing it
+      concurrently with `asyncio.gather`.
+      Option B (cheap, unreliable): re-instruct the options agent to fill
+      `image_url` from search-result thumbnails; rely on the existing `onError`
+      hide for broken images.
+- [ ] Update `recipe_options.py` instructions to match whichever approach is
+      chosen (currently they forbid images).
+- [ ] Reconcile the stale STEP 30 image checkboxes / note in this file.
+- [ ] Tests: proposal with `source_url` exposes a link; image approach unit-tested
+      with stubbed fetch (no network).
+
+### Verify
+```
+Manual: complete onboarding → proposal cards show images for at least web
+  proposals, and a clickable Źródło link on web proposals → click opens the page.
+```
+
+### ⏸ PAUSE 38
+
+---
+
+## STEP 39 — Web recipe extraction reliability
+
+**Goal:** When the user picks a web proposal, the page should actually be
+extracted into a full recipe. Surfaced in the STEP 34 smoke-test (2026-06-07):
+picking a real ofeminin.pl page logged `fetch_known_url` → `fetch_failed` →
+web-search fallback also `found=False` → silently AI-generated a (link-less)
+recipe. The fallback chain works, but it shouldn't be needed this often — real
+recipe pages are failing extraction.
+
+### Evidence
+```
+get_recipe_details_fetch_known_url url=https://www.ofeminin.pl/.../rbynp27
+get_recipe_details_fetch_failed_searching url=https://www.ofeminin.pl/.../rbynp27
+get_recipe_details_result found=False source_url=None
+→ events=['final_recipe']   # AI-generated, no source link (correct, but not what the user picked)
+```
+
+### Likely causes to investigate
+- `web_fetch` returns markdown the extractor can't parse (JS-rendered content,
+  consent walls, or recipe data only in JSON-LD `<script type="application/ld+json">`
+  that the markdown conversion drops).
+- `_MAX_PAGE_CONTENT` (24k) truncates before the recipe on very long pages.
+- The extraction prompt bails to `null` on cluttered pages despite the softened
+  instruction.
+
+### Tasks
+- [ ] Reproduce extraction failure for ofeminin.pl + aniagotuje.pl URLs in a
+      standalone script/integration test; capture what `web_fetch` actually returns.
+- [ ] Consider parsing JSON-LD `Recipe` schema (most PL recipe sites embed it) as
+      a more reliable extraction path than free-text markdown.
+- [ ] Decide whether to keep silent AI fallback for web picks, or surface
+      "couldn't read that page" (see STEP-38-era decision: pure-AI gets no link).
+- [ ] Add an integration test: picking a known-good web proposal yields a
+      web_search recipe with ingredients/steps/source_url (not an AI fallback).
+
+### ⏸ PAUSE 39
 
 ---
 

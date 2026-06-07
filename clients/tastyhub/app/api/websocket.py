@@ -3,8 +3,20 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from app.config.settings import get_settings
-from cookbot.agents.chat import ChatAgentDeps, OnboardingState, build_chat_agent, stream_chat_response
+from cookbot.agents.chat import (
+    CalendarAddEvent,
+    CalendarRemoveEvent,
+    ChatAgentDeps,
+    FinalRecipeEvent,
+    OnboardingState,
+    RecipeOptionsEvent,
+    ShoppingListEvent,
+    TurnEvent,
+    build_chat_agent,
+    stream_chat_response,
+)
 from cookbot.hitl.persistence import restore_checkpoint
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from cookbot.models.calendar import CalendarState
 from cookbot.models.spizarnia import SpizarniaItem
 from cookbot.models.recipe import RecipeSource
@@ -24,6 +36,50 @@ from cookbot.protocols.ws_messages import (
 
 log = structlog.get_logger()
 router = APIRouter()
+
+
+async def _emit_event(websocket: WebSocket, ev: TurnEvent) -> None:
+    """Translate one ordered TurnEvent into its WebSocket message."""
+    match ev:
+        case FinalRecipeEvent():
+            source_enum = (
+                RecipeSource.WEB_SEARCH
+                if ev.source == "web_search"
+                else RecipeSource.AI_GENERATED
+            )
+            await ws_send_final_recipe(websocket, ev.recipe, source_enum)
+        case RecipeOptionsEvent():
+            await ws_send_recipe_options(websocket, ev.proposals)
+        case CalendarAddEvent():
+            await ws_send_calendar_add(websocket, ev.entry)
+        case CalendarRemoveEvent():
+            await ws_send_calendar_remove(websocket, ev.entry_id)
+        case ShoppingListEvent():
+            flat = [i.name for i in ev.shopping_list.items]
+            await ws_send_shopping_list_update(
+                websocket, flat, replace=True, structured=ev.shopping_list
+            )
+
+
+def _is_user_turn(msg: object) -> bool:
+    """True if msg is a ModelRequest that contains a real user prompt (not just
+    tool-return parts). Cutting history here can never orphan a tool message."""
+    if not isinstance(msg, ModelRequest):
+        return False
+    return any(isinstance(p, UserPromptPart) for p in msg.parts)
+
+
+def _safe_history_cut(history: list, keep_at_least: int) -> int:
+    """Index of the earliest user turn at or after (len - keep_at_least).
+
+    Returns 0 (no trim) if no safe cut point exists, so we never slice the
+    history in a way that leaves a tool-return without its tool_calls message.
+    """
+    start = len(history) - keep_at_least
+    for i in range(start, len(history)):
+        if _is_user_turn(history[i]):
+            return i
+    return 0
 
 
 async def _receive_inbound(websocket: WebSocket) -> WsInbound:
@@ -91,6 +147,7 @@ async def websocket_endpoint(
     else:
         prefs = UserSearchPrefs(uid="", sources=list(DEFAULT_SOURCES))
     search_site_filter = prefs.site_filter()
+    preferred_sites = prefs.preferred_sites()
     allow_ai_generated = prefs.allow_ai_generated
 
     try:
@@ -112,6 +169,7 @@ async def websocket_endpoint(
         deps = ChatAgentDeps(
             config=config,
             search_site_filter=search_site_filter,
+            preferred_sites=preferred_sites,
             allow_ai_generated=allow_ai_generated,
         )
         message_history: list = []
@@ -138,15 +196,13 @@ async def websocket_endpoint(
             # Clear per-turn output collectors (contract lives in reset_turn)
             deps.reset_turn()
 
-            # Keep history bounded — drop oldest user/assistant pairs but never cut
-            # mid-tool-call (a tool result must always follow its tool_calls message).
+            # Keep history bounded — drop oldest messages but only ever cut at a
+            # real user turn, never mid-tool-call. A tool-return is also a
+            # ModelRequest, so we must look for a UserPromptPart, not just kind.
             if len(message_history) > 10:
-                # Find the first index where we can safely start: a ModelRequest (user turn).
-                # ModelRequest has kind="request", ModelResponse has kind="response".
-                cut = len(message_history) - 10
-                while cut < len(message_history) and getattr(message_history[cut], 'kind', None) != 'request':
-                    cut += 1
-                message_history[:] = message_history[cut:]
+                cut = _safe_history_cut(message_history, keep_at_least=10)
+                if cut > 0:
+                    message_history[:] = message_history[cut:]
 
             # Stream agent response — message_history is updated inside the block
             async with stream_chat_response(
@@ -155,34 +211,11 @@ async def websocket_endpoint(
                 async for token in tokens:
                     await ws_send_token(websocket, content=token)
 
-            # Emit side-effects
-            log.info("ws_turn_end",
-                recipe_ready=deps.recipe_ready_this_turn,
-                last_recipe_source=deps.last_recipe.source if deps.last_recipe else None,
-                recipe_options_count=len(deps.recipe_options),
-                calendar_adds=len(deps.calendar_adds),
-            )
-            # final_recipe first — recipe card must appear before any new proposals
-            if deps.recipe_ready_this_turn and deps.last_recipe is not None and deps.last_recipe.source != "not_found":
-                source_enum = (
-                    RecipeSource.WEB_SEARCH
-                    if deps.last_recipe.source == "web_search"
-                    else RecipeSource.AI_GENERATED
-                )
-                await ws_send_final_recipe(websocket, deps.last_recipe.recipe, source_enum)
-            if deps.recipe_options:
-                await ws_send_recipe_options(websocket, deps.recipe_options)
-            seen_cal_ids: set[str] = set()
-            for entry in deps.calendar_adds:
-                if entry.id not in seen_cal_ids:
-                    seen_cal_ids.add(entry.id)
-                    await ws_send_calendar_add(websocket, entry)
-            for entry_id in deps.calendar_removes:
-                await ws_send_calendar_remove(websocket, entry_id)
-            if deps.shopping_list_items is not None:
-                sl = deps.shopping_list_items
-                flat = [i.name for i in sl.items]
-                await ws_send_shopping_list_update(websocket, flat, replace=True, structured=sl)
+            # Drain the ordered side-effect events the tools appended this turn.
+            log.info("ws_turn_end", event_count=len(deps.events),
+                     events=[ev.kind for ev in deps.events])
+            for ev in deps.events:
+                await _emit_event(websocket, ev)
 
     except WebSocketDisconnect:
         log.info("ws_disconnect", session_id=session_id)

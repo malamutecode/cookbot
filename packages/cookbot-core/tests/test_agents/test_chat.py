@@ -14,8 +14,13 @@ from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
 from cookbot.agents.chat import (
+    CalendarAddEvent,
+    CalendarRemoveEvent,
     ChatAgentDeps,
+    FinalRecipeEvent,
     OnboardingState,
+    RecipeOptionsEvent,
+    ShoppingListEvent,
     build_chat_agent,
     stream_chat_response,
 )
@@ -56,6 +61,11 @@ def _make_deps(calendar: CalendarState | None = None, **kwargs) -> ChatAgentDeps
 def _get_tool(agent, name):
     """Return the raw async function registered under a tool name."""
     return agent._function_toolset.tools[name].function
+
+
+def _events_of(deps, event_cls):
+    """All deps.events of a given event type, in order."""
+    return [ev for ev in deps.events if isinstance(ev, event_cls)]
 
 
 # ── OnboardingState unit tests ────────────────────────────────────────────────
@@ -127,8 +137,8 @@ def test_agent_registers_expected_tools() -> None:
 
 # ── ChatAgentDeps.reset_turn ──────────────────────────────────────────────────
 
-def test_reset_turn_clears_collectors_and_preserves_durable() -> None:
-    from cookbot.agents.chat import FoundRecipe
+def test_reset_turn_clears_events_and_preserves_durable() -> None:
+    from cookbot.agents.chat import FoundRecipe, RecipeOptionsEvent
     from cookbot.models.recipe import RecipeSummary
 
     proposal = RecipeSummary(
@@ -143,23 +153,14 @@ def test_reset_turn_clears_collectors_and_preserves_durable() -> None:
         # per-turn input
         search_site_filter="site:example.com",
         allow_ai_generated=False,
-        # per-turn output collectors (should all be wiped)
-        recipe_ready_this_turn=True,
-        calendar_adds=[CalendarEntry(id="1", date="2026-06-01",
-                                     recipe_name="X", ingredients=["a"])],
-        calendar_removes=["zzz"],
-        shopping_list_items=ShoppingList(items=[], sections=[]),
-        recipe_options=[proposal],
+        # per-turn output events (should be wiped)
+        events=[RecipeOptionsEvent(proposals=[proposal])],
     )
 
     deps.reset_turn()
 
-    # Per-turn output collectors cleared
-    assert deps.recipe_ready_this_turn is False
-    assert deps.calendar_adds == []
-    assert deps.calendar_removes == []
-    assert deps.shopping_list_items is None
-    assert deps.recipe_options == []
+    # Per-turn output events cleared
+    assert deps.events == []
 
     # Connection-durable fields untouched
     assert deps.onboarding.dish_type == "pasta"
@@ -230,9 +231,10 @@ async def test_add_to_calendar_appends_entry() -> None:
 
     result = await fn(ctx, recipe_name="Tomato Pasta",
                       ingredients=["pasta", "tomato"], target_date="2026-06-01")
-    assert len(deps.calendar_adds) == 1
-    assert deps.calendar_adds[0].recipe_name == "Tomato Pasta"
-    assert deps.calendar_adds[0].date == "2026-06-01"
+    adds = _events_of(deps, CalendarAddEvent)
+    assert len(adds) == 1
+    assert adds[0].entry.recipe_name == "Tomato Pasta"
+    assert adds[0].entry.date == "2026-06-01"
     assert result.recipe_name == "Tomato Pasta"
 
 
@@ -248,7 +250,7 @@ async def test_remove_from_calendar_unknown_id_returns_false() -> None:
 
     result = await fn(ctx, entry_id="nonexistent")
     assert result.removed is False
-    assert deps.calendar_removes == []
+    assert _events_of(deps, CalendarRemoveEvent) == []
 
 
 async def test_remove_from_calendar_known_id_returns_true() -> None:
@@ -265,7 +267,7 @@ async def test_remove_from_calendar_known_id_returns_true() -> None:
 
     result = await fn(ctx, entry_id="abc")
     assert result.removed is True
-    assert "abc" in deps.calendar_removes
+    assert [ev.entry_id for ev in _events_of(deps, CalendarRemoveEvent)] == ["abc"]
 
 
 # ── get_shopping_list tool ────────────────────────────────────────────────────
@@ -322,7 +324,9 @@ async def test_get_shopping_list_filters_by_date_range() -> None:
     assert result.sections == ["warzywa/owoce", "suche produkty"]
     assert result.date_from == "2026-06-01"
     assert result.date_to == "2026-06-05"
-    assert deps.shopping_list_items == fake_list
+    sl_events = _events_of(deps, ShoppingListEvent)
+    assert len(sl_events) == 1
+    assert sl_events[0].shopping_list == fake_list
 
 
 async def test_get_shopping_list_empty_range_skips_agent() -> None:
@@ -345,8 +349,74 @@ async def test_get_shopping_list_empty_range_skips_agent() -> None:
 
     assert result.item_count == 0
     assert result.sections == []
-    assert deps.shopping_list_items is not None
-    assert deps.shopping_list_items.items == []
+    sl_events = _events_of(deps, ShoppingListEvent)
+    assert len(sl_events) == 1
+    assert sl_events[0].shopping_list.items == []
+
+
+# ── _normalize_date ───────────────────────────────────────────────────────────
+
+import datetime as _dt  # noqa: E402
+
+
+def test_normalize_date_pads_iso() -> None:
+    from cookbot.agents.chat import _normalize_date
+    assert _normalize_date("2026-06-4") == "2026-06-04"
+    assert _normalize_date("2026-6-4") == "2026-06-04"
+    assert _normalize_date("2026/06/04") == "2026-06-04"
+
+
+def test_normalize_date_day_first_with_year() -> None:
+    from cookbot.agents.chat import _normalize_date
+    assert _normalize_date("4.06.2026") == "2026-06-04"
+    assert _normalize_date("04/6/2026") == "2026-06-04"
+
+
+def test_normalize_date_year_less_assumes_current_year() -> None:
+    from cookbot.agents.chat import _normalize_date
+    year = _dt.date.today().year
+    assert _normalize_date("4.06") == f"{year}-06-04"
+
+
+def test_normalize_date_already_iso_unchanged() -> None:
+    from cookbot.agents.chat import _normalize_date
+    year = _dt.date.today().year
+    assert _normalize_date(f"{year}-08-10") == f"{year}-08-10"
+
+
+def test_normalize_date_bumps_past_year_to_current() -> None:
+    # Regression: the agent emitted "2023-06-05" while today is 2026 → the entry
+    # landed years out of the visible calendar week and never rendered.
+    from cookbot.agents.chat import _normalize_date
+    year = _dt.date.today().year
+    assert _normalize_date("2023-06-05") == f"{year}-06-05"
+    assert _normalize_date("5.6.2022") == f"{year}-06-05"
+
+
+def test_normalize_date_keeps_future_year() -> None:
+    from cookbot.agents.chat import _normalize_date
+    year = _dt.date.today().year
+    future = year + 2
+    assert _normalize_date(f"{future}-01-15") == f"{future}-01-15"
+
+
+def test_normalize_date_passthrough_when_unparseable() -> None:
+    from cookbot.agents.chat import _normalize_date
+    assert _normalize_date("jutro") == "jutro"
+
+
+async def test_add_to_calendar_normalizes_entry_date() -> None:
+    deps = _make_deps()
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    # Unpadded date from the LLM must become a strict ISO string on the entry.
+    result = await fn(ctx, recipe_name="Pasta", ingredients=["x"], target_date="2026-06-4")
+    assert result.date == "2026-06-04"
+    adds = _events_of(deps, CalendarAddEvent)
+    assert adds[0].entry.date == "2026-06-04"
 
 
 # ── _select_proposal (pure selection logic) ───────────────────────────────────
@@ -431,10 +501,12 @@ async def test_resolve_recipe_searches_by_name_when_no_url() -> None:
 async def test_resolve_recipe_gen_fallback_when_search_empty() -> None:
     from cookbot.agents.chat import resolve_recipe
     selected = _summary("Pasta", source="web_search", url="https://x.test/p")
-    fetch_factory, _ = _stub_agent_factory(None)        # fetch finds nothing
+    fetch_factory, _ = _stub_agent_factory(None)         # fetch finds nothing
+    search_factory, _ = _stub_agent_factory(None)        # web search also empty
     gen_factory, gen_calls = _stub_agent_factory(_RECIPE)  # gen produces a recipe
 
     with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_web_search_agent", search_factory), \
          patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
         found = await resolve_recipe(
             selected, "1", OnboardingState(servings=2),
@@ -448,12 +520,14 @@ async def test_resolve_recipe_gen_fallback_when_search_empty() -> None:
 async def test_resolve_recipe_not_found_when_ai_disabled() -> None:
     from cookbot.agents.chat import resolve_recipe
     selected = _summary("Pasta", source="web_search", url="https://x.test/p")
-    fetch_factory, _ = _stub_agent_factory(None)  # fetch finds nothing
+    fetch_factory, _ = _stub_agent_factory(None)   # fetch finds nothing
+    search_factory, _ = _stub_agent_factory(None)  # web search also empty
 
     def _gen_boom(_config):  # noqa: ANN202
         raise AssertionError("RecipeGenAgent must not run when AI is disabled")
 
     with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_web_search_agent", search_factory), \
          patch("cookbot.agents.chat.build_recipe_gen_agent", _gen_boom):
         found = await resolve_recipe(
             selected, "1", OnboardingState(servings=4),
@@ -463,6 +537,52 @@ async def test_resolve_recipe_not_found_when_ai_disabled() -> None:
     assert found.source == "not_found"
     assert found.recipe.servings == 4
     assert found.recipe.steps == []
+
+
+async def test_resolve_recipe_known_url_fetch_fail_falls_back_to_search() -> None:
+    # Regression (caught by live e2e): user picks a WEB proposal, the known-URL
+    # fetch fails to extract → we must search the web by name and stay
+    # source="web_search", NOT silently AI-generate.
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Makaron ze szpinakiem", source="web_search",
+                        url="https://aniagotuje.pl/przepis/makaron-ze-szpinakiem")
+    web_recipe = _RECIPE.model_copy(update={"source_url": "https://aniagotuje.pl/x"})
+    fetch_factory, fetch_calls = _stub_agent_factory(None)        # fetch fails
+    search_factory, search_calls = _stub_agent_factory(web_recipe)  # search succeeds
+
+    def _gen_boom(_config):  # noqa: ANN202
+        raise AssertionError("must not AI-generate when web search can recover")
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_web_search_agent", search_factory), \
+         patch("cookbot.agents.chat.build_recipe_gen_agent", _gen_boom):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert len(fetch_calls) == 1          # tried the known URL first
+    assert len(search_calls) == 1         # then fell back to search
+    assert found.source == "web_search"   # stayed a web recipe
+    assert found.recipe.source_url and found.recipe.source_url.startswith("http")
+
+
+async def test_resolve_recipe_backfills_source_url_from_proposal() -> None:
+    # Fetch succeeds but the extractor omitted source_url → backfill from the
+    # proposal so a web recipe always keeps its provenance link.
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url="https://x.test/pasta")
+    recipe_no_url = _RECIPE.model_copy(update={"source_url": None})
+    fetch_factory, _ = _stub_agent_factory(recipe_no_url)
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert found.source == "web_search"
+    assert found.recipe.source_url == "https://x.test/pasta"
 
 
 async def test_resolve_recipe_ai_proposal_generates_directly() -> None:
@@ -478,6 +598,67 @@ async def test_resolve_recipe_ai_proposal_generates_directly() -> None:
 
     assert found.source == "ai_generated"
     assert len(gen_calls) == 1
+
+
+# ── Turn events: ordering and emission gating ─────────────────────────────────
+
+async def test_get_recipe_details_appends_final_recipe_event() -> None:
+    deps = _make_deps(last_proposals=[_summary("Pasta", source="ai_generated")])
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_recipe_details")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    gen_factory, _ = _stub_agent_factory(_RECIPE)
+    with patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
+        await fn(ctx, choice="1")
+
+    finals = _events_of(deps, FinalRecipeEvent)
+    assert len(finals) == 1
+    assert finals[0].source == "ai_generated"
+    assert finals[0].recipe.name == "Test Pasta"
+
+
+async def test_not_found_emits_no_final_recipe_event() -> None:
+    # web_search proposal, fetch finds nothing, AI disabled → not_found → no event
+    deps = _make_deps(
+        last_proposals=[_summary("Pasta", source="web_search", url="https://x.test/p")],
+        allow_ai_generated=False,
+    )
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_recipe_details")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    fetch_factory, _ = _stub_agent_factory(None)
+    search_factory, _ = _stub_agent_factory(None)  # web search also empty
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_web_search_agent", search_factory):
+        found = await fn(ctx, choice="1")
+
+    assert found.source == "not_found"
+    assert _events_of(deps, FinalRecipeEvent) == []   # placeholder stays silent
+    assert deps.last_recipe is not None               # still recorded for the agent
+
+
+async def test_events_preserve_tool_call_order() -> None:
+    # A turn that delivers a recipe then adds it to the calendar should produce
+    # events in call order: FinalRecipeEvent before CalendarAddEvent.
+    deps = _make_deps(last_proposals=[_summary("Pasta", source="ai_generated")])
+    agent = build_chat_agent(_CONFIG)
+    get_details = _get_tool(agent, "get_recipe_details")
+    add_cal = _get_tool(agent, "add_to_calendar")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    gen_factory, _ = _stub_agent_factory(_RECIPE)
+    with patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
+        await get_details(ctx, choice="1")
+    await add_cal(ctx, recipe_name="Test Pasta",
+                  ingredients=["pasta"], target_date="2026-06-01")
+
+    kinds = [ev.kind for ev in deps.events]
+    assert kinds == ["final_recipe", "calendar_add"]
 
 
 # ── stream_chat_response (integration, no tool calls) ────────────────────────

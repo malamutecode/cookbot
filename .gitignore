@@ -11,6 +11,8 @@ wheels/
 
 # Environment
 .env
+.env.local
+.env.*.local
 
 # Type checking / linting caches
 .ruff_cache/

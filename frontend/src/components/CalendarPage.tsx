@@ -35,6 +35,11 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
 
   const weekDates = getWeekDates(weekOffset)
 
+  if (typeof console !== 'undefined') {
+    console.debug('[CAL] CalendarPage render — week:', weekDates[0], '→', weekDates[6],
+      '| days in state:', days.map(d => `${d.date}(${d.recipes.length})`).join(', ') || '(none)')
+  }
+
   function getDayData(date: string): CalendarDay {
     return days.find(d => d.date === date) ?? { date, recipes: [], freeText: '' }
   }
