@@ -349,6 +349,137 @@ async def test_get_shopping_list_empty_range_skips_agent() -> None:
     assert deps.shopping_list_items.items == []
 
 
+# ── _select_proposal (pure selection logic) ───────────────────────────────────
+
+def _summary(name: str, source: str = "ai_generated", url: str | None = None) -> "RecipeSummary":
+    from cookbot.models.recipe import RecipeSummary
+    return RecipeSummary(
+        name=name, description="d", difficulty="Easy", total_time_minutes=20,
+        key_ingredients=["x"], source=source, source_url=url,
+    )
+
+
+def test_select_proposal_by_number() -> None:
+    from cookbot.agents.chat import _select_proposal
+    props = [_summary("A"), _summary("B"), _summary("C")]
+    assert _select_proposal(props, "2") is props[1]
+
+
+def test_select_proposal_by_name_substring() -> None:
+    from cookbot.agents.chat import _select_proposal
+    props = [_summary("Tomato Pasta"), _summary("Chicken Soup")]
+    assert _select_proposal(props, "soup") is props[1]
+
+
+def test_select_proposal_falls_back_to_first() -> None:
+    from cookbot.agents.chat import _select_proposal
+    props = [_summary("A"), _summary("B")]
+    assert _select_proposal(props, "nonsense") is props[0]
+
+
+def test_select_proposal_none_when_empty() -> None:
+    from cookbot.agents.chat import _select_proposal
+    assert _select_proposal([], "1") is None
+
+
+# ── resolve_recipe (extracted decision tree) ──────────────────────────────────
+
+def _stub_agent_factory(output):
+    """build_*_agent replacement: returns an agent whose run() yields `output`,
+    recording that it was called."""
+    calls: list[int] = []
+
+    class _Stub:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            calls.append(1)
+            return MagicMock(output=output)
+
+    return (lambda _config: _Stub()), calls
+
+
+async def test_resolve_recipe_fetches_known_url() -> None:
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url="https://x.test/pasta")
+    fetch_factory, fetch_calls = _stub_agent_factory(_RECIPE)
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert found.source == "web_search"
+    assert found.recipe.name == "Test Pasta"
+    assert len(fetch_calls) == 1  # fetched the known URL, no second search
+
+
+async def test_resolve_recipe_searches_by_name_when_no_url() -> None:
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url=None)
+    search_factory, search_calls = _stub_agent_factory(_RECIPE)
+
+    with patch("cookbot.agents.chat.build_web_search_agent", search_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert found.source == "web_search"
+    assert len(search_calls) == 1
+
+
+async def test_resolve_recipe_gen_fallback_when_search_empty() -> None:
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url="https://x.test/p")
+    fetch_factory, _ = _stub_agent_factory(None)        # fetch finds nothing
+    gen_factory, gen_calls = _stub_agent_factory(_RECIPE)  # gen produces a recipe
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert found.source == "ai_generated"
+    assert len(gen_calls) == 1
+
+
+async def test_resolve_recipe_not_found_when_ai_disabled() -> None:
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url="https://x.test/p")
+    fetch_factory, _ = _stub_agent_factory(None)  # fetch finds nothing
+
+    def _gen_boom(_config):  # noqa: ANN202
+        raise AssertionError("RecipeGenAgent must not run when AI is disabled")
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_gen_agent", _gen_boom):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=4),
+            config=_CONFIG, site_filter="", allow_ai_generated=False,
+        )
+
+    assert found.source == "not_found"
+    assert found.recipe.servings == 4
+    assert found.recipe.steps == []
+
+
+async def test_resolve_recipe_ai_proposal_generates_directly() -> None:
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Invented Dish", source="ai_generated")
+    gen_factory, gen_calls = _stub_agent_factory(_RECIPE)
+
+    with patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert found.source == "ai_generated"
+    assert len(gen_calls) == 1
+
+
 # ── stream_chat_response (integration, no tool calls) ────────────────────────
 
 async def test_stream_chat_response_yields_tokens() -> None:

@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 33 — ready to implement (STEP 32 done, awaiting PAUSE review)
+## Current Step: → STEP 34 — ready to implement (STEP 33 done, awaiting PAUSE review)
 
 ---
 
@@ -472,27 +472,16 @@ directly and the tool becomes a thin wrapper.
 
 ### Tasks
 
-- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — add module-level:
-  ```python
-  async def resolve_recipe(
-      selected: RecipeSummary | None,
-      choice: str,
-      ob: OnboardingState,
-      *,
-      config: TenantConfig,
-      site_filter: str,
-      allow_ai_generated: bool,
-  ) -> FoundRecipe:
-      """Resolve a chosen proposal to a full Recipe: fetch known URL →
-      search by name → AI-gen fallback → not_found placeholder."""
-  ```
-  Move the existing branch logic verbatim into it (no behaviour change).
-- [ ] Reduce the `get_recipe_details` tool body to: pick `selected` from
-      `last_proposals`, call `resolve_recipe(...)`, set `last_recipe` /
-      `recipe_ready_this_turn`, clear `last_proposals`, return.
-- [ ] Tests: `test_chat.py` — unit-test `resolve_recipe` directly with `TestModel`
-      sub-agents for: known-URL fetch, search-by-name, gen fallback,
-      `allow_ai_generated=False` → `source="not_found"`.
+- [x] `packages/cookbot-core/cookbot/agents/chat.py` — added module-level
+      `resolve_recipe(selected, choice, ob, *, config, site_filter, allow_ai_generated)`
+      with the decision tree moved verbatim (no behaviour change), plus a pure
+      `_select_proposal(proposals, choice)` helper.
+- [x] Reduced `get_recipe_details` to ~13 lines: `_select_proposal` →
+      `resolve_recipe(...)` → set `last_recipe`/`recipe_ready_this_turn`, clear
+      `last_proposals`, return.
+- [x] Tests in `test_chat.py`: 4 `_select_proposal` cases + 5 `resolve_recipe`
+      cases (known-URL fetch, search-by-name, gen fallback, AI-disabled→not_found,
+      ai_generated proposal) using patched stub sub-agent factories.
 
 ### Verify
 ```

@@ -157,6 +157,128 @@ class ChatAgentDeps(BaseModel):
         self.recipe_options = []
 
 
+# ── Recipe resolution (extracted from the get_recipe_details tool) ─────────────
+
+def _select_proposal(
+    proposals: list[RecipeSummary], choice: str
+) -> RecipeSummary | None:
+    """Map the user's choice ('2' or a name) to one of the shown proposals.
+
+    Falls back to the first proposal if nothing matches but proposals exist.
+    Returns None only when there are no proposals at all.
+    """
+    if not proposals:
+        return None
+    choice_stripped = choice.strip()
+    if choice_stripped.isdigit():
+        idx = int(choice_stripped) - 1
+        if 0 <= idx < len(proposals):
+            return proposals[idx]
+    lower = choice_stripped.lower()
+    for p in proposals:
+        if lower in p.name.lower() or p.name.lower() in lower:
+            return p
+    return proposals[0]
+
+
+async def resolve_recipe(
+    selected: RecipeSummary | None,
+    choice: str,
+    ob: OnboardingState,
+    *,
+    config: TenantConfig,
+    site_filter: str,
+    allow_ai_generated: bool,
+) -> FoundRecipe:
+    """Resolve a chosen proposal to a full Recipe.
+
+    Decision tree (unchanged from the original get_recipe_details body):
+      1. web_search proposal with a known URL → fetch that URL directly.
+      2. web_search proposal without a URL → search by name (retry without the
+         site filter if the filtered search finds nothing).
+      3. Nothing found yet and AI allowed → generate with RecipeGenAgent.
+      4. Nothing found and AI disabled → a "not_found" placeholder Recipe.
+    """
+    recipe: Recipe | None = None
+
+    if selected and selected.source == "web_search":
+        servings = ob.servings or 2
+        if selected.source_url:
+            # URL already known from options step — fetch directly, no second search
+            log.info("get_recipe_details_fetch_known_url", url=selected.source_url)
+            fetch_agent = build_web_fetch_agent(config)
+            recipe = (await fetch_agent.run(
+                web_fetch_prompt(selected.source_url, servings)
+            )).output
+        else:
+            # No URL known — fall back to a new search by recipe name
+            ws_intent = UserIntent(
+                dish_type=selected.name,
+                servings=servings,
+                max_time_minutes=0,
+                available_ingredients=[],
+                free_notes="",
+            )
+            ws_parsed = ParsedIngredients(items=[], must_use=[], dietary_hints=[], missing_staples=[])
+            ws_agent = build_web_search_agent(config)
+            recipe = (await ws_agent.run(
+                web_search_prompt(ws_parsed, ws_intent, site_filter)
+            )).output
+            if recipe is None and site_filter:
+                log.info("get_recipe_details_retry_no_filter", recipe_name=selected.name)
+                recipe = (await ws_agent.run(
+                    web_search_prompt(ws_parsed, ws_intent, site_filter="")
+                )).output
+        log.info("get_recipe_details_result",
+            recipe_name=selected.name,
+            found=recipe is not None,
+            source_url=recipe.source_url if recipe else None,
+        )
+
+    # For gen fallback use the full original onboarding context
+    if selected:
+        intent = UserIntent(
+            dish_type=selected.name,
+            servings=ob.servings or 2,
+            max_time_minutes=selected.total_time_minutes,
+            available_ingredients=ob.ingredients or selected.key_ingredients,
+            free_notes=ob.free_notes or "",
+        )
+    else:
+        intent = UserIntent(
+            dish_type=choice,
+            servings=ob.servings or 2,
+            max_time_minutes=ob.max_time_minutes or 0,
+            available_ingredients=ob.ingredients or [],
+            free_notes=ob.free_notes or "",
+        )
+    parsed = ParsedIngredients(items=intent.available_ingredients, must_use=[], dietary_hints=[], missing_staples=[])
+
+    if recipe is None and allow_ai_generated:
+        gen_agent = build_recipe_gen_agent(config)
+        recipe = (await gen_agent.run(recipe_gen_prompt(parsed, intent))).output
+        source = "ai_generated"
+    elif recipe is not None:
+        source = "web_search"
+    else:
+        # Web search returned nothing and AI generation is disabled —
+        # surface a minimal placeholder so the agent can inform the user.
+        recipe = Recipe(
+            name=intent.dish_type,
+            description="Nie znaleziono przepisu na tej stronie. Spróbuj zmienić ustawienia wyszukiwania.",
+            ingredients=[],
+            steps=[],
+            prep_time_minutes=0,
+            cook_time_minutes=0,
+            difficulty="Easy",
+            servings=ob.servings or 2,
+            tips=[],
+        )
+        source = "not_found"
+
+    return FoundRecipe(recipe=recipe, source=source)
+
+
 # ── Agent factory (call once per connection) ──────────────────────────────────
 
 def build_chat_agent(config: TenantConfig) -> Agent[ChatAgentDeps, str]:  # noqa: C901
@@ -367,104 +489,15 @@ MANDATORY STEPS FOR THIS TURN:
         choice: str,
     ) -> FoundRecipe:
         """Get the full recipe for the option the user chose. choice is a number (1-4) or the recipe name."""
-        cfg: TenantConfig = ctx.deps.config
-        proposals = ctx.deps.last_proposals
-        selected: RecipeSummary | None = None
-
-        if proposals:
-            choice_stripped = choice.strip()
-            if choice_stripped.isdigit():
-                idx = int(choice_stripped) - 1
-                if 0 <= idx < len(proposals):
-                    selected = proposals[idx]
-            if selected is None:
-                lower = choice_stripped.lower()
-                for p in proposals:
-                    if lower in p.name.lower() or p.name.lower() in lower:
-                        selected = p
-                        break
-            if selected is None:
-                selected = proposals[0]
-
-        ob = ctx.deps.onboarding
-
-        recipe: Recipe | None = None
-        if selected and selected.source == "web_search":
-            servings = ob.servings or 2
-            if selected.source_url:
-                # URL already known from options step — fetch directly, no second search
-                log.info("get_recipe_details_fetch_known_url", url=selected.source_url)
-                fetch_agent = build_web_fetch_agent(cfg)
-                recipe = (await fetch_agent.run(
-                    web_fetch_prompt(selected.source_url, servings)
-                )).output
-            else:
-                # No URL known — fall back to a new search by recipe name
-                ws_intent = UserIntent(
-                    dish_type=selected.name,
-                    servings=servings,
-                    max_time_minutes=0,
-                    available_ingredients=[],
-                    free_notes="",
-                )
-                ws_parsed = ParsedIngredients(items=[], must_use=[], dietary_hints=[], missing_staples=[])
-                ws_agent = build_web_search_agent(cfg)
-                recipe = (await ws_agent.run(
-                    web_search_prompt(ws_parsed, ws_intent, ctx.deps.search_site_filter)
-                )).output
-                if recipe is None and ctx.deps.search_site_filter:
-                    log.info("get_recipe_details_retry_no_filter", recipe_name=selected.name)
-                    recipe = (await ws_agent.run(
-                        web_search_prompt(ws_parsed, ws_intent, site_filter="")
-                    )).output
-            log.info("get_recipe_details_result",
-                recipe_name=selected.name,
-                found=recipe is not None,
-                source_url=recipe.source_url if recipe else None,
-            )
-
-        # For gen fallback use the full original onboarding context
-        if selected:
-            intent = UserIntent(
-                dish_type=selected.name,
-                servings=ob.servings or 2,
-                max_time_minutes=selected.total_time_minutes,
-                available_ingredients=ob.ingredients or selected.key_ingredients,
-                free_notes=ob.free_notes or "",
-            )
-        else:
-            intent = UserIntent(
-                dish_type=choice,
-                servings=ob.servings or 2,
-                max_time_minutes=ob.max_time_minutes or 0,
-                available_ingredients=ob.ingredients or [],
-                free_notes=ob.free_notes or "",
-            )
-        parsed = ParsedIngredients(items=intent.available_ingredients, must_use=[], dietary_hints=[], missing_staples=[])
-
-        if recipe is None and ctx.deps.allow_ai_generated:
-            gen_agent = build_recipe_gen_agent(cfg)
-            recipe = (await gen_agent.run(recipe_gen_prompt(parsed, intent))).output
-            source = "ai_generated"
-        elif recipe is not None:
-            source = "web_search"
-        else:
-            # Web search returned nothing and AI generation is disabled —
-            # surface a minimal placeholder so the agent can inform the user.
-            recipe = Recipe(
-                name=intent.dish_type,
-                description="Nie znaleziono przepisu na tej stronie. Spróbuj zmienić ustawienia wyszukiwania.",
-                ingredients=[],
-                steps=[],
-                prep_time_minutes=0,
-                cook_time_minutes=0,
-                difficulty="Easy",
-                servings=ob.servings or 2,
-                tips=[],
-            )
-            source = "not_found"
-
-        found = FoundRecipe(recipe=recipe, source=source)
+        selected = _select_proposal(ctx.deps.last_proposals, choice)
+        found = await resolve_recipe(
+            selected,
+            choice,
+            ctx.deps.onboarding,
+            config=ctx.deps.config,
+            site_filter=ctx.deps.search_site_filter,
+            allow_ai_generated=ctx.deps.allow_ai_generated,
+        )
         ctx.deps.last_recipe = found
         ctx.deps.recipe_ready_this_turn = True
         ctx.deps.last_proposals = []  # clear so selection prompt doesn't repeat
