@@ -27,10 +27,9 @@ cookbot/
 ├── packages/
 │   └── cookbot-core/          # shared library — YOUR IP
 │       ├── cookbot/
-│       │   ├── agents/        # PydanticAI agent definitions
-│       │   ├── hitl/          # Human-in-the-Loop gate logic
+│       │   ├── agents/        # PydanticAI agent definitions (ChatAgent + sub-agents)
+│       │   ├── hitl/          # HITL checkpoint persistence (restore on reconnect)
 │       │   ├── models/        # Pydantic data models
-│       │   ├── orchestrator/  # SessionOrchestrator
 │       │   ├── protocols/     # WebSocket message schema
 │       │   └── services/      # Firestore wrapper
 │       └── pyproject.toml
@@ -86,6 +85,102 @@ These are hard constraints. Never violate them, even if it seems convenient.
 5. **Pydantic models for every boundary**
    Every input/output to agents, every WebSocket message, every Firestore
    document must have a Pydantic model. No raw dicts crossing module boundaries.
+
+---
+
+## Agentic Architecture
+
+> The product is driven by **one orchestrating ChatAgent** that owns the
+> conversation and delegates narrow tasks to **stateless sub-agents** via tools.
+> This replaced the original rigid 5-step pipeline (see TASK.md). Read this
+> before touching anything in `cookbot/agents/`.
+
+### The shape
+
+```
+                    ┌──────────────────────────────────────┐
+   WebSocket turn → │            ChatAgent                 │ ← conversation leader
+                    │  (1 instance per WS connection)      │   • intent recognition / routing
+                    │  output_type=str (streamed tokens)   │   • guided onboarding (not a form)
+                    │  deps=ChatAgentDeps (per-connection) │   • free-chat after first recipe
+                    └──────────────┬───────────────────────┘
+                                   │ calls as @agent.tool
+        ┌──────────────┬──────────┼───────────────┬──────────────────┐
+        ▼              ▼          ▼                ▼                  ▼
+  propose_recipes  get_recipe_  add_to_calendar  get_shopping_list  update_onboarding
+        │           details      remove_from_…    │                  (state only)
+        ▼              ▼                           ▼
+  RecipeOptions   WebSearch / WebFetch        ShoppingList
+     Agent         / RecipeGen Agent             Agent
+  (4 summaries)   (full Recipe extract/gen)   (dedup + sections)
+```
+
+**ChatAgent is the only stateful, conversational agent.** Every sub-agent is a
+single-LLM-call, stateless function built by a `build_*_agent(config)` factory
+and invoked from inside a ChatAgent tool. Sub-agents never talk to each other —
+the ChatAgent coordinates them.
+
+### Responsibilities of the ChatAgent
+
+| Responsibility | How it's implemented |
+|---|---|
+| Intent recognition / routing | LLM picks which tool to call from the user's message |
+| Guided (non-rigid) onboarding | `update_onboarding` tool fills 5 fields; dynamic system prompt drives the next question; user can skip/fill many at once |
+| Propose options, not one result | `propose_recipes` → 4 `RecipeSummary` cards |
+| Compose / extract full recipe | `get_recipe_details` → WebFetch (known URL) or WebSearch, RecipeGen fallback |
+| Adapt to servings / ingredients | servings & onboarding context passed into fetch/gen prompts |
+| Calendar / meal planning | `add_to_calendar` / `remove_from_calendar` |
+| Structured shopping list | `get_shopping_list` over a date range → ShoppingListAgent |
+| General cooking Q&A | answered directly, no tool call |
+| Source trust & transparency | `search_site_filter` from user prefs; `source_url` preserved on the Recipe |
+| Graceful fallback | when `allow_ai_generated=False` and web search finds nothing, return a `source="not_found"` placeholder so the agent can explain and suggest changing sources / enabling AI |
+
+### Sub-agent catalogue
+
+| Agent | Factory | Output | Job |
+|---|---|---|---|
+| RecipeOptionsAgent | `build_recipe_options_agent` | `list[RecipeSummary]` (4) | Mix of web-found + AI variations (web-only when AI disabled) |
+| WebSearchAgent | `build_web_search_agent` | `Recipe \| None` | DDG search → fetch → extract; never invents content |
+| WebFetchAgent | `build_web_fetch_agent` | `Recipe \| None` | Fetch a known URL → extract (skips re-search) |
+| RecipeGenAgent | `build_recipe_gen_agent` | `Recipe` | Generate a recipe only when allowed and web search found nothing |
+| ShoppingListAgent | `build_shopping_list_agent` | `ShoppingList` | Dedup, sum quantities, group by shop section |
+
+### State model
+
+- **`ChatAgentDeps`** — one instance per WebSocket connection.
+  - `onboarding` (`OnboardingState`) **accumulates across turns** until complete.
+  - `calendar`, `search_site_filter`, `allow_ai_generated` — **refreshed each turn**
+    by the WS handler from the message payload / user's Firestore prefs.
+  - `last_recipe`, `last_proposals` — carry selection context between turns.
+  - `calendar_adds` / `calendar_removes` / `shopping_list_items` / `recipe_options`
+    — **per-turn side-effect collectors, reset each turn** by the WS handler, then
+    drained into typed WS messages after the turn.
+- Conversation history is `message_history` (PydanticAI messages), extended
+  in-place by `stream_chat_response` each turn.
+
+> **Rule:** deps is connection-scoped working memory, **not** the source of truth.
+> Durable state (sessions, calendar, prefs) lives in Firestore (Architecture Rule 3).
+
+### Hard rules for agent work
+
+1. **ChatAgent orchestrates; sub-agents stay dumb.** New capability = a new
+   ChatAgent tool (and maybe a new stateless sub-agent), never a sub-agent that
+   calls another sub-agent.
+2. **Onboarding is guided, never a form.** Do not add code that blocks tool calls
+   until all 5 fields are set — the user may skip ahead, change topic, or ask for
+   a substitution / shopping list / calendar action at any time.
+3. **Every tool boundary is a Pydantic model** (Architecture Rule 5) — see the
+   `*Result` models in `chat.py`.
+4. **Side effects go through deps collectors, never direct WS sends from a tool.**
+   Tools mutate `deps.calendar_adds` etc.; the WS handler emits the messages.
+5. **Source URL is sacred.** A web-sourced recipe must keep `source_url` even
+   after serving adaptation. Adaptation never rewrites provenance.
+6. **AI generation is gated.** Respect `allow_ai_generated`; when off, never call
+   RecipeGenAgent — fall back to the "not_found" path.
+
+> To add an agent, follow **"Adding a New Agent"** below, then wire it as a
+> ChatAgent tool. (There is no separate orchestrator class — the ChatAgent *is*
+> the orchestrator.)
 
 ---
 
@@ -266,7 +361,8 @@ cookbot-core requires **zero changes** to add a new client.
 1. Create `packages/cookbot-core/cookbot/agents/{name}.py`
 2. Define output model in `packages/cookbot-core/cookbot/models/`
 3. Write factory function `build_{name}_agent(config: TenantConfig) -> Agent`
-4. Register in `SessionOrchestrator.run()` pipeline
+4. Wire it as a **ChatAgent tool** in `cookbot/agents/chat.py` (the live pipeline).
+   The ChatAgent is the orchestrator — there is no separate orchestrator class.
 5. Write unit tests using `TestModel`
 6. Export from `cookbot/agents/__init__.py`
 

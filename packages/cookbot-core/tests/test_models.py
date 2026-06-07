@@ -43,7 +43,7 @@ def test_tenant_config_instantiation() -> None:
         allowed_origins=["https://example.com"],
     )
     assert config.tenant_id == "test"
-    assert config.model == "gpt-4o-mini"
+    assert config.model_chat == "gpt-4o-mini"
     assert config.max_hitl_rounds == 3
     assert config.feature_nutrition is False
 

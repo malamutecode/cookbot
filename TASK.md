@@ -1,753 +1,642 @@
-# TASK.md — CookBot Incremental Build Plan
+﻿# TASK.md — CookBot Incremental Build Plan
 
-> **For the agent:** Complete tasks strictly in order. Do not skip ahead.
-> At every `⏸ PAUSE` marker, stop coding, summarize what was built,
-> list the exact commands to run for verification, and wait for human
-> confirmation before proceeding to the next step.
->
-> **For the human:** Each pause is a chance to test, give feedback, and
-> decide whether to adjust the plan before more code is written.
+> **Working convention:** Complete tasks in order. At every `⏸ PAUSE` marker,
+> stop, summarise what was built, list verification commands, and wait for
+> confirmation before proceeding.
 
 ---
 
-## How to Read This File
+## Legend
 
-- `★` = MVP critical path — must be done for a working product
-- `○` = Phase 2 — deferred, do not implement yet
-- `⏸ PAUSE` = stop and wait for human feedback
-- `[ ]` = not started  `[x]` = done  `[~]` = in progress
-
----
-
-## Current Step: → STEP 12 — done, awaiting next
-
-Update this line as you progress. When pausing, write:
-`Current Step: → STEP N — waiting for feedback`
+- `★` = critical path
+- `○` = Phase 4+ — deferred
+- `⏸ PAUSE` = stop and wait for feedback
+- `[x]` done · `[ ]` not started
 
 ---
 
-# PHASE 1 — FOUNDATION
+## Current Step: → STEP 32 — ready to implement (STEP 31 done, awaiting PAUSE review)
 
 ---
 
-## STEP 1 ★ — Monorepo Scaffold
+# PHASE 1–2 — COMPLETED ✓
 
-**Goal:** Empty-but-valid repo structure. All `pyproject.toml` files in place.
-Python imports resolve. No actual logic yet.
+All steps below are done. Kept for reference only — do not re-implement.
+
+- [x] STEP 1 — Monorepo scaffold
+- [x] STEP 2 — Core data models
+- [x] STEP 3 — Firestore service
+- [x] STEP 4 — FastAPI skeleton + API key auth
+- [x] STEP 5 — WebSocket echo + message protocol
+- [x] STEP 6 — IngredientAgent
+- [x] STEP 7 — WebSearchAgent (DuckDuckGo tool)
+- [x] STEP 8 — RecipeGenAgent
+- [x] STEP 9 — RefinementAgent
+- [x] STEP 10 — HITL Gate (asyncio.Queue suspend/resume)
+- [x] STEP 11 — SessionOrchestrator (legacy pipeline, kept for tests)
+- [x] STEP 12 — Full WebSocket integration
+- [x] STEP 15 — Firebase Auth (email/password, ID token verification)
+- [x] STEP 16 — Spiżarnia REST API (CRUD per user)
+- [x] STEP 17 — Spiżarnia toggle in chat (skip ingredient question, inject items)
+- [x] STEP 18 — React/Vite SPA (login, chat panel, spizarnia panel, shopping list,
+               resizable panels, calendar tab, NavBar)
+
+**Architecture change since original plan:**
+The rigid 5-question intake pipeline (IntakeAgent → IngredientAgent → WebSearchAgent)
+was replaced with a single guided **ChatAgent** that:
+- Collects the 5 intake fields conversationally via `update_onboarding` tool
+- Calls `find_recipe` (WebSearch → RecipeGen fallback) once complete
+- Supports free-chat after first recipe: add/remove calendar entries, shopping lists
+- Persists `OnboardingState` and `message_history` across turns (connection-scoped deps)
+
+See `GCP_ARCHITECTURE.md` for the current system diagram.
+
+---
+
+# PHASE 2b — PRODUCT IMPROVEMENTS
+
+---
+
+## STEP 21 ★ — Recipe detail modal in Calendar
+
+**Goal:** Clicking a recipe name in the calendar opens a full-screen modal with
+the complete recipe (ingredients, steps, tips, timing). Already partially
+implemented — verify and complete.
+
+### Current state
+`CalendarPage.tsx` has a `RecipeModal` component and `detailRecipe` state.
+`CalendarEntry` has an optional `recipe?: Recipe` field.
+The "Add to calendar" button in ChatPanel passes the full `Recipe` object.
+Agent-triggered `calendar_update` WS messages do **not** include full Recipe data.
 
 ### Tasks
 
-- [X] Create directory tree exactly as defined in `CLAUDE.md`
-- [X] `packages/cookbot-core/pyproject.toml`
-  ```toml
-  [project]
-  name = "cookbot-core"
-  version = "0.1.0"
-  requires-python = ">=3.12"
-  dependencies = [
-      "pydantic>=2.7",
-      "pydantic-ai>=0.0.14",
-      "pydantic-settings>=2.3",
-      "google-cloud-firestore>=2.16",
-      "asyncpg>=0.29",
-      "openai>=1.35",
-      "structlog>=24.2",
-  ]
-  [tool.pytest.ini_options]
-  asyncio_mode = "auto"
-  [tool.ruff.lint]
-  select = ["E", "F", "I", "UP"]
-  ```
-- [X] `clients/tastyhub/pyproject.toml`
-  ```toml
-  [project]
-  name = "cookbot-tastyhub"
-  version = "0.1.0"
-  requires-python = ">=3.12"
-  dependencies = [
-      "cookbot-core",
-      "fastapi>=0.115",
-      "uvicorn[standard]>=0.30",
-      "websockets>=12.0",
-      "httpx>=0.27",
-      "beautifulsoup4>=4.12",  # recipe crawler
-  ]
-  [tool.uv.sources]
-  cookbot-core = { path = "../../packages/cookbot-core", editable = true }
-  ```
-- [X] All `__init__.py` files for every package/subpackage (empty for now)
-- [X] `packages/cookbot-core/cookbot/exceptions.py` — define these exception classes (bodies = `pass`):
-  `TenantNotFoundError`, `SessionExpiredError`, `HITLTimeoutError`,
-  `RecipeSearchError`, `AgentError`
-- [X] `.env.example` at repo root with all vars from CLAUDE.md
-- [X] `.gitignore` (Python standard + `.env`, `__pycache__`, `.venv`, `*.pyc`)
-- [X] `README.md` at repo root — one paragraph description + "See CLAUDE.md"
+- [x] Verify recipe modal opens when clicking a recipe name in CalendarPage
+- [x] For agent-added entries (via `calendar_update` WS message): store the
+      full recipe on the entry when `find_recipe` result is available in deps.
+      Update `add_to_calendar` tool in `chat.py` to accept optional `recipe` JSON.
+- [x] For manually added entries (recipe card "Dodaj do kalendarza" button):
+      already passes full `Recipe` — verify modal works
 
 ### Verify
 
-```bash
-cd packages/cookbot-core && uv sync && uv run python -c "import cookbot; print('core ok')"
-cd ../../clients/tastyhub && uv sync && uv run python -c "import cookbot; print('import from client ok')"
+```
+Manual: add a recipe via chat → go to calendar → click recipe name → modal opens
+Manual: add recipe via "Dodaj do kalendarza" button → calendar → click → modal opens
 ```
 
-Both commands must print without errors.
-
-### ⏸ PAUSE 1
-**Report:** List all created files and their sizes. Show the import verification output.
-**Human decides:** Directory structure OK? Any renames needed before we write real code?
+### ⏸ PAUSE 21
 
 ---
 
-## STEP 2 ★ — Core Data Models
+## STEP 22 ★ — Shopping List Agent
 
-**Goal:** All Pydantic models that flow through the entire system.
-No agent logic yet — just the data shapes.
+**Goal:** Replace the current naive ingredient aggregation with a dedicated
+`ShoppingListAgent` that deduplicates, sums quantities, and organises items
+by shop section (produce, dairy, meat, bakery, etc.).
 
 ### Tasks
 
-- [ ] `cookbot/models/tenant.py` — `TenantConfig` dataclass:
+- [x] `packages/cookbot-core/cookbot/agents/shopping_list.py`:
+  - `build_shopping_list_agent(config: TenantConfig) -> Agent[None, ShoppingList]`
+  - Input: raw list of ingredient strings from multiple recipes
+  - Output: `ShoppingList` with sections, deduplicated, quantities summed
+  - Sections: warzywa/owoce, nabiał, mięso/ryby, piekarnia, suche produkty, inne
+  - Sort within each section alphabetically
+
+- [x] `packages/cookbot-core/cookbot/models/shopping.py` — new models:
   ```python
-  @dataclass
-  class TenantConfig:
-      tenant_id: str
-      persona: str           # "You are a helpful chef assistant at TastyHub"
-      language: str          # "en"
-      recipe_source_url: str # "https://tastyhub.com/sitemap-recipes.xml"
-      allowed_origins: list[str]
-      model: str             # "gpt-4o-mini"
-      embedding_model: str   # "text-embedding-3-small"
-      max_hitl_rounds: int   # 3
-      feature_nutrition: bool  # Phase 2 flag, default False
+  class ShoppingItem(BaseModel):
+      name: str
+      quantity: str   # summed, e.g. "400g" or "3 szt."
+      section: str    # "warzywa", "nabiał", etc.
+
+  class ShoppingList(BaseModel):
+      items: list[ShoppingItem]
+      sections: list[str]  # ordered section names present
   ```
 
-- [X] `cookbot/models/recipe.py` — models:
-  - `ParsedIngredients(BaseModel)` — items, must_use, dietary_hints, missing_staples
-  - `Recipe(BaseModel)` — name, description, ingredients, steps,
-    prep_time_minutes, cook_time_minutes, difficulty, servings, tips
-  - `RecipeSource` — `Enum`: `TENANT_KB`, `AI_GENERATED`
-  - `RecipeSearchResult(BaseModel)` — recipe, source, similarity_score
+- [x] Wire into `get_shopping_list` tool in `chat.py`:
+  collect raw ingredients, pass to `ShoppingListAgent`, return structured result
 
-- [X] `cookbot/models/session.py` — models:
-  - `Message(BaseModel)` — role (`user`|`assistant`), content, timestamp
-  - `Session(BaseModel)` — session_id, tenant_id, messages, created_at, expires_at
-  - `SessionStatus` — `Enum`: `ACTIVE`, `WAITING_HITL`, `COMPLETED`, `EXPIRED`
+- [x] Update frontend `ShoppingList.tsx` to group and display by section
 
-- [X] `cookbot/hitl/models.py` — models:
-  - `HITLCheckpoint(BaseModel)` — checkpoint_id, session_id, recipe, round_number, created_at
-  - `HITLResponse(BaseModel)` — approved: bool, modification: str | None
-  - `HITLOutcome` — `Enum`: `APPROVED`, `MODIFIED`, `REJECTED`
-
-- [X] `cookbot/protocols/ws_messages.py` — typed WS message models:
-  - `WsMessageType` — `Enum` with all types: `MESSAGE`, `TOKEN`, `AGENT_UPDATE`,
-    `HITL_CHECKPOINT`, `HITL_RESPONSE`, `FINAL_RECIPE`, `ERROR`
-  - `WsInbound(BaseModel)` — type, content, approved, modification (all optional)
-  - `WsOutToken(BaseModel)`, `WsOutAgentUpdate(BaseModel)`,
-    `WsOutHitlCheckpoint(BaseModel)`, `WsOutFinalRecipe(BaseModel)`,
-    `WsOutError(BaseModel)`
-  - Helper functions: `ws_send_token()`, `ws_send_agent_update()`,
-    `ws_send_hitl_checkpoint()`, `ws_send_final_recipe()`, `ws_send_error()`
-    — all `async def`, take `WebSocket` + model-specific params
-
-- [X] `clients/tastyhub/app/config/tenant.py` — `TASTYHUB_CONFIG: TenantConfig` instance
-  (values from ENV via `pydantic-settings`, with sensible defaults)
-
-- [X] `packages/cookbot-core/tests/test_models.py` — basic instantiation tests for all models
+- [X] Tests: `test_shopping_list.py` — dedup, quantity sum, section assignment
 
 ### Verify
 
-```bash
-cd packages/cookbot-core
-uv run pytest tests/test_models.py -v
-# All tests must pass
-uv run python -c "
-from cookbot.models.recipe import Recipe
-from cookbot.models.session import Session, SessionStatus
-from cookbot.hitl.models import HITLCheckpoint, HITLResponse
-from cookbot.protocols.ws_messages import WsMessageType
-print('all models importable')
-"
+```
+Manual: add 2 recipes to calendar with overlapping ingredients
+→ ask "lista zakupów na ten tydzień"
+→ shopping list shows sections, no duplicates, quantities summed
 ```
 
-### ⏸ PAUSE 2
-**Report:** Show test output. Paste the full field list of `Recipe` and `TenantConfig`.
-**Human decides:** Are the model shapes right? Anything missing before agents are built on top?
+### ⏸ PAUSE 22
 
 ---
 
-## STEP 3 ★ — Firestore Service
+## STEP 23 ★ — Propose 4 Recipe Options
 
-**Goal:** Session history and HITL state can be saved and loaded from Firestore.
-All other code will depend on this.
+**Goal:** Instead of returning one recipe, `find_recipe` proposes 4 candidates
+and the user picks one. Improves perceived quality and gives user agency.
 
 ### Tasks
 
-- [X] `cookbot/services/firestore.py` — `FirestoreService` class:
-  - `__init__(project_id, database_id, tenant_id)` — creates `AsyncClient`
-  - `async save_message(session_id, message: Message) -> None`
-  - `async get_messages(session_id) -> list[Message]`
-  - `async save_session(session: Session) -> None`
-  - `async get_session(session_id) -> Session | None`
-  - `async save_hitl_checkpoint(checkpoint: HITLCheckpoint) -> None`
-  - `async get_hitl_checkpoint(session_id) -> HITLCheckpoint | None`
-  - `async clear_hitl_checkpoint(session_id) -> None`
-  - `async expire_old_sessions(ttl_hours: int) -> int` — returns count deleted
+- [x] `packages/cookbot-core/cookbot/agents/recipe_options.py`:
+  - `build_recipe_options_agent(config: TenantConfig) -> Agent[None, list[RecipeSummary]]`
+  - Returns exactly 4 `RecipeSummary` objects (name, description, difficulty,
+    total_time_minutes, key_ingredients: list[str])
+  - Mix: at least one from web search, rest AI-generated variations
 
-  Collection path: `sessions/{tenant_id}/{session_id}`
+- [x] `packages/cookbot-core/cookbot/models/recipe.py` — add:
+  ```python
+  class RecipeSummary(BaseModel):
+      name: str
+      description: str
+      difficulty: str
+      total_time_minutes: int
+      key_ingredients: list[str]
+      source: str  # "web_search" | "ai_generated"
+  ```
 
-- [X] `cookbot/services/__init__.py` — re-export `FirestoreService`
+- [x] Replace `find_recipe` tool with a two-step flow:
+  1. `propose_recipes` tool → streams 4 `RecipeSummary` cards to frontend
+  2. `get_recipe_details` tool → user picks one by name/number, returns full `Recipe`
 
-- [X] `packages/cookbot-core/tests/test_firestore.py`:
-  - All tests use Firestore emulator (`FIRESTORE_EMULATOR_HOST` env var)
-  - `pytest.mark.skipif` if emulator not available
-  - Test: save + load message round-trip
-  - Test: save + load HITL checkpoint, then clear
-  - Test: `get_session` returns `None` for unknown session_id
+- [x] New WS message type: `recipe_options` — list of 4 summaries
+  Frontend renders 4 compact cards with "Wybieram" button on each
 
-- [X] `docker-compose.yml` — Firestore emulator only (no postgres in MVP):
-  ```yaml
-  services:
-    firestore-emulator:
-      image: gcr.io/google.com/cloudsdktool/cloud-sdk:emulators
-      command: gcloud beta emulators firestore start --host-port=0.0.0.0:8080
-      ports: ["8080:8080"]
+- [x] Update `ws_messages.py`: add `WsOutRecipeOptions` model + `ws_send_recipe_options()`
+
+- [x] Update `ChatPanel.tsx`: handle `recipe_options` message type, render 4 cards,
+  send `{"type": "message", "content": "wybieram 2"}` on click
+
+### Verify
+
+```
+Manual: complete onboarding → 4 recipe cards appear → click one → full recipe shown
+```
+
+### ⏸ PAUSE 23
+
+---
+
+## STEP 24 ★ — Recipe Sources Tab (Trusted Websites)
+
+**Goal:** User can configure which websites are used for recipe search.
+Options: use only saved sites, use sites + full internet, or full internet only.
+Default sites: kwestiasmaku.com, aniagotuje.pl.
+
+### Tasks
+
+- [x] `packages/cookbot-core/cookbot/models/user.py` — add:
+  ```python
+  class RecipeSource(BaseModel):
+      url: str
+      name: str        # display name, e.g. "Kwestia Smaku"
+      enabled: bool = True
+
+  class UserSearchPrefs(BaseModel):
+      uid: str
+      sources: list[RecipeSource] = []
+      search_mode: str = "sites_and_internet"
+      # "sites_only" | "sites_and_internet" | "internet_only"
+  ```
+
+- [x] `packages/cookbot-core/cookbot/services/firestore.py` — add:
+  - `async get_search_prefs(uid: str) -> UserSearchPrefs`
+  - `async save_search_prefs(prefs: UserSearchPrefs) -> None`
+  - Default prefs created on first call with kwestiasmaku.com + aniagotuje.pl
+
+- [x] `clients/tastyhub/app/api/search_prefs.py` — new REST router `/v1/search-prefs`:
+  - `GET /v1/search-prefs` — returns user's preferences
+  - `PUT /v1/search-prefs` — update search_mode and sources list
+  - `POST /v1/search-prefs/sources` — add a site
+  - `DELETE /v1/search-prefs/sources/{url_encoded}` — remove a site
+
+- [x] Pass `UserSearchPrefs` into `find_recipe` / web search agent:
+  - In `web_search_prompt()`: if `sites_only` or `sites_and_internet`,
+    prefix search with `site:kwestiasmaku.com OR site:aniagotuje.pl`
+  - If `internet_only`: no site restriction
+
+- [x] Frontend — new **Źródła** tab (similar to Kalendarz tab layout):
+  - List of saved sites with toggle (enable/disable each)
+  - "Dodaj stronę" input field
+  - Search mode selector: radio/toggle — Tylko zapisane / Zapisane + internet / Cały internet
+  - NavBar: add "Źródła" tab between "Chat" and "Kalendarz"
+
+- [x] If a recipe was found via web search, include the source URL in the result:
+  - Add `source_url: str | None` to `Recipe` model
+  - `WebSearchAgent` extracts and returns the URL of the page the recipe came from
+  - Frontend recipe card shows a clickable "Źródło" link when `source_url` is set
+
+### Verify
+
+```
+Manual: go to Źródła tab → see kwestiasmaku.com + aniagotuje.pl pre-loaded
+→ add a custom site → set "Tylko zapisane"
+→ start chat → recipe search should be restricted to those sites
+```
+
+### ⏸ PAUSE 24
+
+---
+
+## STEP 25 ★ — Chat input placeholder update
+
+**Goal:** Update the chat input placeholder text to better reflect current capabilities.
+
+### Tasks
+
+- [x] `frontend/src/components/ChatPanel.tsx` line 220 — change placeholder:
+  ```
+  From: "Napisz wiadomość… (np. 'zrób mi pastę na jutro', 'lista zakupów na ten tydzień')"
+  To:   "Napisz wiadomość… (np. 'zaproponuj mi danie na dziś', 'dodaj przepis do kalendarza na 30.05')"
   ```
 
 ### Verify
 
-```bash
-# Start emulator
+```
+Manual: open chat, verify placeholder text is visible in the input field
+```
+
+### ⏸ PAUSE 25
+
+---
+
+## STEP 26 ★ — Chat processing indicator in NavBar
+
+**Goal:** While the chat agent is processing (streaming a response), show a
+visible spinner or animated dot in the NavBar next to the "Chat" tab label so
+the user knows the bot is working even when viewing the Calendar or other pages.
+
+### Tasks
+
+- [x] Add `isProcessing` state to `ChatPanel` and lift it to `App.tsx` via a
+      new `onProcessingChange: (v: boolean) => void` prop
+- [x] Set `isProcessing = true` when a user message is sent; set to `false`
+      when the stream ends (token timer fires, `calendar_update`,
+      `shopping_list_update`, or `error` message received)
+- [x] Pass `isProcessing` down to `NavBar` and render a small animated
+      indicator (pulsing dot or spinner) next to the "Chat" label when true
+
+### Verify
+
+```
+Manual: send a message → switch to Calendar tab immediately →
+  NavBar "Chat" label shows a spinning/pulsing indicator while bot responds →
+  indicator disappears when response is complete
+```
+
+### ⏸ PAUSE 26
+
+---
+
+## STEP 29 ★ — AI-generated recipes toggle in Źródła tab
+
+**Goal:** User can disable AI-generated recipe proposals. When disabled, only
+recipes actually found via web search are returned; AI fallback is suppressed.
+The returned recipe may be adjusted for servings but the source URL always
+points to the original page.
+
+### Tasks
+
+- [x] `packages/cookbot-core/cookbot/models/user.py` — add `allow_ai_generated: bool = True`
+      field to `UserSearchPrefs`
+- [x] `clients/tastyhub/app/api/search_prefs.py` — `PUT /v1/search-prefs` already handles
+      the field via the existing model; no route changes needed
+- [x] `clients/tastyhub/app/api/websocket.py` — pass `allow_ai_generated` flag from loaded
+      prefs into `ChatAgentDeps`
+- [x] `packages/cookbot-core/cookbot/agents/chat.py` — add `allow_ai_generated: bool = True`
+      to `ChatAgentDeps`; in `get_recipe_details`, skip `RecipeGenAgent` fallback when flag is False
+      and return a clear "not found" result instead
+- [x] `packages/cookbot-core/cookbot/agents/recipe_options.py` — when `allow_ai_generated=False`
+      in the prompt, instruct agent to only include proposals it found via web search
+      (pad to 4 with additional web-searched variants if possible, otherwise return fewer)
+- [x] `frontend/src/components/SourcesPage.tsx` — add toggle switch "Przepisy generowane przez AI"
+      below the search mode selector; calls `PUT /v1/search-prefs`
+
+### Verify
+
+```
+Manual: Źródła → disable AI → chat → propose recipes → all 4 cards should be web_search
+→ pick one → full recipe extracted from page, source_url set
+```
+
+### ⏸ PAUSE 29
+
+---
+
+## STEP 30 ★ — Dish images in recipe proposal cards
+
+**Goal:** Recipe proposal cards show a relevant dish photo so users can visually
+compare options at a glance.
+
+### Tasks
+
+- [x] `packages/cookbot-core/cookbot/models/recipe.py` — add `image_url: str | None = None`
+      to `RecipeSummary` and `Recipe`
+- [x] `packages/cookbot-core/cookbot/agents/recipe_options.py` — added `search_images` DDG
+      image tool; agent calls it per proposal to populate `image_url`
+- [x] `packages/cookbot-core/cookbot/agents/web_search.py` — instruct agent to extract
+      og:image from fetched page and set `image_url` on the returned `Recipe`
+- [x] `frontend/src/types.ts` — add `image_url?: string | null` to `RecipeSummary` and `Recipe`
+- [x] `frontend/src/components/ChatPanel.tsx` — proposal cards show 110px cover image
+      (grey placeholder when absent); full recipe card shows 180px cover image
+- [x] `frontend/src/components/CalendarPage.tsx` — recipe modal shows 200px cover image
+
+### Verify
+
+```
+Manual: complete onboarding → 4 proposal cards appear → at least some show a dish photo
+→ cards without image show a neutral grey placeholder
+```
+
+### ⏸ PAUSE 30
+
+---
+
+# PHASE 2c — AGENT ARCHITECTURE HARDENING
+
+> Outcome of an architecture review (2026-06-07). The macro design
+> (orchestrator ChatAgent → stateless tool sub-agents built by config factories)
+> is already the live architecture and matches the "Agentic Architecture" section
+> in CLAUDE.md — these steps don't change the shape, they remove the dead pipeline
+> that contradicts it and tighten two loose spots (deps lifetime, side-effect
+> ordering). STEP 31 (delete dead code) is a prerequisite for the rest.
+> Ordered by risk after that: STEP 32 has actual bug potential, the rest is
+> maintainability. Each step is self-contained — do them in order, PAUSE after each.
+> No behaviour change to the *live* app is intended: chat/websocket tests stay green.
+
+---
+
+## STEP 31 ★ — Delete the dead legacy pipeline (prerequisite)
+
+**Goal:** The pre-ChatAgent pipeline is dead code reachable only from tests and
+itself. It contradicts the CLAUDE.md architecture ("wire as ChatAgent tool, not
+SessionOrchestrator") and adds noise to every later step. Remove it before
+refactoring so the remaining steps reason about one pipeline only.
+
+### Verified dead (traced 2026-06-07 — no production importer)
+- `packages/cookbot-core/cookbot/agents/intake.py` (`build_intake_agent`)
+- `packages/cookbot-core/cookbot/agents/ingredient.py` (`build_ingredient_agent`, `intent_to_prompt`)
+- `packages/cookbot-core/cookbot/agents/refinement.py` (`build_refinement_agent`) — used only by the orchestrator
+- `packages/cookbot-core/cookbot/orchestrator/session.py` (`SessionOrchestrator`) — used only by its own test
+
+### Must STAY (shared with the live ChatAgent — do NOT delete)
+- `agents/web_search.py`, `agents/recipe_gen.py` — imported by `chat.py`
+- `hitl/persistence.py` (`restore_checkpoint`) — still called in `websocket.py:98`
+  > Note: `hitl/gate.py` (`HITLGate.suspend`) is used ONLY by the orchestrator.
+  > After deleting the orchestrator, confirm nothing else imports `HITLGate`; if
+  > not, `gate.py` may also be removed — but keep `persistence.py` and `models.py`.
+
+### Tasks
+
+- [x] Delete `agents/intake.py`, `agents/ingredient.py`, `agents/refinement.py`,
+      `orchestrator/session.py` + `orchestrator/__init__.py` (whole dir removed).
+- [x] Delete their tests: `tests/test_agents/test_intake.py`,
+      `tests/test_agents/test_ingredient.py`, `tests/test_agents/test_refinement.py`,
+      `tests/test_orchestrator/` (whole dir removed).
+- [x] `agents/__init__.py` — removed the `intake` / `ingredient` / `refinement`
+      imports and `__all__` entries. Kept `chat`, `web_search`, `recipe_gen` exports.
+- [x] Confirmed `HITLGate` had no production importer (only orchestrator + its
+      tests) → removed `hitl/gate.py` + `tests/test_hitl/test_gate.py`.
+      Kept `hitl/persistence.py` (`restore_checkpoint`, used in websocket.py) + `models.py`.
+- [x] Updated docs referencing deleted code:
+      - `CLAUDE.md` repo-layout tree (dropped `orchestrator/` line; refined `hitl/` note)
+      - `CLAUDE.md` "Adding a New Agent" + "Agentic Architecture" notes (no orchestrator class)
+      - `GCP_ARCHITECTURE.md` diagram (HITLGate/RefinementAgent → checkpoint persistence)
+        + monorepo tree (`orchestrator/session.py` line removed)
+- [x] Verified: dead-reference grep clean; both packages import cleanly.
+
+### Verify
+```
+uv run pytest -v   (both packages green — no import errors from deleted modules)
+uv run ruff check . ; uv run pyright   (clean)
+grep -ri "SessionOrchestrator\|build_intake\|build_ingredient\|build_refinement" \
+  --include=*.py .   → no hits outside this step's deletions
+```
+
+### ⏸ PAUSE 31
+
+---
+
+## STEP 32 ★ — Make the per-turn reset contract structural
+
+**Goal:** `ChatAgentDeps` currently mixes three lifetimes (connection-durable,
+per-turn inputs, per-turn output collectors). The "reset these fields each turn"
+rule lives only as hand-written lines in the WS handler — add a field and forget
+a line and you get silent cross-turn state bleed. Make the contract live next to
+the fields so it cannot drift.
+
+### Current state
+`clients/tastyhub/app/api/websocket.py:138-143` manually resets 5 fields each turn.
+`packages/cookbot-core/cookbot/agents/chat.py:115-141` declares all lifetimes in
+one flat `ChatAgentDeps`.
+
+### Tasks
+
+- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — add a method to `ChatAgentDeps`:
+  ```python
+  def reset_turn(self) -> None:
+      """Clear all per-turn fields. Call once at the start of every WS turn."""
+      self.calendar_adds = []
+      self.calendar_removes = []
+      self.shopping_list_items = None
+      self.recipe_options = []
+      self.recipe_ready_this_turn = False
+  ```
+- [ ] Add a class docstring / comment block grouping the fields by lifetime
+      (connection-durable · per-turn input · per-turn output) so the boundary is visible.
+- [ ] `clients/tastyhub/app/api/websocket.py` — replace the 5 manual reset lines
+      with `deps.reset_turn()` (keep `deps.calendar = msg.calendar or CalendarState()`
+      separate — it's a per-turn *input*, not a collector).
+- [ ] Tests: `packages/cookbot-core/tests/test_agents/test_chat.py` — assert that
+      after `reset_turn()` every collector is empty and `last_recipe` / `onboarding`
+      are untouched (durable fields survive a reset).
+
+### Verify
+```
+uv run pytest packages/cookbot-core/tests/test_agents/test_chat.py -v
+Manual: two recipe requests in one connection → second turn shows no leftover
+  proposals/calendar adds from the first.
+```
+
+### ⏸ PAUSE 32
+
+---
+
+## STEP 33 ★ — Extract recipe-resolution logic out of the god-tool
+
+**Goal:** `get_recipe_details` is a ~100-line tool closure containing the entire
+fetch-vs-search-vs-generate-vs-fallback decision tree, testable only through the
+agent. Extract it to a plain async function so the decision tree is unit-testable
+directly and the tool becomes a thin wrapper.
+
+### Current state
+`packages/cookbot-core/cookbot/agents/chat.py:348-455` — all branches inline.
+
+### Tasks
+
+- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — add module-level:
+  ```python
+  async def resolve_recipe(
+      selected: RecipeSummary | None,
+      choice: str,
+      ob: OnboardingState,
+      *,
+      config: TenantConfig,
+      site_filter: str,
+      allow_ai_generated: bool,
+  ) -> FoundRecipe:
+      """Resolve a chosen proposal to a full Recipe: fetch known URL →
+      search by name → AI-gen fallback → not_found placeholder."""
+  ```
+  Move the existing branch logic verbatim into it (no behaviour change).
+- [ ] Reduce the `get_recipe_details` tool body to: pick `selected` from
+      `last_proposals`, call `resolve_recipe(...)`, set `last_recipe` /
+      `recipe_ready_this_turn`, clear `last_proposals`, return.
+- [ ] Tests: `test_chat.py` — unit-test `resolve_recipe` directly with `TestModel`
+      sub-agents for: known-URL fetch, search-by-name, gen fallback,
+      `allow_ai_generated=False` → `source="not_found"`.
+
+### Verify
+```
+uv run pytest packages/cookbot-core/tests/test_agents/test_chat.py -v
+Manual: pick a web_search option → full recipe extracted, source_url preserved.
+Manual: disable AI in Źródła → pick when web search yields nothing → not_found message.
+```
+
+### ⏸ PAUSE 33
+
+---
+
+## STEP 34 — Unify side-effect emission into an ordered event list
+
+**Goal:** The WS handler hand-orders side-effects (recipe card before options,
+dedup calendar adds, flatten shopping list) in `websocket.py:169-189`. Every new
+side-effect means editing both a tool and that block. Replace the scattered
+collectors with a single ordered list of typed outbound events the handler drains
+in order.
+
+### Tasks
+
+- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — define a typed union
+      `TurnEvent = FinalRecipeEvent | RecipeOptionsEvent | CalendarAddEvent
+      | CalendarRemoveEvent | ShoppingListEvent` (Pydantic models).
+- [ ] Replace the per-turn collector fields with `events: list[TurnEvent] = []`;
+      tools append events in the order they occur. `reset_turn()` clears it.
+- [ ] `clients/tastyhub/app/api/websocket.py` — replace the 169-189 block with a
+      single loop: `for ev in deps.events: await _emit(websocket, ev)` where
+      `_emit` matches on event type. Move the recipe-before-options ordering into
+      tool call order, not the handler.
+- [ ] Keep calendar-add dedup (currently in handler) inside `add_to_calendar`.
+- [ ] Tests: assert tool calls produce the expected ordered `events` list.
+
+### Verify
+```
+uv run pytest -v   (both packages)
+Manual: full flow — propose → pick → add to calendar → shopping list — all
+  side-effects appear in the correct order in the UI.
+```
+
+### ⏸ PAUSE 34
+
+---
+
+## STEP 35 — Reduce prompt-coercion in onboarding flow
+
+**Goal:** The dynamic system prompt uses all-caps `MANDATORY`/`MUST` pressure
+(`chat.py:252-274`) to force deterministic flow that `next_missing_field()`
+already computes in code. Keep the *data* in the prompt, drop the imperative
+coercion, and let tool return values gate the flow. Lower risk — works today;
+this is robustness across model versions.
+
+### Tasks
+
+- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — rewrite `_onboarding_status`
+      to present collected/next-field as plain context, not commands. Remove the
+      "MANDATORY STEPS FOR THIS TURN" / "MUST" scaffolding.
+- [ ] Verify `update_onboarding`'s return value (`complete`, `next_missing_field`)
+      is sufficient signal for the model to ask the next question or call
+      `propose_recipes` — strengthen the tool docstring if needed.
+- [ ] Tests: `test_chat.py` — drive onboarding to completion with `TestModel`,
+      assert no field is re-asked and `propose_recipes` fires when complete.
+
+### Verify
+```
+uv run pytest packages/cookbot-core/tests/test_agents/test_chat.py -v
+Manual: run full onboarding → no question repeated → 4 options after last answer.
+Manual: skip-ahead ("zrób mi pastę dla 2 na 30 min") → fills multiple fields,
+  asks only what's missing.
+```
+
+### ⏸ PAUSE 35
+
+---
+
+## STEP 36 — Hygiene cleanup
+
+**Goal:** Remove the small footguns and dead-pipeline traps the review flagged.
+
+### Tasks
+
+- [ ] Mutable default args → `None` + coalesce:
+      `chat.py:312` `propose_recipes(... dietary_hints: list[str] = [] ...)` and any
+      similar. Confirm `uv run ruff check .` is clean.
+- [ ] `clients/tastyhub/app/api/websocket.py:70-71` — the Bearer-verify
+      `except Exception: pass` must at least `log.warning(...)` so auth failures
+      aren't silent (CLAUDE.md "no bare excepts").
+- [ ] Reconcile TASK.md STEP 30 vs code: `recipe_options.py` instructs the agent
+      NOT to call image search ("images are loaded separately"), contradicting
+      STEP 30's `search_images` tool note. Update whichever is stale so docs match code.
+      (Legacy-export cleanup is no longer needed — STEP 31 deletes those modules.)
+
+### Verify
+```
+uv run ruff check . ; uv run pyright   (both clean)
+uv run pytest -v   (both packages green)
+```
+
+### ⏸ PAUSE 36
+
+---
+
+## STEP 37 — Separate unit vs integration tests
+
+**Goal:** Today `cookbot-core/tests/test_firestore.py` (the only suite needing an
+external connection — the Firestore emulator) sits alongside pure unit tests and
+silently `skipif`s when the emulator is down. Make the split explicit so
+`pytest -m "not integration"` runs a fast, hermetic unit suite and integration
+tests run deliberately against the emulator.
+
+### Current state (audited 2026-06-07)
+- **Unit (no external connection):** all `cookbot-core/tests/test_agents/*`,
+  `test_models.py`; all `clients/tastyhub/tests/*` (TestClient + mocked firestore).
+- **Integration (needs `FIRESTORE_EMULATOR_HOST`):** `cookbot-core/tests/test_firestore.py`
+  (8 tests, already self-skipping).
+
+### Tasks
+
+- [ ] Add a `pytest` marker in `pyproject.toml` (`[tool.pytest.ini_options] markers = ["integration: needs external services (Firestore emulator)"]`).
+- [ ] Mark `test_firestore.py` with `pytestmark = pytest.mark.integration`
+      (and/or move it to `tests/integration/`).
+- [ ] Document the two run modes in CLAUDE.md "Running Tests":
+      `pytest -m "not integration"` (fast/hermetic) vs `pytest -m integration`
+      (requires `docker-compose up -d firestore-emulator` + `FIRESTORE_EMULATOR_HOST`).
+- [ ] Confirm `pytest -m "not integration"` collects zero integration tests and
+      passes with no emulator running.
+
+### Verify
+```
 docker-compose up -d firestore-emulator
-# Windows PowerShell: $env:FIRESTORE_EMULATOR_HOST="localhost:8080"
-# bash/zsh: export FIRESTORE_EMULATOR_HOST=localhost:8080
-
-cd packages/cookbot-core
-uv run pytest tests/test_firestore.py -v
+export FIRESTORE_EMULATOR_HOST=localhost:8080
+cd packages/cookbot-core && uv run pytest -m integration -v   (8 pass against emulator)
+unset FIRESTORE_EMULATOR_HOST
+uv run pytest -m "not integration" -q                         (fast, all green, 0 skipped)
 ```
 
-### ⏸ PAUSE 3
-**Report:** Test output. Any Firestore SDK issues?
-**Human decides:** Firestore structure OK? Should TTL be handled differently?
-
----
-
-## STEP 4 ★ — FastAPI Skeleton + Auth
-
-**Goal:** The API starts, the health endpoint works, API key auth validates correctly,
-sessions can be created. No WebSocket or agents yet.
-
-### Tasks
-
-- [X] `clients/tastyhub/app/main.py` — FastAPI app with lifespan:
-  ```python
-  @asynccontextmanager
-  async def lifespan(app: FastAPI):
-      # startup: init FirestoreService, DB pool, validate config
-      yield
-      # shutdown: close connections
-  ```
-  - Mount routers: `/health`, `/v1/sessions`, `/v1/ws`
-  - Global exception handlers for `TenantNotFoundError`, `SessionExpiredError`
-  - Structured logging with `structlog`
-
-- [X] `clients/tastyhub/app/middleware/auth.py` — FastAPI dependency:
-  - `get_tenant_config(x_api_key: str = Header(...)) -> TenantConfig`
-  - Validates key against `API_KEY` env var
-  - Raises HTTP 401 with clear message on failure
-  - Returns `TASTYHUB_CONFIG`
-
-- [X] `clients/tastyhub/app/api/sessions.py`:
-  - `POST /v1/sessions` → creates session in Firestore, returns `{session_id, expires_at}`
-  - Requires valid API key header
-  - Session ID = `uuid4()`
-
-- [X] `GET /health` → `{status: "ok", tenant: "tastyhub", version: "0.1.0"}`
-
-- [X] `clients/tastyhub/app/config/settings.py` — `pydantic-settings` `Settings` class
-  loading all ENV vars, validated at startup (fail fast on missing required vars)
-
-- [X] `clients/tastyhub/tests/test_api.py`:
-  - Test `/health` returns 200
-  - Test `POST /v1/sessions` with valid API key returns session_id
-  - Test `POST /v1/sessions` with invalid API key returns 401
-
-### Verify
-
-```powershell
-cd clients/tastyhub
-
-# Copy and fill env
-Copy-Item ..\..\env.example .env
-# (edit .env: set OPENAI_API_KEY, TENANT_ID=tastyhub, API_KEY=tk_dev_local)
-
-docker-compose up -d firestore-emulator
-
-# Start server in a separate terminal
-uv run uvicorn app.main:app --reload --port 8000
-
-# Health check
-curl.exe -s http://localhost:8000/health | python -m json.tool
-
-# Create session (valid key)
-curl.exe -s -X POST http://localhost:8000/v1/sessions `
-  -H "x-api-key: tk_dev_local" | python -m json.tool
-
-# Reject invalid key
-curl.exe -s -X POST http://localhost:8000/v1/sessions `
-  -H "x-api-key: wrong" -w "\nHTTP %{http_code}\n"
-
-# Run tests
-uv run pytest tests/test_api.py -v
-```
-
-### ⏸ PAUSE 4
-**Report:** Paste all curl outputs and test results.
-**Human decides:** API shape correct? Session response needs more fields?
-Any auth changes before WebSocket is added on top?
-
----
-
-## STEP 5 ★ — WebSocket Echo + Message Protocol
-
-**Goal:** WebSocket connection works end-to-end. Messages flow in both directions.
-Frontend test harness can connect and see echoed messages. No agents yet —
-this validates the transport before adding complexity.
-
-### Tasks
-
-- [X] `clients/tastyhub/app/api/websocket.py`:
-  - `WS /v1/ws/{session_id}` endpoint
-  - On connect: validate session exists in Firestore, load messages
-  - Echo mode: for now, receive any message and send back
-    `{"type": "token", "content": "echo: {received}"}` then
-    `{"type": "final_recipe", ...placeholder...}`
-  - Use typed helpers from `ws_messages.py` — never raw `websocket.send_json({})`
-  - Handle disconnect gracefully (catch `WebSocketDisconnect`)
-
-- [X] `frontend/index.html` — mock cooking website:
-  - Simple HTML page that looks like a cooking website (static content)
-  - Floating "Ask Chef Bot" button bottom-right
-  - On click: opens chat panel (div, not iframe yet)
-  - Chat panel: message input + send button + message list
-  - On page load: `POST /v1/sessions` to get session_id
-  - Opens WebSocket to `ws://localhost:8000/v1/ws/{session_id}`
-  - Displays all incoming messages with type labels
-  - Renders `final_recipe` type as a formatted recipe card (name + ingredients + steps)
-  - Renders `hitl_checkpoint` type as recipe card with **Approve** / **Modify** / **Reject** buttons
-  - On Approve: sends `{type: "hitl_response", approved: true}`
-  - On Modify: shows text input → sends `{type: "hitl_response", approved: false, modification: "..."}`
-
-- [X] `frontend/widget.js` — placeholder only (just logs "CookBot widget loaded"):
-  ```javascript
-  // Full widget.js implementation is Phase 2 (iframe + embed)
-  console.log('[CookBot] widget.js loaded for tenant:', document.currentScript.dataset.tenantId);
-  ```
-
-- [X] `clients/tastyhub/tests/test_websocket.py`:
-  - Test: WS connect to valid session → receives welcome token
-  - Test: WS connect to unknown session_id → closes with 4004 code
-  - Test: send message → receives echo response
-
-### Verify
-
-```powershell
-# Server must be running (Step 4)
-
-# Get a session ID
-$SESSION = (curl.exe -s -X POST http://localhost:8000/v1/sessions `
-  -H "x-api-key: tk_dev_local" | python -c "import sys,json; print(json.load(sys.stdin)['session_id'])")
-echo "Session: $SESSION"
-
-# Test with wscat (install: npm install -g wscat)
-npx wscat -c "ws://localhost:8000/v1/ws/$SESSION" `
-  --execute '{\"type\":\"message\",\"content\":\"I have chicken and spinach\"}'
-# Should receive: echo token + placeholder final_recipe
-
-# Open browser test (double-click or:)
-Start-Process frontend\index.html
-# → type a message → should see echoed response in chat
-```
-
-### ⏸ PAUSE 5
-**Report:** Paste wscat output. Screenshot or describe what the frontend looks like.
-**Human decides:** WebSocket protocol shape OK? Frontend layout usable for testing?
-HITL card design requirements? Anything to change before agents are wired in?
-
----
-
-# PHASE 2 — AGENT PIPELINE
-
----
-
-## STEP 6 ★ — IngredientAgent
-
-**Goal:** First real agent. Takes user fridge text, returns structured `ParsedIngredients`.
-Test it in isolation before wiring into the full pipeline.
-
-### Tasks
-
-- [X] `cookbot/agents/ingredient.py`:
-  - `build_ingredient_agent(config: TenantConfig) -> Agent[None, ParsedIngredients]`
-  - System prompt uses `config.persona` and `config.language`
-  - Must handle edge cases: empty input, single ingredient, foreign language input
-  - Return `missing_staples` only if highly confident (salt, oil, pepper — not specialty items)
-
-- [X] `cookbot/agents/__init__.py` — export `build_ingredient_agent`
-
-- [X] `packages/cookbot-core/tests/test_agents/test_ingredient.py`:
-  - All tests use `pydantic_ai.models.test.TestModel` — no real API calls
-  - Test: "I have chicken, spinach, garlic and I'm vegan" → items contain all three,
-    dietary_hints contains "vegan"
-  - Test: empty string → returns empty items list, no error
-  - Test: single ingredient → works
-
-### Verify
-
-```bash
-cd packages/cookbot-core
-uv run pytest tests/test_agents/test_ingredient.py -v
-
-# Live test (uses real OpenAI — set OPENAI_API_KEY first)
-uv run python -c "
-import asyncio
-from cookbot.agents.ingredient import build_ingredient_agent
-from cookbot.models.tenant import TenantConfig
-
-config = TenantConfig(
-    tenant_id='test',
-    persona='You are a helpful chef',
-    language='en',
-    recipe_source_url='',
-    allowed_origins=[],
-    model='gpt-4o-mini',
-    embedding_model='text-embedding-3-small',
-    max_hitl_rounds=3,
-    feature_nutrition=False,
-)
-agent = build_ingredient_agent(config)
-
-async def main():
-    result = await agent.run('I have leftover chicken, some wilting spinach, 3 garlic cloves, and feta. I try to eat healthy.')
-    print(result.data.model_dump_json(indent=2))
-
-asyncio.run(main())
-"
-```
-
-### ⏸ PAUSE 6
-**Report:** Test output + paste the live test JSON output.
-**Human decides:** Are the parsed ingredients correct? Should `missing_staples` be more/less aggressive?
-
----
-
-## STEP 7 ★ — WebSearchAgent
-
-**Goal:** Before generating a recipe from scratch, search the web for an existing one.
-Returns a structured `Recipe` from web results, or `None` if nothing useful is found,
-causing the orchestrator to fall back to `RecipeGenAgent`.
-
-### Tasks
-
-- [ ] `cookbot/agents/web_search.py`:
-  - `build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]`
-  - Register PydanticAI's built-in web search tool on the agent
-  - System prompt: search for a recipe matching the given ingredients, return a structured
-    `Recipe` if a good match is found, or `None` if results are irrelevant/empty
-  - Input prompt: `f"Find a recipe using these ingredients: {ingredients.items}. Dietary: {ingredients.dietary_hints}."`
-  - Agent must fill all `Recipe` fields from the search result (name, steps, times, etc.)
-
-- [ ] `cookbot/models/recipe.py` — add `WEB_SEARCH` to `RecipeSource` enum
-
-- [ ] `cookbot/agents/__init__.py` — export `build_web_search_agent`
-
-- [ ] `packages/cookbot-core/tests/test_agents/test_web_search.py`:
-  - All tests use `TestModel` — no real API/network calls
-  - Test: agent returns a valid `Recipe` when TestModel provides structured output
-  - Test: agent returns `None`-equivalent when TestModel signals no result
-
-### Verify
-
-```bash
-cd packages/cookbot-core
-uv run pytest tests/test_agents/test_web_search.py -v
-
-# Live test (uses real OpenAI + web search)
-uv run python -c "
-import asyncio, os
-from cookbot.agents.web_search import build_web_search_agent
-from cookbot.models.tenant import TenantConfig
-from cookbot.models.recipe import ParsedIngredients
-
-config = TenantConfig(
-    tenant_id='test', persona='You are a helpful chef', language='en',
-    recipe_source_url='', allowed_origins=[], model='gpt-4o-mini',
-    embedding_model='text-embedding-3-small', max_hitl_rounds=3, feature_nutrition=False,
-)
-agent = build_web_search_agent(config)
-
-async def main():
-    result = await agent.run('Find a recipe using these ingredients: chicken, spinach, garlic. Dietary: none.')
-    print(result.data.model_dump_json(indent=2) if result.data else 'No result found')
-
-asyncio.run(main())
-"
-```
-
-### ⏸ PAUSE 7
-**Report:** Test output + live test result. Did the web search return a real recipe?
-**Human decides:** Web search quality OK? Should the fallback threshold be tuned?
-
----
-
-## STEP 8 ★ — RecipeGenAgent
-
-**Goal:** Takes `ParsedIngredients` + `TenantConfig`, generates a structured `Recipe`.
-This is the fallback when `WebSearchAgent` returns nothing.
-
-### Tasks
-
-- [ ] `cookbot/agents/recipe_gen.py`:
-  - `build_recipe_gen_agent(config: TenantConfig) -> Agent[None, Recipe]`
-  - System prompt emphasizes: practical home cooking, exact quantities, numbered steps
-  - Persona from `config.persona` shapes the "voice" of the recipe
-  - Input prompt format: `f"Ingredients: {ingredients.items + ingredients.missing_staples}. Dietary: {ingredients.dietary_hints}."`
-
-- [ ] `packages/cookbot-core/tests/test_agents/test_recipe_gen.py`:
-  - Test: valid ingredients → recipe has name, ≥3 steps, ≥2 ingredients
-  - Test: `difficulty` is one of `Easy | Medium | Hard`
-  - Test: `prep_time_minutes` > 0
-
-### Verify
-
-```bash
-uv run pytest tests/test_agents/test_recipe_gen.py -v
-
-# Live test
-uv run python -c "
-import asyncio
-from cookbot.agents.recipe_gen import build_recipe_gen_agent
-# (same config as Step 6)
-# input: ParsedIngredients from Step 6 output
-# print recipe JSON
-"
-```
-
-### ⏸ PAUSE 8
-**Report:** Paste live recipe JSON. Does the generated recipe look good?
-**Human decides:** Recipe quality OK? Any prompt tuning needed? Should steps be more/less detailed?
-
----
-
-## STEP 9 ★ — RefinementAgent
-
-**Goal:** Takes an existing `Recipe` + a human modification request, returns updated `Recipe`.
-
-### Tasks
-
-- [ ] `cookbot/agents/refinement.py`:
-  - `build_refinement_agent(config: TenantConfig) -> Agent[None, Recipe]`
-  - Input prompt: `f"Recipe: {recipe.model_dump_json()}\nModification requested: {modification}"`
-  - Must preserve recipe structure (same Pydantic fields), only change content
-  - System prompt: "Apply the modification faithfully. Keep the recipe practical."
-
-- [ ] `packages/cookbot-core/tests/test_agents/test_refinement.py`:
-  - Test: "make it vegan" → ingredients list changes (no meat/dairy)
-  - Test: "reduce cooking time" → cook_time_minutes decreases OR steps simplify
-  - Test: result is still a valid `Recipe` (Pydantic validation passes)
-
-### Verify
-
-```bash
-uv run pytest tests/test_agents/test_refinement.py -v
-```
-
-### ⏸ PAUSE 9
-**Report:** Test output. Paste a live refinement example if possible.
-**Human decides:** Modification quality satisfactory? Any prompt changes?
-
----
-
-## STEP 10 ★ — HITL Gate
-
-**Goal:** The pipeline can suspend and resume. This is the most critical piece.
-
-### Tasks
-
-- [ ] `cookbot/hitl/gate.py` — `HITLGate` class:
-  ```python
-  class HITLGate:
-      def __init__(self, session_id: str, firestore: FirestoreService):
-          self._checkpoint_q: asyncio.Queue[HITLCheckpoint] = asyncio.Queue(1)
-          self._response_q: asyncio.Queue[HITLResponse] = asyncio.Queue(1)
-          self._session_id = session_id
-          self._firestore = firestore
-
-      async def suspend(self, recipe: Recipe, round_number: int) -> HITLResponse:
-          """Called by pipeline. Suspends until human responds."""
-          checkpoint = HITLCheckpoint(
-              checkpoint_id=str(uuid4()),
-              session_id=self._session_id,
-              recipe=recipe,
-              round_number=round_number,
-              created_at=datetime.utcnow(),
-          )
-          await self._firestore.save_hitl_checkpoint(checkpoint)
-          await self._checkpoint_q.put(checkpoint)
-          response = await asyncio.wait_for(
-              self._response_q.get(),
-              timeout=3600.0  # 1 hour timeout
-          )
-          await self._firestore.clear_hitl_checkpoint(self._session_id)
-          return response
-
-      async def get_checkpoint(self) -> HITLCheckpoint:
-          """Called by WS handler. Gets checkpoint to send to human."""
-          return await self._checkpoint_q.get()
-
-      async def submit_response(self, response: HITLResponse) -> None:
-          """Called by WS handler. Injects human response back into pipeline."""
-          await self._response_q.put(response)
-  ```
-
-- [ ] `cookbot/hitl/persistence.py`:
-  - `async restore_gate_from_firestore(session_id, firestore) -> HITLCheckpoint | None`
-  - Used when WS reconnects mid-HITL (human closed browser and reopened)
-
-- [ ] `packages/cookbot-core/tests/test_hitl/test_gate.py`:
-  - Test: `suspend()` blocks until `submit_response()` is called concurrently
-  - Test: response value flows correctly through the queue
-  - Test: `asyncio.wait_for` raises `HITLTimeoutError` on timeout (set short timeout in test)
-  - Test: `rejected` response (approved=False, modification=None) propagates correctly
-
-### Verify
-
-```bash
-uv run pytest tests/test_hitl/ -v
-# All tests must pass, including the concurrency test
-```
-
-### ⏸ PAUSE 10
-**Report:** Test output. Any concerns about the asyncio.Queue approach?
-**Human decides:** HITL timeout of 1 hour correct? Should rejected sessions be handled differently?
-
----
-
-## STEP 11 ★ — SessionOrchestrator
-
-**Goal:** All agents wired together with the HITL gate. The full pipeline runs as a
-background task. Can be tested end-to-end without WebSocket.
-
-### Tasks
-
-- [ ] `cookbot/orchestrator/session.py` — `SessionOrchestrator`:
-  ```python
-  class SessionOrchestrator:
-      def __init__(self, config: TenantConfig, firestore: FirestoreService):
-          self._config = config
-          self._firestore = firestore
-
-      async def run(
-          self,
-          session_id: str,
-          user_message: str,
-          # Callbacks — WS handler passes these; CLI test passes print functions
-          on_token: Callable[[str], Awaitable[None]],
-          on_agent_update: Callable[[str, str], Awaitable[None]],
-          on_hitl_checkpoint: Callable[[HITLCheckpoint], Awaitable[None]],
-          on_hitl_response_needed: Callable[[], Awaitable[HITLResponse]],
-          on_final_recipe: Callable[[Recipe, RecipeSource], Awaitable[None]],
-          on_error: Callable[[str], Awaitable[None]],
-      ) -> None:
-  ```
-
-  Pipeline:
-  1. `IngredientAgent` → `ParsedIngredients`
-  2. `WebSearchAgent` → `Recipe | None` (web search for matching recipe)
-  3. If web search returned a recipe → use it; else `RecipeGenAgent` → `Recipe`
-  4. HITL gate: call `on_hitl_checkpoint(checkpoint)`, then `await on_hitl_response_needed()`
-  5. If approved → done
-  6. If modified → `RefinementAgent`, loop back to step 4 (max `config.max_hitl_rounds`)
-  7. If rejected → call `on_error("Recipe rejected by user")`
-  8. Call `on_final_recipe(recipe, source)`
-
-  Save every agent output to Firestore as an assistant message.
-
-- [ ] `packages/cookbot-core/tests/test_orchestrator/test_session.py`:
-  - Use `TestModel` for all agents
-  - Test: full happy path (approve on first round)
-  - Test: one modification round then approve
-  - Test: reject → on_error called
-  - Test: max HITL rounds reached → uses last recipe
-
-### Verify
-
-```bash
-uv run pytest tests/test_orchestrator/ -v
-
-# CLI test (no WebSocket, no frontend needed)
-uv run python -c "
-import asyncio
-from cookbot.orchestrator.session import SessionOrchestrator
-# wire up with print callbacks, run with 'I have eggs and cheese'
-# should print: agent updates, then HITL checkpoint, then ask for approve/modify in CLI
-"
-```
-
-### ⏸ PAUSE 11
-**Report:** Test output + paste CLI test run showing the full pipeline.
-**Human decides:** Pipeline flow correct? Agent update messages useful? Any orchestration changes?
-
----
-
-## STEP 12 ★ — Full WebSocket Integration
-
-**Goal:** Replace the echo stub from Step 5 with the real orchestrator.
-End-to-end: browser types fridge contents → agents run → HITL card appears → approve → recipe.
-
-### Tasks
-
-- [ ] Update `clients/tastyhub/app/api/websocket.py`:
-  - On message received: spawn `asyncio.create_task(orchestrator.run(...))`
-  - Pass WS-backed callbacks:
-    - `on_token` → `await ws_send_token(ws, content)`
-    - `on_agent_update` → `await ws_send_agent_update(ws, agent, status)`
-    - `on_hitl_checkpoint` → `await ws_send_hitl_checkpoint(ws, checkpoint)`
-    - `on_hitl_response_needed` → `return await hitl_gate.get_checkpoint()` +
-      loop waiting for next WS message of type `hitl_response`
-    - `on_final_recipe` → `await ws_send_final_recipe(ws, recipe, source)`
-    - `on_error` → `await ws_send_error(ws, message)`
-  - Handle WS disconnect mid-pipeline gracefully (cancel task)
-  - Store `HITLGate` instance in app state keyed by `session_id`
-
-- [ ] Update `frontend/index.html` — make sure HITL card handlers send the right WS messages
-
-- [ ] `clients/tastyhub/tests/test_websocket.py` — add:
-  - Test: send fridge message → eventually receive `final_recipe` (mock agents)
-  - Test: send fridge message → receive `hitl_checkpoint` → send approve → receive `final_recipe`
-  - Test: send fridge message → receive `hitl_checkpoint` → send modify → receive new checkpoint → approve
-
-### Verify
-
-```bash
-# Server running with real OPENAI_API_KEY
-
-# Automated test (mocked agents)
-uv run pytest tests/test_websocket.py -v
-
-# Manual end-to-end test in browser
-open frontend/index.html
-# 1. Type: "I have chicken breast, spinach, garlic, feta cheese"
-# 2. Watch agent update messages appear
-# 3. Recipe card should appear with Approve/Modify/Reject buttons
-# 4. Click Approve → final recipe card appears
-# 5. Start new session, repeat but click Modify, type "make it under 20 minutes"
-# 6. New recipe appears, approve it
-```
-
-### ⏸ PAUSE 12 ★ MAJOR CHECKPOINT
-**Report:** Describe the full manual test run. Did the HITL flow work?
-Screenshot or describe the frontend state at each step.
-**Human decides:** This is the core product working. Is the agent quality good?
-Is the HITL UX right? Any changes needed before deployment?
+### ⏸ PAUSE 37
 
 ---
 
@@ -755,9 +644,9 @@ Is the HITL UX right? Any changes needed before deployment?
 
 ---
 
-## STEP 13 ★ — Docker + Local Full Stack
+## STEP 27 ★ — Docker + Local Full Stack
 
-**Goal:** Entire stack runs with one command. Proves the container will work on Cloud Run.
+**Goal:** Entire stack runs with one command. Proves the container works before Cloud Run.
 
 ### Tasks
 
@@ -766,7 +655,6 @@ Is the HITL UX right? Any changes needed before deployment?
   FROM python:3.12-slim
   WORKDIR /app
   RUN pip install uv
-  # Copy core library first (layer caching)
   COPY packages/cookbot-core /app/packages/cookbot-core
   COPY clients/tastyhub /app/clients/tastyhub
   WORKDIR /app/clients/tastyhub
@@ -775,126 +663,57 @@ Is the HITL UX right? Any changes needed before deployment?
   CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
   ```
 
-- [ ] `docker-compose.yml` — add tastyhub service:
-  ```yaml
-  tastyhub-api:
-    build:
-      context: .
-      dockerfile: clients/tastyhub/Dockerfile
-    ports: ["8000:8080"]
-    env_file: .env
-    depends_on: [firestore-emulator]
-  ```
+- [ ] `docker-compose.yml` — add tastyhub service alongside firestore-emulator
 
-- [ ] Update `frontend/index.html` — make API URL configurable via JS variable
-  (default `http://localhost:8000`, overridable for cloud testing)
+- [ ] Verify `frontend/` Vite build works (`npm run build`) and static files are serveable
 
 ### Verify
 
 ```bash
-# From repo root — single command to start everything
 docker-compose up --build
-
-# Then open frontend/index.html and run a full manual test
-# Should work identically to Step 11 but running in Docker
 curl http://localhost:8000/health
 ```
 
-### ⏸ PAUSE 13
-**Report:** Does `docker-compose up --build` work cleanly? Any image size concerns?
-**Human decides:** Ready to deploy to GCP?
+### ⏸ PAUSE 27
 
 ---
 
-## STEP 14 ★ — Cloud Run Deployment
+## STEP 28 ★ — Cloud Run Deployment
 
-**Goal:** The app is live on GCP. Can be tested with the real frontend.
+**Goal:** App live on GCP.
 
 ### Tasks
 
-- [ ] `clients/tastyhub/cloudbuild.yaml`:
-  ```yaml
-  steps:
-    - name: gcr.io/cloud-builders/docker
-      args: ['build', '-t', 'gcr.io/$PROJECT_ID/cookbot-tastyhub:$SHORT_SHA',
-             '-f', 'clients/tastyhub/Dockerfile', '.']
-    - name: gcr.io/cloud-builders/docker
-      args: ['push', 'gcr.io/$PROJECT_ID/cookbot-tastyhub:$SHORT_SHA']
-    - name: gcr.io/google.com/cloudsdktool/cloud-sdk
-      args:
-        - gcloud
-        - run
-        - deploy
-        - cookbot-tastyhub
-        - --image=gcr.io/$PROJECT_ID/cookbot-tastyhub:$SHORT_SHA
-        - --region=europe-west1
-        - --platform=managed
-        - --allow-unauthenticated
-        - --labels=client_id=tastyhub,app=cookbot
-        - --set-secrets=OPENAI_API_KEY=openai-key:latest
-  ```
-
-- [ ] `infrastructure/scripts/setup_gcp.sh` — one-time GCP setup:
-  - Create Firestore DB
-  - Create secrets in Secret Manager
-  - Enable required APIs
-  - Create service accounts with minimal IAM roles
-
-- [ ] Update `frontend/index.html` with Cloud Run URL detection
-
+- [ ] `clients/tastyhub/cloudbuild.yaml`
+- [ ] `infrastructure/scripts/setup_gcp.sh` — one-time GCP project setup
+- [ ] Secret Manager wiring for `OPENAI_API_KEY`, `API_KEY`, Firebase creds
 - [ ] `README.md` — deployment section
 
 ### Verify
 
 ```bash
-# Run setup (one-time)
-bash infrastructure/scripts/setup_gcp.sh
-
-# Deploy
 gcloud builds submit --config clients/tastyhub/cloudbuild.yaml
-
-# Test live URL
-CLOUD_RUN_URL=$(gcloud run services describe cookbot-tastyhub \
-  --region=europe-west1 --format='value(status.url)')
-curl $CLOUD_RUN_URL/health
+curl $(gcloud run services describe cookbot-tastyhub --region=europe-west1 --format='value(status.url)')/health
 ```
 
-### ⏸ PAUSE 14 — FINAL MVP CHECKPOINT
-**Report:** Cloud Run URL. Health check output. Full manual test on live URL.
-**Human decides:** MVP complete? What are the top 3 things to improve for Phase 2?
+### ⏸ PAUSE 28 — FINAL MVP CHECKPOINT
 
 ---
 
-# PHASE 2 — DEFERRED (do not implement until Phase 1 is complete and in production)
+# PHASE 4 — DEFERRED
 
-These are listed here so the agent knows they exist and should NOT be implemented:
+Do not implement until Phase 3 is live in production.
 
-- `○` Cloud SQL + pgvector schema + migration
-- `○` TastyHub recipe indexer (crawl sitemap → embed → pgvector)
-- `○` RecipeSearchAgent — pgvector-backed, replaces/complements WebSearchAgent
+- `○` Cloud SQL + pgvector + recipe KB
+- `○` TastyHub recipe indexer (crawl → embed → pgvector)
+- `○` RecipeSearchAgent (pgvector-backed)
 - `○` NutritionAgent
-- `○` Automated nightly indexer via Cloud Scheduler
-- `○` Rate limiting (Redis or Firestore counters)
-- `○` Memorystore Redis (replace Firestore for HITL state)
+- `○` Rate limiting (Redis / Firestore counters)
+- `○` Memorystore Redis
 - `○` Cloud CDN + Load Balancer for widget.js
-- `○` `widget.js` as proper iframe-sandboxed embed
-- `○` `infrastructure/terraform/` — full IaC
-- `○` `infrastructure/scripts/new_client.sh` — scaffold script
-- `○` Second client onboarding (proves library portability)
-- `○` Cloud Monitoring dashboards with per-client cost views
-- `○` Vertex AI Vector Search (replace pgvector at scale)
-
----
-
-## Agent Behaviour Rules
-
-1. **One step at a time.** Never implement Step N+1 while waiting for feedback on Step N.
-2. **Minimal viable implementation.** Each step does exactly what its tasks say — no extras.
-3. **Tests before wiring.** Write tests for a module before integrating it into the pipeline.
-4. **Report clearly at every pause.** Include: files created, commands run, output observed,
-   any deviations from the plan and why.
-5. **Ask, don't assume.** If a task is ambiguous, ask before writing code.
-6. **Never touch Phase 2 items.** If you think something from Phase 2 would help Phase 1,
-   raise it at the next pause — don't implement it unilaterally.
-7. **Keep cookbot-core clean.** If you feel the urge to add tastyhub-specific logic to core,
-   stop and raise it at the next pause instead.
+- `○` `widget.js` iframe-sandboxed embed
+- `○` Terraform IaC
+- `○` `new_client.sh` scaffold
+- `○` Second client onboarding
+- `○` Cloud Monitoring per-client dashboards
+- `○` Vertex AI Vector Search

@@ -34,7 +34,14 @@ def _run(custom_output: dict | None) -> Recipe | None:
     agent = build_web_search_agent(_CONFIG)
 
     async def _go() -> Recipe | None:
-        test_model = TestModel(custom_output_args=custom_output) if custom_output else TestModel()
+        # call_tools=[] stops TestModel from auto-invoking the agent's
+        # duckduckgo_search / web_fetch tools (which would hit the network /
+        # fail on dummy args). These tests only verify output mapping.
+        test_model = (
+            TestModel(custom_output_args=custom_output, call_tools=[])
+            if custom_output
+            else TestModel(call_tools=[])
+        )
         with agent.override(model=test_model):
             result = await agent.run(web_search_prompt(_INGREDIENTS, _INTENT))
             return result.output
