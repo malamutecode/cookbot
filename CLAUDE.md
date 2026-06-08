@@ -263,24 +263,43 @@ curl http://localhost:8000/health
 
 ## Running Tests
 
+Tests split into two tiers via the `integration` pytest marker:
+
+- **Unit (default, fast, hermetic)** — no network, no LLM, no emulator. Mock the
+  LLM with `pydantic_ai.models.test.TestModel`; mock Firestore with `AsyncMock`
+  in client tests. This is what you run constantly and what CI runs.
+- **Integration (`-m integration`)** — hits real external services and is
+  excluded from the default run. Two kinds:
+  - `tests/test_firestore.py` — needs the Firestore emulator (`FIRESTORE_EMULATOR_HOST`).
+  - `tests/integration/` — **live OpenAI + DuckDuckGo** end-to-end (auto-skips
+    without `OPENAI_API_KEY`; auto-loads the key from `clients/tastyhub/.env`;
+    runs on `gpt-4o-mini` for TPM headroom). Costs money; occasionally flaky
+    (live web search). Use to validate the real chat→proposals→recipe→calendar flow.
+
 ```bash
-# From repo root
-cd packages/cookbot-core
-uv run pytest tests/ -v
+# Fast unit run (do this by default)
+cd packages/cookbot-core && uv run pytest -m "not integration" -q
+cd clients/tastyhub     && uv run pytest -q          # all client tests are unit
 
-# Client app tests
-cd clients/tastyhub
-uv run pytest tests/ -v
+# Firestore integration (needs the emulator)
+docker-compose up -d firestore-emulator
+export FIRESTORE_EMULATOR_HOST=localhost:8080
+cd packages/cookbot-core && uv run pytest -m integration tests/test_firestore.py -v
 
-# With coverage
-uv run pytest tests/ --cov=cookbot --cov-report=term-missing
+# Live LLM e2e (needs OPENAI_API_KEY; ~1 min, makes real API + web calls)
+cd packages/cookbot-core && uv run pytest -m integration tests/integration/ -v
+
+# Coverage (unit only)
+uv run pytest -m "not integration" --cov=cookbot --cov-report=term-missing
 ```
 
 **Test conventions:**
 - Unit tests for all agents: mock the LLM using `pydantic_ai.models.test.TestModel`
-- Integration tests for Firestore: use Firestore emulator (`gcloud beta emulators firestore start`)
+- Mark anything that hits a real external service with `@pytest.mark.integration`
+  (or `pytestmark = pytest.mark.integration` at module level)
 - WebSocket tests: use `httpx` with `websockets` client or FastAPI's `TestClient`
-- No real OpenAI calls in tests — always mock
+- **No real OpenAI calls in the unit suite** — always mock. Live calls live only
+  under `-m integration`.
 
 ---
 

@@ -8,6 +8,11 @@ from cookbot.models.recipe import Recipe
 from cookbot.models.session import Message, Session, SessionStatus
 from cookbot.services.firestore import FirestoreService
 
+# These hit the real Firestore emulator → integration, excluded from the fast
+# unit run (`-m "not integration"`). The skipif still applies when running
+# `-m integration` without the emulator up.
+pytestmark = pytest.mark.integration
+
 EMULATOR_HOST = os.getenv("FIRESTORE_EMULATOR_HOST", "")
 emulator_available = pytest.mark.skipif(
     not EMULATOR_HOST,

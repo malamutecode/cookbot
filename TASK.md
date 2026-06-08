@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 37 — ready to implement (STEP 36 done; STEP 35 skipped)
+## Current Step: → STEP 38 — ready to implement (STEP 37 done; STEP 35 skipped)
 
 ---
 
@@ -614,14 +614,13 @@ tests run deliberately against the emulator.
 
 ### Tasks
 
-- [ ] Add a `pytest` marker in `pyproject.toml` (`[tool.pytest.ini_options] markers = ["integration: needs external services (Firestore emulator)"]`).
-- [ ] Mark `test_firestore.py` with `pytestmark = pytest.mark.integration`
-      (and/or move it to `tests/integration/`).
-- [ ] Document the two run modes in CLAUDE.md "Running Tests":
-      `pytest -m "not integration"` (fast/hermetic) vs `pytest -m integration`
-      (requires `docker-compose up -d firestore-emulator` + `FIRESTORE_EMULATOR_HOST`).
-- [ ] Confirm `pytest -m "not integration"` collects zero integration tests and
-      passes with no emulator running.
+- [x] `integration` marker registered in `pyproject.toml` (done in STEP 34).
+- [x] `test_firestore.py` marked `pytestmark = pytest.mark.integration` (skipif kept).
+      `tests/integration/` (live LLM e2e) also carries the marker.
+- [x] Documented both run modes in CLAUDE.md "Running Tests" (unit / firestore /
+      live-LLM e2e), including the gpt-4o-mini + auto-skip notes.
+- [x] Confirmed `pytest -m "not integration"` → 87 passed, 10 deselected,
+      **0 skipped** (was 8 skipped — firestore tests are now cleanly excluded).
 
 ### Verify
 ```
