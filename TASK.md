@@ -725,6 +725,50 @@ get_recipe_details_result found=False source_url=None
 
 ---
 
+## STEP 40 — Migrate recipe agents off the gpt-4o family (to GPT-5)
+
+**Goal:** The recipe agents (`model_web_search`, `model_recipe_gen`,
+`model_recipe_options`) currently run on `gpt-4o-mini`. The gpt-4o family is slated
+for retirement (~June 2026), so this migration is time-bound. It is **deferred,
+not blocking** — gpt-4o-mini works reliably today.
+
+### Why it's not a trivial model-string swap (investigated 2026-06-08)
+- **`gpt-4o` (no -mini) is unusable here:** large recipe pages (~24k chars) exceed
+  this org's 30k TPM limit on gpt-4o → the extraction call fails fast and returns
+  empty. This was the original "recipe not fetched" bug. `gpt-4o-mini` has the
+  headroom and extracts reliably one-shot.
+- **GPT-5 mini needs the Responses API for tools:** `gpt-5.4-mini` with
+  `reasoning_effort` + function tools 400s on Chat Completions
+  (`"Function tools with reasoning_effort are not supported … use /v1/responses"`).
+  PydanticAI: use the `openai-responses:` model-id prefix +
+  `OpenAIResponsesModelSettings(openai_reasoning_effort=..., max_tokens=...)`.
+  (Note: PydanticAI v2 will make bare `openai:` resolve to Responses anyway.)
+- **Even via Responses API, GPT-5 mini tool-loops on extraction:** observed it
+  re-calling `web_fetch` 3× on the same URL instead of committing to the structured
+  `Recipe` output, then returning `None` ~3/4 of runs (non-deterministic). Reasoning
+  tokens also count against the output budget (OpenAI: reserve ≥25k). So a naive
+  swap regresses reliability.
+
+### Tasks
+- [ ] Decide the GPT-5 approach. Most promising (from STEP 39 findings): **split
+      fetch from extraction** — do the page fetch with plain `httpx` (already proven
+      in `scripts/diag_fetch.py`), then feed the markdown to a **tool-less**
+      extraction agent. No tools → no tool-loop → GPT-5 (and any model) extracts
+      reliably. This also decouples extraction quality from agentic tool behavior.
+- [ ] If keeping tools: use `openai-responses:<model>` + `OpenAIResponsesModelSettings`
+      (reasoning_effort low/minimal, generous `max_tokens`), and add a strong
+      "call web_fetch once, then output the Recipe" instruction; measure reliability
+      over several live runs before committing.
+- [ ] Thread per-agent model settings through the `build_*_agent` factories.
+- [ ] Re-point `model_web_search`/`model_recipe_gen`/`model_recipe_options` to the
+      chosen GPT-5 model in `settings.py` + `.env.example`.
+- [ ] Extend the live integration tests to assert reliability (run the extraction
+      test N times; require consistent non-None web extraction).
+
+### ⏸ PAUSE 40
+
+---
+
 # PHASE 3 — PACKAGING & DEPLOYMENT
 
 ---

@@ -15,10 +15,14 @@ _MAX_PAGE_CONTENT = 24_000
 _EXTRACT_INSTRUCTIONS = """
 ## Steps
 1. **Fetch the page**: call `web_fetch` with the URL provided in the prompt.
-2. **Extract the recipe** from the fetched markdown:
+2. **Read the WHOLE markdown**, then **extract the COMPLETE recipe**:
    - name, description
-   - ingredients: exact quantities as written
-   - steps: numbered, actionable, as written on the page
+   - ingredients: EVERY item from the ingredient list, with exact quantities as
+     written. A real recipe has several ingredients — if you captured only 1-2,
+     you missed the list; scan the page again. Include items under any sub-headers
+     (e.g. "sos", "do podania").
+   - steps: ALL preparation steps in order, as written. A real recipe has multiple
+     steps — one step is almost always wrong; re-scan for the full method.
    - prep_time_minutes, cook_time_minutes (integers)
    - difficulty: exactly "Easy", "Medium", or "Hard"
    - servings: integer
@@ -33,6 +37,7 @@ _EXTRACT_INSTRUCTIONS = """
 
 ## Rules
 - NEVER invent ingredients or steps — extract only what is on the page.
+- Do NOT stop early: capture the full ingredient list and every step.
 - Always set source_url to the exact URL fetched.
 """
 
