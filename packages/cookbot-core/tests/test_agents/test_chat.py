@@ -542,32 +542,61 @@ async def test_resolve_recipe_not_found_when_ai_disabled() -> None:
     assert found.recipe.steps == []
 
 
-async def test_resolve_recipe_known_url_fetch_fail_falls_back_to_search() -> None:
-    # Regression (caught by live e2e): user picks a WEB proposal, the known-URL
-    # fetch fails to extract → we must search the web by name and stay
-    # source="web_search", NOT silently AI-generate.
+async def test_resolve_recipe_known_url_fetch_retries_then_succeeds() -> None:
+    # Extraction is intermittent — the known-URL fetch retries once, and a
+    # success on the 2nd attempt keeps the user on THEIR chosen page.
     from cookbot.agents.chat import resolve_recipe
     selected = _summary("Makaron ze szpinakiem", source="web_search",
-                        url="https://aniagotuje.pl/przepis/makaron-ze-szpinakiem")
-    web_recipe = _RECIPE.model_copy(update={"source_url": "https://aniagotuje.pl/x"})
-    fetch_factory, fetch_calls = _stub_agent_factory(None)        # fetch fails
-    search_factory, search_calls = _stub_agent_factory(web_recipe)  # search succeeds
+                        url="https://kwestiasmaku.com/pasta/x/przepis.html")
+    web_recipe = _RECIPE.model_copy(update={"source_url": selected.source_url})
+
+    calls: list[int] = []
+
+    class _FlakyFetch:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            calls.append(1)
+            return MagicMock(output=None if len(calls) == 1 else web_recipe)
 
     def _gen_boom(_config):  # noqa: ANN202
-        raise AssertionError("must not AI-generate when web search can recover")
+        raise AssertionError("must not AI-generate when the retry succeeds")
 
-    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
-         patch("cookbot.agents.chat.build_web_search_agent", search_factory), \
+    with patch("cookbot.agents.chat.build_web_fetch_agent", lambda _c: _FlakyFetch()), \
          patch("cookbot.agents.chat.build_recipe_gen_agent", _gen_boom):
         found = await resolve_recipe(
             selected, "1", OnboardingState(servings=2),
             config=_CONFIG, site_filter="", allow_ai_generated=True,
         )
 
-    assert len(fetch_calls) == 1          # tried the known URL first
-    assert len(search_calls) == 1         # then fell back to search
-    assert found.source == "web_search"   # stayed a web recipe
-    assert found.recipe.source_url and found.recipe.source_url.startswith("http")
+    assert len(calls) == 2                 # retried once
+    assert found.source == "web_search"
+    assert found.recipe.source_url == selected.source_url
+
+
+async def test_resolve_recipe_known_url_fail_does_not_wander_to_other_site() -> None:
+    # When a SPECIFIC URL was picked and both fetch attempts fail, we must NOT
+    # run a name-search (which could return a recipe from a different site and
+    # mis-attribute it). Fall back to AI, flagged.
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Makaron", source="web_search",
+                        url="https://kwestiasmaku.com/pasta/x/przepis.html")
+    fetch_factory, fetch_calls = _stub_agent_factory(None)   # always fails
+    gen_factory, gen_calls = _stub_agent_factory(_RECIPE)
+
+    def _search_boom(_config):  # noqa: ANN202
+        raise AssertionError("must NOT name-search when a specific URL was picked")
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_web_search_agent", _search_boom), \
+         patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert len(fetch_calls) == 2           # two attempts on the picked URL
+    assert len(gen_calls) == 1             # then AI, not a wandering search
+    assert found.source == "ai_generated"
+    assert found.web_pick_fell_back is True
 
 
 async def test_resolve_recipe_backfills_source_url_from_proposal() -> None:

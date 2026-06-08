@@ -293,20 +293,26 @@ async def resolve_recipe(
     if selected and selected.source == "web_search":
         servings = ob.servings or 2
 
-        # 1. If the proposal knows its URL, fetch that page directly.
         if selected.source_url:
-            log.info("get_recipe_details_fetch_known_url", url=selected.source_url)
+            # The user picked a SPECIFIC page → that URL is the source of truth.
+            # Extraction is occasionally flaky, so retry once before giving up.
+            # Do NOT fall back to a name-search here: returning a recipe from a
+            # different site would mis-attribute it (wrong recipe under a wrong
+            # "source" link). If both attempts fail, fall through to AI generation.
             fetch_agent = build_web_fetch_agent(config)
-            recipe = (await fetch_agent.run(
-                web_fetch_prompt(selected.source_url, servings)
-            )).output
-
-        # 2. If we have no recipe yet (no URL, or the fetch failed to extract),
-        #    search the web by recipe name. The user picked a WEB option, so we
-        #    keep trying the web before any AI fallback.
-        if recipe is None:
-            if selected.source_url:
-                log.info("get_recipe_details_fetch_failed_searching", url=selected.source_url)
+            for attempt in (1, 2):
+                log.info("get_recipe_details_fetch_known_url",
+                         url=selected.source_url, attempt=attempt)
+                recipe = (await fetch_agent.run(
+                    web_fetch_prompt(selected.source_url, servings)
+                )).output
+                if recipe is not None:
+                    break
+                log.info("get_recipe_details_fetch_attempt_empty",
+                         url=selected.source_url, attempt=attempt)
+        else:
+            # The proposal had no URL → search the web by name (this is the only
+            # way to reach a real page for this pick).
             ws_intent = UserIntent(
                 dish_type=selected.name,
                 servings=servings,
