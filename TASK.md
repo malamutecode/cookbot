@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 35 — ready to implement (STEP 34 done; live app smoke-test due before STEP 35)
+## Current Step: → STEP 37 — ready to implement (STEP 36 done; STEP 35 skipped)
 
 ---
 
@@ -329,6 +329,13 @@ Manual: Źródła → disable AI → chat → propose recipes → all 4 cards sh
 
 ## STEP 30 ★ — Dish images in recipe proposal cards
 
+> ⚠️ **Superseded / partially reverted (2026-06-07).** The `search_images` DDG
+> tool referenced below was later removed — the installed PydanticAI exposes only
+> text search, so `recipe_options.py` now leaves `image_url=null` and proposal
+> images do NOT populate. Final-recipe cards still show og:image. The real,
+> current status and the path forward live in **STEP 38** (proposal images +
+> source link). The checkboxes below reflect the original intent, not the code.
+
 **Goal:** Recipe proposal cards show a relevant dish photo so users can visually
 compare options at a glance.
 
@@ -530,13 +537,19 @@ Manual: full flow — propose → pick → add to calendar → shopping list —
 
 ---
 
-## STEP 35 — Reduce prompt-coercion in onboarding flow
+## STEP 35 — Reduce prompt-coercion in onboarding flow — SKIPPED (2026-06-07)
 
-**Goal:** The dynamic system prompt uses all-caps `MANDATORY`/`MUST` pressure
-(`chat.py:252-274`) to force deterministic flow that `next_missing_field()`
-already computes in code. Keep the *data* in the prompt, drop the imperative
-coercion, and let tool return values gate the flow. Lower risk — works today;
-this is robustness across model versions.
+**Decision:** Skipped. The onboarding flow was validated end-to-end by the live
+e2e (test_chat_e2e_live.py turns 1–5) with the current coercive prompt and works
+reliably. Loosening it is a robustness-only refactor with real regression risk
+and is hard to verify without live LLM runs — "if it works, don't touch it".
+Revisit only if onboarding misbehaves on a future model. Original goal kept below
+for reference.
+
+**Goal (not implemented):** The dynamic system prompt uses all-caps
+`MANDATORY`/`MUST` pressure to force deterministic flow that
+`next_missing_field()` already computes in code. Keep the *data* in the prompt,
+drop the imperative coercion, and let tool return values gate the flow.
 
 ### Tasks
 
@@ -567,16 +580,13 @@ Manual: skip-ahead ("zrób mi pastę dla 2 na 30 min") → fills multiple fields
 
 ### Tasks
 
-- [ ] Mutable default args → `None` + coalesce:
-      `chat.py:312` `propose_recipes(... dietary_hints: list[str] = [] ...)` and any
-      similar. Confirm `uv run ruff check .` is clean.
-- [ ] `clients/tastyhub/app/api/websocket.py:70-71` — the Bearer-verify
-      `except Exception: pass` must at least `log.warning(...)` so auth failures
-      aren't silent (CLAUDE.md "no bare excepts").
-- [ ] Reconcile TASK.md STEP 30 vs code: `recipe_options.py` instructs the agent
-      NOT to call image search ("images are loaded separately"), contradicting
-      STEP 30's `search_images` tool note. Update whichever is stale so docs match code.
-      (Legacy-export cleanup is no longer needed — STEP 31 deletes those modules.)
+- [x] Mutable default args → `None` + coalesce: `propose_recipes` now uses
+      `dietary_hints: list[str] | None = None` (coalesced to `[]` in body). The
+      remaining `= []` defaults are Pydantic model fields (safe, not the footgun).
+- [x] `websocket.py` Bearer-verify `except` now `log.warning("ws_token_verify_failed", ...)`
+      instead of silent `pass`.
+- [x] Reconciled STEP 30: added a "superseded" banner pointing to STEP 38 for the
+      real image status (the `search_images` tool was removed; images don't populate).
 
 ### Verify
 ```

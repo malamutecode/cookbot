@@ -123,8 +123,10 @@ async def websocket_endpoint(
             _get_firebase_app()
             decoded = firebase_admin.auth.verify_id_token(token)
             uid = decoded["uid"]
-        except Exception:
-            pass
+        except Exception as exc:
+            # Invalid/expired token → stay unauthenticated (uid=None), but don't
+            # swallow silently: log so auth failures are diagnosable.
+            log.warning("ws_token_verify_failed", error=str(exc))
 
     if session.uid is not None and uid != session.uid:
         await websocket.close(code=4001)

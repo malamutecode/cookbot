@@ -550,7 +550,7 @@ MANDATORY STEPS FOR THIS TURN:
         ingredients: list[str],
         max_time_minutes: int = 0,
         servings: int = 2,
-        dietary_hints: list[str] = [],
+        dietary_hints: list[str] | None = None,
         free_notes: str = "",
     ) -> dict[str, Any]:
         """Propose 4 recipe options. Call after onboarding is complete or on explicit user request. The options are sent to the frontend automatically."""
@@ -566,7 +566,7 @@ MANDATORY STEPS FOR THIS TURN:
         parsed = ParsedIngredients(
             items=intent.available_ingredients,
             must_use=[],
-            dietary_hints=dietary_hints,
+            dietary_hints=dietary_hints or [],
             missing_staples=[],
         )
         opts_agent = build_recipe_options_agent(cfg)
