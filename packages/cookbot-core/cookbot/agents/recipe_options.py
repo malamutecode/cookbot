@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import re
+
+import httpx
 import structlog
 
 from pydantic import BaseModel
@@ -12,6 +16,53 @@ from cookbot.models.tenant import TenantConfig
 log = structlog.get_logger()
 
 _OPTIONS_MAX_RESULTS = 5
+
+_OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_OG_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+_OG_FETCH_TIMEOUT = 6.0          # per page; images are nice-to-have, fail fast
+_OG_MAX_BYTES = 60_000           # og:image lives in <head>; no need to read more
+
+
+async def _fetch_og_image(client: httpx.AsyncClient, url: str) -> str | None:
+    """Best-effort fetch of a page's og:image. Returns None on any failure."""
+    try:
+        resp = await client.get(url, headers=_OG_FETCH_HEADERS)
+        head = resp.text[:_OG_MAX_BYTES]
+        m = _OG_IMAGE_RE.search(head)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+async def populate_proposal_images(proposals: list[RecipeSummary]) -> None:
+    """Fill image_url for web_search proposals by fetching each page's og:image
+    concurrently. In-place, best-effort: a proposal that fails keeps image_url=None
+    (the frontend shows a placeholder). AI proposals are skipped (no source page)."""
+    targets = [
+        p for p in proposals
+        if p.source == "web_search" and p.source_url and not p.image_url
+    ]
+    if not targets:
+        return
+    async with httpx.AsyncClient(follow_redirects=True, timeout=_OG_FETCH_TIMEOUT) as client:
+        results = await asyncio.gather(
+            *(_fetch_og_image(client, p.source_url) for p in targets),  # type: ignore[arg-type]
+            return_exceptions=True,
+        )
+    for p, img in zip(targets, results):
+        if isinstance(img, str) and img:
+            p.image_url = img
+    log.info("populate_proposal_images",
+             targets=len(targets),
+             filled=sum(1 for p in targets if p.image_url))
 
 
 class RecipeSummaryList(BaseModel):
@@ -65,12 +116,13 @@ Steps:
      from duckduckgo_search. A web_search proposal without a source_url is invalid;
      if you cannot provide a real URL, make it an ai_generated proposal instead.
      Always null for ai_generated proposals.
-   - image_url: null (images are loaded separately)
+   - image_url: ALWAYS null. Images are populated automatically afterwards from
+     each web page's og:image — do not attempt to provide one.
 
 Rules:
 - Vary the options: different cooking styles or difficulty levels.
 - All text fields must be in {config.language}.
-- Do NOT call any image search — leave image_url as null for all proposals.""",
+- Leave image_url null for every proposal; image population happens downstream.""",
     )
 
 

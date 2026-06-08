@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 38 — ready to implement (STEP 39 done; STEP 35 skipped)
+## Current Step: → Phase 2c COMPLETE (STEP 38 done; 35 skipped). Next: Phase 3 deployment (STEP 27/28).
 
 ---
 
@@ -654,23 +654,19 @@ images never appear and proposals carry no visible source link.
 
 ### Tasks
 
-- [ ] **Proposal source link (frontend, low-risk, do first):**
-      `frontend/src/components/ChatPanel.tsx` proposal card (~line 404-424) —
-      when `p.source === 'web_search' && p.source_url`, render a clickable
-      "Źródło ↗" link (reuse `styles.sourceLink`). AI proposals show no link.
-- [ ] **Proposal images — pick an approach (no image API available):**
-      Option A (preferred): during `propose_recipes`, for each web_search
-      proposal fetch the page's og:image and set `image_url`. Cost: one fetch per
-      web proposal — measure latency before committing; consider doing it
-      concurrently with `asyncio.gather`.
-      Option B (cheap, unreliable): re-instruct the options agent to fill
-      `image_url` from search-result thumbnails; rely on the existing `onError`
-      hide for broken images.
-- [ ] Update `recipe_options.py` instructions to match whichever approach is
-      chosen (currently they forbid images).
-- [ ] Reconcile the stale STEP 30 image checkboxes / note in this file.
-- [ ] Tests: proposal with `source_url` exposes a link; image approach unit-tested
-      with stubbed fetch (no network).
+- [x] **Proposal source link:** `ChatPanel.tsx` proposal card renders a clickable
+      "Źródło ↗" link when `p.source === 'web_search' && p.source_url`. AI shows none.
+- [x] **Proposal images — Option A (concurrent og:image fetch):**
+      `recipe_options.populate_proposal_images()` fetches each web proposal's
+      og:image via httpx concurrently (`asyncio.gather`), best-effort (6s timeout,
+      60k-byte cap, failures leave `image_url=None` → placeholder). Called from
+      `propose_recipes` after the options agent returns. Verified live (aniagotuje
+      og:image populated). httpx added as a cookbot-core dependency.
+- [x] `recipe_options.py` instructions clarified: agent always leaves image_url
+      null; images populated downstream from og:image.
+- [x] STEP 30 reconciled in STEP 36 (superseded banner added).
+- [x] Tests: `test_recipe_options.py` — og:image helper stubbed (fills web only,
+      tolerates failure, no-op without targets); source-link verified via tsc/types.
 
 ### Verify
 ```

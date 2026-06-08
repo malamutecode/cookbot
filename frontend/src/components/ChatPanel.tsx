@@ -436,6 +436,11 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
                 <p style={styles.optionDesc}>{p.description}</p>
                 <div style={styles.optionMeta}>⏱ {p.total_time_minutes} min · {p.difficulty}</div>
                 <div style={styles.optionIngr}>{p.key_ingredients.slice(0, 4).join(', ')}</div>
+                {p.source === 'web_search' && p.source_url && (
+                  <a href={p.source_url} target="_blank" rel="noopener noreferrer" style={styles.sourceLink}>
+                    Źródło ↗
+                  </a>
+                )}
                 <button style={styles.optionBtn} onClick={() => onPickRecipe(i + 1)}>
                   Wybieram
                 </button>

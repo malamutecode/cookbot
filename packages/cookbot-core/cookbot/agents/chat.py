@@ -34,7 +34,11 @@ from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 
 from cookbot.agents.recipe_gen import build_recipe_gen_agent, recipe_gen_prompt
-from cookbot.agents.recipe_options import build_recipe_options_agent, recipe_options_prompt
+from cookbot.agents.recipe_options import (
+    build_recipe_options_agent,
+    populate_proposal_images,
+    recipe_options_prompt,
+)
 from cookbot.agents.shopping_list import build_shopping_list_agent
 from cookbot.agents.web_search import build_web_fetch_agent, build_web_search_agent, web_fetch_prompt, web_search_prompt
 from cookbot.models.calendar import CalendarEntry, CalendarState
@@ -589,6 +593,9 @@ MANDATORY STEPS FOR THIS TURN:
             )
         )
         proposals = result.output.proposals[:4]
+        # Best-effort: fill dish images from each web page's og:image (concurrent,
+        # never blocks the result — failures leave image_url=None for a placeholder).
+        await populate_proposal_images(proposals)
         ctx.deps.last_proposals = proposals          # durable — consumed by get_recipe_details
         ctx.deps.events.append(RecipeOptionsEvent(proposals=proposals))
         return {
