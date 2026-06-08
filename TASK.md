@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 38 — ready to implement (STEP 37 done; STEP 35 skipped)
+## Current Step: → STEP 38 — ready to implement (STEP 39 done; STEP 35 skipped)
 
 ---
 
@@ -708,14 +708,22 @@ get_recipe_details_result found=False source_url=None
   instruction.
 
 ### Tasks
-- [ ] Reproduce extraction failure for ofeminin.pl + aniagotuje.pl URLs in a
-      standalone script/integration test; capture what `web_fetch` actually returns.
-- [ ] Consider parsing JSON-LD `Recipe` schema (most PL recipe sites embed it) as
-      a more reliable extraction path than free-text markdown.
-- [ ] Decide whether to keep silent AI fallback for web picks, or surface
-      "couldn't read that page" (see STEP-38-era decision: pure-AI gets no link).
-- [ ] Add an integration test: picking a known-good web proposal yields a
-      web_search recipe with ingredients/steps/source_url (not an AI fallback).
+- [x] Reproduced via `scripts/diag_fetch.py` + a live fetch-agent run. **Finding:
+      extraction is NOT broken** — aniagotuje.pl extracts cleanly (7 ingredients,
+      6 steps, correct source_url); markdown keeps the recipe text and fits under
+      24k. The earlier failure was a **bad URL pick**: the ofeminin.pl URL was a
+      `NewsMediaOrganization` *article*, not a recipe (no `recipeIngredient` at all).
+- [x] JSON-LD/microdata parsing investigated and **rejected as not worth it**:
+      kwestiasmaku has no structured ingredients, aniagotuje uses microdata (not
+      JSON-LD), and the LLM-markdown path already extracts both. No single
+      deterministic schema across sites; the LLM path works.
+- [x] Tightened URL selection in `recipe_options.py`: prefer single-recipe pages
+      (`/przepis/` etc.), explicitly avoid news/magazine articles, round-ups, and
+      lifestyle portals (ofeminin) even when the title mentions the dish.
+- [x] Fallback transparency: `FoundRecipe.web_pick_fell_back` flag; when a web
+      pick can't be read and we AI-generate, the agent tells the user honestly.
+- [x] Integration test `test_extraction_live.py` — known-good aniagotuje URL
+      yields a web_search recipe with ingredients/steps/source_url (passed live).
 
 ### ⏸ PAUSE 39
 

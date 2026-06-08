@@ -89,7 +89,10 @@ class OnboardingState(BaseModel):
 
 class FoundRecipe(BaseModel):
     recipe: Recipe
-    source: str  # "web_search" | "ai_generated"
+    source: str  # "web_search" | "ai_generated" | "not_found"
+    # True when the user picked a WEB proposal but the page couldn't be read, so
+    # the content was AI-generated instead. The chat agent tells the user.
+    web_pick_fell_back: bool = False
 
 
 class CalendarAddResult(BaseModel):
@@ -347,6 +350,9 @@ async def resolve_recipe(
         )
     parsed = ParsedIngredients(items=intent.available_ingredients, must_use=[], dietary_hints=[], missing_staples=[])
 
+    # Did the user pick a web proposal that we then failed to read from the web?
+    web_pick_fell_back = bool(selected and selected.source == "web_search" and recipe is None)
+
     if recipe is None and allow_ai_generated:
         gen_agent = build_recipe_gen_agent(config)
         recipe = (await gen_agent.run(recipe_gen_prompt(parsed, intent))).output
@@ -369,7 +375,7 @@ async def resolve_recipe(
         )
         source = "not_found"
 
-    return FoundRecipe(recipe=recipe, source=source)
+    return FoundRecipe(recipe=recipe, source=source, web_pick_fell_back=web_pick_fell_back)
 
 
 # ── Agent factory (call once per connection) ──────────────────────────────────
@@ -400,6 +406,10 @@ You MUST respond exclusively in {config.language}. Never use another language.
 4. The full recipe card is sent to the user automatically — do NOT describe or summarise it.
    Just confirm with one short sentence (e.g. "Oto przepis! Dodać do kalendarza?") and offer
    to add it to the calendar or find more recipes for other days.
+   - EXCEPTION: if get_recipe_details returns web_pick_fell_back=true, the chosen
+     web page could not be read, so this recipe was AI-generated. Tell the user
+     briefly and honestly, e.g. "Nie udało mi się odczytać tej strony, więc
+     przygotowałem przepis samodzielnie." then offer the usual next steps.
 
 ## After the first recipe — free-chat mode
 Once a recipe has been delivered, stay in free-chat mode indefinitely:

@@ -515,6 +515,9 @@ async def test_resolve_recipe_gen_fallback_when_search_empty() -> None:
 
     assert found.source == "ai_generated"
     assert len(gen_calls) == 1
+    # User picked a WEB option but we couldn't read it → flag set so the agent
+    # tells the user the recipe was AI-generated.
+    assert found.web_pick_fell_back is True
 
 
 async def test_resolve_recipe_not_found_when_ai_disabled() -> None:
@@ -598,6 +601,8 @@ async def test_resolve_recipe_ai_proposal_generates_directly() -> None:
 
     assert found.source == "ai_generated"
     assert len(gen_calls) == 1
+    # Picking an AI proposal is NOT a "web pick that fell back" — no note needed.
+    assert found.web_pick_fell_back is False
 
 
 # ── Turn events: ordering and emission gating ─────────────────────────────────
