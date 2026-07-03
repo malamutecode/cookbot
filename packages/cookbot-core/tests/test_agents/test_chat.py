@@ -618,6 +618,56 @@ async def test_resolve_recipe_backfills_source_url_from_proposal() -> None:
     assert found.recipe.source_url == "https://x.test/pasta"
 
 
+async def test_resolve_recipe_scales_web_recipe_to_requested_servings() -> None:
+    # Extraction is verbatim (page serves 2); the user asked for 4, so the scale
+    # step runs and its output is applied, with original_servings recorded.
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url="https://x.test/pasta")
+    fetch_factory, _ = _stub_agent_factory(_RECIPE)  # _RECIPE.servings == 2
+    scaled_ingredients = ["400g pasta", "4 cloves garlic"]
+    scale_calls: list[int] = []
+
+    class _ScaleStub:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            scale_calls.append(1)
+            return MagicMock(output=MagicMock(ingredients=scaled_ingredients))
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_scale_agent", lambda _c: _ScaleStub()):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=4),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert len(scale_calls) == 1
+    assert found.recipe.ingredients == scaled_ingredients
+    assert found.recipe.servings == 4
+    assert found.recipe.original_servings == 2
+    assert found.recipe.source_url == "https://x.test/pasta"  # provenance preserved
+
+
+async def test_resolve_recipe_skips_scaling_when_servings_match() -> None:
+    # Page serves 2, user asked for 2 → the scale agent must NOT be consulted.
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Pasta", source="web_search", url="https://x.test/pasta")
+    fetch_factory, _ = _stub_agent_factory(_RECIPE)  # servings == 2
+
+    class _ScaleStub:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            raise AssertionError("scale agent should not run when servings match")
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_scale_agent", lambda _c: _ScaleStub()):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+        )
+
+    assert found.recipe.ingredients == _RECIPE.ingredients  # unchanged
+    assert found.recipe.servings == 2
+    assert found.recipe.original_servings == 2
+
+
 async def test_resolve_recipe_ai_proposal_generates_directly() -> None:
     from cookbot.agents.chat import resolve_recipe
     selected = _summary("Invented Dish", source="ai_generated")

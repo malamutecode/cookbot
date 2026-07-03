@@ -30,6 +30,8 @@ class Recipe(BaseModel):
     tips: list[str]
     source_url: str | None = None   # set when recipe found via web search
     image_url: str | None = None    # og:image or prominent photo from the recipe page
+    original_servings: int | None = None  # serving count as written on the source page,
+    # before any scaling to the user's requested servings. None = never scaled / unknown.
 
 
 class RecipeSummary(BaseModel):

@@ -6,26 +6,34 @@ from cookbot.models.recipe import ParsedIngredients, Recipe, UserIntent
 from cookbot.models.tenant import TenantConfig
 
 _WEB_SEARCH_MAX_RESULTS = 5
-# Recipe pages (e.g. aniagotuje.pl, kwestiasmaku.com) carry heavy nav/cookie/
-# comment markup before and after the recipe; 12k often truncated the recipe
-# itself. 24k keeps the recipe body intact without ballooning per-call tokens
-# (which risks OpenAI TPM rate limits on smaller orgs).
-_MAX_PAGE_CONTENT = 24_000
+# Recipe pages carry heavy nav/menu/related-recipe markup BEFORE the recipe.
+# Measured: kwestiasmaku.com "makaron ze szpinakiem" fetches to ~40k chars of
+# markdown, and the ingredient list ("Składniki", incl. cebula + the 150 g
+# makaron) doesn't start until ~25.8k. The old 24k cap truncated it away, so the
+# model never saw the real ingredients — gpt-4o then (correctly) returned null,
+# while gpt-4o-mini fabricated a plausible-but-wrong recipe (missing cebula,
+# inflated makaron). The cap MUST clear a full recipe body. 48k covers observed
+# pages with headroom; ~16k tokens is well within model context and TPM limits.
+# If a page is still truncated, raise this rather than accept a fabricated recipe.
+_MAX_PAGE_CONTENT = 48_000
 
 _EXTRACT_INSTRUCTIONS = """
 ## Steps
 1. **Fetch the page**: call `web_fetch` with the URL provided in the prompt.
-2. **Read the WHOLE markdown**, then **extract the COMPLETE recipe**:
+2. **Read the WHOLE markdown**, then **extract the COMPLETE recipe VERBATIM**:
    - name, description
-   - ingredients: EVERY item from the ingredient list, with exact quantities as
-     written. A real recipe has several ingredients — if you captured only 1-2,
+   - ingredients: EVERY item from the ingredient list, with the EXACT quantities
+     as written on the page — do NOT recalculate, round, or scale them. Copy each
+     line as-is. A real recipe has several ingredients — if you captured only 1-2,
      you missed the list; scan the page again. Include items under any sub-headers
-     (e.g. "sos", "do podania").
+     (e.g. "sos", "do podania"). Common items are easy to overlook: onion (cebula),
+     garlic (czosnek), salt, pepper, oil/butter — double-check none are missing.
    - steps: ALL preparation steps in order, as written. A real recipe has multiple
      steps — one step is almost always wrong; re-scan for the full method.
    - prep_time_minutes, cook_time_minutes (integers)
    - difficulty: exactly "Easy", "Medium", or "Hard"
-   - servings: integer
+   - servings: the serving count STATED ON THE PAGE (e.g. "porcje: 2" → 2). Do not
+     guess or change it. If the page gives none, use 0.
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
@@ -37,6 +45,9 @@ _EXTRACT_INSTRUCTIONS = """
 
 ## Rules
 - NEVER invent ingredients or steps — extract only what is on the page.
+- NEVER scale, convert, or adjust quantities or servings. Faithful extraction only;
+  quantities and the serving count must match the page exactly. Adjusting for a
+  different number of people is a SEPARATE step handled elsewhere, not your job.
 - Do NOT stop early: capture the full ingredient list and every step.
 - Always set source_url to the exact URL fetched.
 """
@@ -48,13 +59,14 @@ _SEARCH_INSTRUCTIONS = """
    Prefer domains mentioned in the query (site: operators).
    Avoid aggregator homepages, forum threads, or listicles.
 3. **Fetch the page**: call `web_fetch` with that URL.
-4. **Extract the recipe** from the fetched markdown:
+4. **Extract the recipe VERBATIM** from the fetched markdown:
    - name, description
-   - ingredients: exact quantities as written
+   - ingredients: EVERY item, with the EXACT quantities as written — do NOT scale
+     or recalculate. Common items are easy to miss: onion, garlic, salt, oil.
    - steps: numbered, actionable, as written on the page
    - prep_time_minutes, cook_time_minutes (integers)
    - difficulty: exactly "Easy", "Medium", or "Hard"
-   - servings: integer
+   - servings: the serving count stated on the page (0 if none given); do not change it
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
@@ -63,6 +75,7 @@ _SEARCH_INSTRUCTIONS = """
 
 ## Rules
 - NEVER invent ingredients or steps — extract only what is on the page.
+- NEVER scale or adjust quantities/servings — faithful extraction only.
 - Always set source_url to the exact URL fetched.
 """
 
@@ -125,5 +138,10 @@ def web_search_prompt(ingredients: ParsedIngredients, intent: UserIntent, site_f
     return "\n".join(parts)
 
 
-def web_fetch_prompt(url: str, servings: int = 2) -> str:
-    return f"Fetch and extract the recipe from this URL: {url}\nAdjust servings to: {servings}"
+def web_fetch_prompt(url: str) -> str:
+    # Extraction is verbatim: we do NOT tell the model a target serving count here.
+    # Passing "adjust servings to N" made the model rescale quantities during
+    # extraction (inflating amounts that were already correct) and drop ingredients
+    # while doing the arithmetic. Scaling to the user's serving count, when needed,
+    # is a separate concern handled after a faithful extraction.
+    return f"Fetch and extract the recipe from this URL, exactly as written: {url}"

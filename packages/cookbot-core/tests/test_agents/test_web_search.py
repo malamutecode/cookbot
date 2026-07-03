@@ -2,7 +2,12 @@ import asyncio
 
 from pydantic_ai.models.test import TestModel
 
-from cookbot.agents.web_search import build_web_search_agent, web_search_prompt
+from cookbot.agents.web_search import (
+    _EXTRACT_INSTRUCTIONS,
+    build_web_search_agent,
+    web_fetch_prompt,
+    web_search_prompt,
+)
 from cookbot.models.recipe import ParsedIngredients, Recipe, UserIntent
 from cookbot.models.tenant import TenantConfig
 
@@ -94,3 +99,38 @@ def test_web_search_prompt_includes_free_notes() -> None:
     )
     prompt = web_search_prompt(_INGREDIENTS, intent_with_notes)
     assert "reheat" in prompt
+
+
+# --- Verbatim extraction guardrails (regression for kwestiasmaku bug) ---------
+# Bug: the fetch agent was told "Adjust servings to N" in the same pass as
+# extraction. It rescaled quantities that were already correct (150g makaron → 200g
+# for 2 servings) and dropped an ingredient (cebula) while doing the arithmetic.
+# Extraction must now be faithful; scaling is a separate concern.
+
+
+def test_web_fetch_prompt_does_not_instruct_scaling() -> None:
+    prompt = web_fetch_prompt("https://example.com/recipe")
+    lowered = prompt.lower()
+    assert "adjust servings" not in lowered
+    assert "scale" not in lowered
+    assert "https://example.com/recipe" in prompt
+
+
+def test_web_fetch_prompt_asks_for_verbatim_extraction() -> None:
+    prompt = web_fetch_prompt("https://example.com/recipe").lower()
+    # It should signal faithful, as-written extraction (not transformation).
+    assert "exactly as written" in prompt
+
+
+def test_extract_instructions_forbid_scaling() -> None:
+    lowered = _EXTRACT_INSTRUCTIONS.lower()
+    assert "never scale" in lowered
+    # Serving count must come from the page, not be invented/changed.
+    assert "stated on the page" in lowered
+
+
+def test_extract_instructions_flag_commonly_missed_ingredients() -> None:
+    # The dropped ingredient was cebula (onion); the prompt now names easy-to-miss
+    # staples explicitly so the model double-checks them.
+    lowered = _EXTRACT_INSTRUCTIONS.lower()
+    assert "onion" in lowered or "cebula" in lowered

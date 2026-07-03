@@ -19,6 +19,9 @@ class TenantConfig:
     model_web_search: str = "gpt-4o"
     model_recipe_options: str = "gpt-4o"
     model_shopping_list: str = "gpt-4o-mini"
+    # Scaling ingredient quantities to a new serving count is mechanical arithmetic
+    # on already-extracted text — a cheap model is adequate and keeps cost/TPM low.
+    model_recipe_scale: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
     max_hitl_rounds: int = 3
     feature_nutrition: bool = False

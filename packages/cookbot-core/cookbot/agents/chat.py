@@ -42,6 +42,7 @@ from cookbot.agents.recipe_options import (
     populate_proposal_images,
     recipe_options_prompt,
 )
+from cookbot.agents.recipe_scale import build_recipe_scale_agent, scale_recipe_to_servings
 from cookbot.agents.shopping_list import build_shopping_list_agent
 from cookbot.agents.web_search import build_web_fetch_agent, build_web_search_agent, web_fetch_prompt, web_search_prompt
 from cookbot.models.calendar import CalendarEntry, CalendarState
@@ -389,7 +390,7 @@ async def resolve_recipe(
                 log.info("get_recipe_details_fetch_known_url",
                          url=selected.source_url, attempt=attempt)
                 recipe = (await fetch_agent.run(
-                    web_fetch_prompt(selected.source_url, servings),
+                    web_fetch_prompt(selected.source_url),
                     usage=usage,
                 )).output
                 if recipe is not None:
@@ -423,6 +424,23 @@ async def resolve_recipe(
         # frontend always shows a "Źródło" link for web recipes.
         if recipe is not None and not recipe.source_url and selected.source_url:
             recipe.source_url = selected.source_url
+
+        # Scaling is a SEPARATE step from the (verbatim) extraction above. Only now,
+        # if the user's requested servings differ from what the page states, do we
+        # rescale quantities. No-ops when the page's serving count matches or is
+        # unknown — provenance (name/steps/source_url) is preserved by the scaler.
+        if recipe is not None:
+            scale_agent = _cached_agent(agent_cache, "recipe_scale", build_recipe_scale_agent, config)
+            before = recipe.servings
+            recipe = await scale_recipe_to_servings(
+                recipe, servings, agent=scale_agent, usage=usage,
+            )
+            if recipe.servings != before:
+                log.info("get_recipe_details_scaled",
+                         recipe_name=selected.name,
+                         original_servings=recipe.original_servings,
+                         target_servings=recipe.servings)
+
         log.info("get_recipe_details_result",
             recipe_name=selected.name,
             found=recipe is not None,

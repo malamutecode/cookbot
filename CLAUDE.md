@@ -144,8 +144,9 @@ the ChatAgent coordinates them.
 |---|---|---|---|
 | RecipeOptionsAgent | `build_recipe_options_agent` | `list[RecipeSummary]` (4) | Mix of web-found + AI variations (web-only when AI disabled) |
 | WebSearchAgent | `build_web_search_agent` | `Recipe \| None` | DDG search → fetch → extract; never invents content |
-| WebFetchAgent | `build_web_fetch_agent` | `Recipe \| None` | Fetch a known URL → extract (skips re-search) |
+| WebFetchAgent | `build_web_fetch_agent` | `Recipe \| None` | Fetch a known URL → extract VERBATIM (no scaling; skips re-search) |
 | RecipeGenAgent | `build_recipe_gen_agent` | `Recipe` | Generate a recipe only when allowed and web search found nothing |
+| RecipeScaleAgent | `build_recipe_scale_agent` | `ScaledIngredients` | Scale a web recipe's quantities to the user's servings — SEPARATE from extraction |
 | ShoppingListAgent | `build_shopping_list_agent` | `ShoppingList` | Dedup, sum quantities, group by shop section |
 
 ### State model
@@ -186,6 +187,13 @@ the ChatAgent coordinates them.
    Tools append to `deps.events`; the WS handler emits the messages in order.
 5. **Source URL is sacred.** A web-sourced recipe must keep `source_url` even
    after serving adaptation. Adaptation never rewrites provenance.
+   **Extraction is verbatim; scaling is separate.** The fetch/search agents copy
+   quantities and the serving count exactly as the page states them — they must
+   never rescale. Adjusting to the user's servings is a distinct step
+   (`scale_recipe_to_servings` + RecipeScaleAgent) that runs *after* extraction,
+   anchored on `Recipe.original_servings`, and only rewrites `ingredients`.
+   Merging the two (asking the extractor to "adjust servings") drops ingredients
+   and inflates amounts — the bug this separation fixed.
 6. **AI generation is gated.** Respect `allow_ai_generated`; when off, never call
    RecipeGenAgent — fall back to the "not_found" path.
 7. **Tools contain their failures.** A sub-agent exception must not crash the

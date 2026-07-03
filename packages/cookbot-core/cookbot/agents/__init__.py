@@ -6,6 +6,10 @@ from cookbot.agents.chat import (
     stream_chat_response,
 )
 from cookbot.agents.recipe_gen import build_recipe_gen_agent, recipe_gen_prompt
+from cookbot.agents.recipe_scale import (
+    build_recipe_scale_agent,
+    scale_recipe_to_servings,
+)
 from cookbot.agents.web_search import build_web_search_agent, web_search_prompt
 
 __all__ = [
@@ -16,6 +20,8 @@ __all__ = [
     "restore_chat_state",
     "build_web_search_agent",
     "build_recipe_gen_agent",
+    "build_recipe_scale_agent",
+    "scale_recipe_to_servings",
     "web_search_prompt",
     "recipe_gen_prompt",
 ]
