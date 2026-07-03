@@ -13,6 +13,8 @@ from cookbot.agents.chat import (
     ShoppingListEvent,
     TurnEvent,
     build_chat_agent,
+    dump_chat_state,
+    restore_chat_state,
     stream_chat_response,
 )
 from cookbot.hitl.persistence import restore_checkpoint
@@ -174,7 +176,20 @@ async def websocket_endpoint(
             preferred_sites=preferred_sites,
             allow_ai_generated=allow_ai_generated,
         )
+
+        # Resume a previous conversation if one was persisted (Cloud Run
+        # containers are stateless — a reconnect may land on a fresh instance).
         message_history: list = []
+        raw_state = await firestore.get_chat_state(session_id)
+        if raw_state is not None:
+            try:
+                message_history = restore_chat_state(raw_state, deps)
+                log.info("chat_state_restored", session_id=session_id,
+                         messages=len(message_history))
+            except Exception as exc:
+                # A corrupt/stale snapshot must never block the chat — start fresh.
+                log.warning("chat_state_restore_failed",
+                            session_id=session_id, error=str(exc))
 
         spiz_suffix = (
             f"\n[Pantry: {', '.join(i.name for i in spizarnia_items)}]"
@@ -206,18 +221,37 @@ async def websocket_endpoint(
                 if cut > 0:
                     message_history[:] = message_history[cut:]
 
-            # Stream agent response — message_history is updated inside the block
-            async with stream_chat_response(
-                agent, deps, message_history, user_text + spiz_suffix
-            ) as tokens:
-                async for token in tokens:
-                    await ws_send_token(websocket, content=token)
+            # Stream agent response — message_history is updated inside the block.
+            # A failed turn (LLM error, usage limit hit, …) must not kill the
+            # connection: report it and wait for the next message.
+            try:
+                async with stream_chat_response(
+                    agent, deps, message_history, user_text + spiz_suffix
+                ) as tokens:
+                    async for token in tokens:
+                        await ws_send_token(websocket, content=token)
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:
+                log.exception("ws_turn_error", session_id=session_id, error=str(exc))
+                await ws_send_error(websocket, message="Something went wrong. Please try again.")
+                continue
 
             # Drain the ordered side-effect events the tools appended this turn.
             log.info("ws_turn_end", event_count=len(deps.events),
                      events=[ev.kind for ev in deps.events])
             for ev in deps.events:
                 await _emit_event(websocket, ev)
+
+            # Persist the resumable conversation snapshot (best-effort — a
+            # Firestore hiccup must not break the live chat).
+            try:
+                await firestore.save_chat_state(
+                    session_id, dump_chat_state(deps, message_history)
+                )
+            except Exception as exc:
+                log.warning("chat_state_save_failed",
+                            session_id=session_id, error=str(exc))
 
     except WebSocketDisconnect:
         log.info("ws_disconnect", session_id=session_id)

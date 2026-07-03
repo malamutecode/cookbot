@@ -186,8 +186,8 @@ async def test_update_onboarding_sets_fields() -> None:
     result = await fn(ctx, dish_type="pasta", servings=2)
     assert deps.onboarding.dish_type == "pasta"
     assert deps.onboarding.servings == 2
-    assert result["complete"] is False
-    assert result["next_missing_field"] == "max_time_minutes"
+    assert result.complete is False
+    assert result.next_missing_field == "max_time_minutes"
 
 
 async def test_update_onboarding_complete_when_all_set() -> None:
@@ -202,8 +202,8 @@ async def test_update_onboarding_complete_when_all_set() -> None:
     ctx.deps = deps
 
     result = await fn(ctx)
-    assert result["complete"] is True
-    assert result["next_missing_field"] is None
+    assert result.complete is True
+    assert result.next_missing_field is None
 
 
 async def test_update_onboarding_partial_update_preserves_existing() -> None:
@@ -278,7 +278,7 @@ def _stub_shopping_agent(shopping_list: ShoppingList):
     captured: dict[str, str] = {}
 
     class _StubAgent:
-        async def run(self, raw_text: str):  # noqa: ANN202
+        async def run(self, raw_text: str, **_kw):  # noqa: ANN202
             captured["raw_text"] = raw_text
             return MagicMock(output=shopping_list)
 
@@ -441,10 +441,11 @@ def test_select_proposal_by_name_substring() -> None:
     assert _select_proposal(props, "soup") is props[1]
 
 
-def test_select_proposal_falls_back_to_first() -> None:
+def test_select_proposal_no_match_returns_none() -> None:
+    # No silent fallback — guessing the wrong card is worse than asking.
     from cookbot.agents.chat import _select_proposal
     props = [_summary("A"), _summary("B")]
-    assert _select_proposal(props, "nonsense") is props[0]
+    assert _select_proposal(props, "nonsense") is None
 
 
 def test_select_proposal_none_when_empty() -> None:
@@ -693,6 +694,190 @@ async def test_events_preserve_tool_call_order() -> None:
 
     kinds = [ev.kind for ev in deps.events]
     assert kinds == ["final_recipe", "calendar_add"]
+
+
+# ── Ambiguous selection → ModelRetry, never a guessed card ───────────────────
+
+async def test_get_recipe_details_ambiguous_choice_raises_model_retry() -> None:
+    from pydantic_ai import ModelRetry
+
+    deps = _make_deps(last_proposals=[_summary("Pasta"), _summary("Soup")])
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_recipe_details")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    with pytest.raises(ModelRetry):
+        await fn(ctx, choice="które jest najzdrowsze?")
+
+    # Proposals stay live so the user can still pick after the clarification.
+    assert len(deps.last_proposals) == 2
+    assert _events_of(deps, FinalRecipeEvent) == []
+
+
+# ── Tool error containment (a sub-agent failure must not crash the turn) ─────
+
+async def test_propose_recipes_failure_returns_structured_error() -> None:
+    deps = _make_deps()
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "propose_recipes")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    class _BoomAgent:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            raise RuntimeError("openai 429")
+
+    with patch("cookbot.agents.chat.build_recipe_options_agent", lambda _c: _BoomAgent()):
+        result = await fn(ctx, dish_type="pasta", ingredients=[])
+
+    assert result.count == 0
+    assert "error" in result.message
+    assert deps.last_proposals == []                     # nothing recorded
+    assert _events_of(deps, RecipeOptionsEvent) == []    # nothing emitted
+
+
+async def test_get_recipe_details_failure_returns_error_source() -> None:
+    proposals = [_summary("Pasta", source="web_search", url="https://x.test/p")]
+    deps = _make_deps(last_proposals=list(proposals))
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_recipe_details")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    class _BoomAgent:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            raise RuntimeError("network down")
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", lambda _c: _BoomAgent()):
+        found = await fn(ctx, choice="1")
+
+    assert found.source == "error"
+    assert _events_of(deps, FinalRecipeEvent) == []      # no card for the error
+    # Proposals survive the failure so the user can simply retry the pick.
+    assert len(deps.last_proposals) == 1
+
+
+async def test_get_shopping_list_failure_returns_error_field() -> None:
+    calendar = CalendarState(entries=[
+        CalendarEntry(id="1", date="2026-06-01", recipe_name="Pasta",
+                      ingredients=["pasta"]),
+    ])
+    deps = _make_deps(calendar=calendar)
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    class _BoomAgent:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            raise RuntimeError("openai down")
+
+    with patch("cookbot.agents.chat.build_shopping_list_agent", lambda _c: _BoomAgent()):
+        result = await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+
+    assert result.item_count == 0
+    assert result.error is not None
+    assert _events_of(deps, ShoppingListEvent) == []
+
+
+# ── Sub-agent caching (one build per connection, not per call) ───────────────
+
+async def test_sub_agent_built_once_per_connection() -> None:
+    calendar = CalendarState(entries=[
+        CalendarEntry(id="1", date="2026-06-01", recipe_name="Pasta",
+                      ingredients=["pasta"]),
+    ])
+    deps = _make_deps(calendar=calendar)
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    fake_list = ShoppingList(items=[], sections=[])
+    builds: list[int] = []
+
+    class _StubAgent:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            return MagicMock(output=fake_list)
+
+    def _factory(_config):  # noqa: ANN202
+        builds.append(1)
+        return _StubAgent()
+
+    with patch("cookbot.agents.chat.build_shopping_list_agent", _factory):
+        await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+        await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+
+    assert len(builds) == 1
+
+
+# ── ChatState persistence (dump → restore roundtrip) ─────────────────────────
+
+def _sample_history() -> list:
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        UserPromptPart,
+    )
+    return [
+        ModelRequest(parts=[UserPromptPart(content="zrób mi pastę")]),
+        ModelResponse(parts=[TextPart(content="Jasne! Na ile osób?")]),
+    ]
+
+
+def test_chat_state_roundtrip_restores_history_and_deps() -> None:
+    from cookbot.agents.chat import FoundRecipe, dump_chat_state, restore_chat_state
+
+    deps = _make_deps(
+        onboarding=OnboardingState(dish_type="pasta", servings=2),
+        last_recipe=FoundRecipe(recipe=_RECIPE, source="ai_generated"),
+        last_proposals=[_summary("Pasta", source="web_search", url="https://x.test/p")],
+    )
+    history = _sample_history()
+
+    raw = dump_chat_state(deps, history)
+
+    fresh = _make_deps()
+    restored_history = restore_chat_state(raw, fresh)
+
+    assert fresh.onboarding.dish_type == "pasta"
+    assert fresh.onboarding.servings == 2
+    assert fresh.last_recipe is not None
+    assert fresh.last_recipe.recipe.name == "Test Pasta"
+    assert [p.name for p in fresh.last_proposals] == ["Pasta"]
+    assert len(restored_history) == len(history)
+
+
+def test_chat_state_dump_is_firestore_safe() -> None:
+    # The snapshot must be a plain JSON-able dict with the message history as a
+    # single string (Firestore rejects directly nested arrays).
+    import json
+
+    from cookbot.agents.chat import dump_chat_state
+
+    deps = _make_deps()
+    raw = dump_chat_state(deps, _sample_history())
+
+    assert isinstance(raw, dict)
+    assert isinstance(raw["messages_json"], str)
+    json.dumps(raw)  # fully JSON-serializable
+
+
+def test_restore_chat_state_empty_snapshot_yields_fresh_state() -> None:
+    from cookbot.agents.chat import dump_chat_state, restore_chat_state
+
+    deps = _make_deps()
+    raw = dump_chat_state(deps, [])
+
+    fresh = _make_deps()
+    history = restore_chat_state(raw, fresh)
+
+    assert history == []
+    assert not fresh.onboarding.complete
+    assert fresh.last_recipe is None
+    assert fresh.last_proposals == []
 
 
 # ── stream_chat_response (integration, no tool calls) ────────────────────────

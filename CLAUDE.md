@@ -147,19 +147,27 @@ the ChatAgent coordinates them.
 
 ### State model
 
-- **`ChatAgentDeps`** — one instance per WebSocket connection.
+- **`ChatAgentDeps`** — a dataclass, one instance per WebSocket connection.
   - `onboarding` (`OnboardingState`) **accumulates across turns** until complete.
   - `calendar`, `search_site_filter`, `allow_ai_generated` — **refreshed each turn**
     by the WS handler from the message payload / user's Firestore prefs.
   - `last_recipe`, `last_proposals` — carry selection context between turns.
-  - `calendar_adds` / `calendar_removes` / `shopping_list_items` / `recipe_options`
-    — **per-turn side-effect collectors, reset each turn** by the WS handler, then
-    drained into typed WS messages after the turn.
+  - `events` (`list[TurnEvent]`) — **ordered per-turn side-effect collector,
+    reset each turn** via `deps.reset_turn()`, then drained into typed WS
+    messages by the handler after the turn.
 - Conversation history is `message_history` (PydanticAI messages), extended
   in-place by `stream_chat_response` each turn.
+- **Persistence (Architecture Rule 3):** after every turn the WS handler saves a
+  `ChatState` snapshot (`dump_chat_state(deps, message_history)`) to the session
+  document in Firestore and restores it on (re)connect (`restore_chat_state`),
+  so a reconnect on a fresh Cloud Run instance resumes the conversation.
+- **Usage guardrails:** one turn (ChatAgent run + all sub-agent calls, which
+  share usage via `usage=ctx.usage`) is capped by `UsageLimits` from
+  `TenantConfig.usage_request_limit` / `usage_total_tokens_limit`; per-turn
+  usage is logged as `chat_turn_usage` for cost attribution.
 
-> **Rule:** deps is connection-scoped working memory, **not** the source of truth.
-> Durable state (sessions, calendar, prefs) lives in Firestore (Architecture Rule 3).
+> **Rule:** deps is connection-scoped working memory; the Firestore `ChatState`
+> snapshot and the session/calendar/prefs documents are the source of truth.
 
 ### Hard rules for agent work
 
@@ -172,11 +180,16 @@ the ChatAgent coordinates them.
 3. **Every tool boundary is a Pydantic model** (Architecture Rule 5) — see the
    `*Result` models in `chat.py`.
 4. **Side effects go through deps collectors, never direct WS sends from a tool.**
-   Tools mutate `deps.calendar_adds` etc.; the WS handler emits the messages.
+   Tools append to `deps.events`; the WS handler emits the messages in order.
 5. **Source URL is sacred.** A web-sourced recipe must keep `source_url` even
    after serving adaptation. Adaptation never rewrites provenance.
 6. **AI generation is gated.** Respect `allow_ai_generated`; when off, never call
    RecipeGenAgent — fall back to the "not_found" path.
+7. **Tools contain their failures.** A sub-agent exception must not crash the
+   turn: catch it at the tool boundary and return a structured failure
+   (`source="error"`, `error=...`) the ChatAgent can explain conversationally.
+8. **Sub-agent calls pass `usage=ctx.usage`** so tokens aggregate into the
+   turn's shared usage budget and limits.
 
 > To add an agent, follow **"Adding a New Agent"** below, then wire it as a
 > ChatAgent tool. (There is no separate orchestrator class — the ChatAgent *is*
@@ -191,8 +204,8 @@ the ChatAgent coordinates them.
 | Language | Python 3.12 | Use `match` statements, `TypeAlias`, `Self` where appropriate |
 | Package manager | `uv` | Use `uv run`, `uv add`, never bare `pip install` |
 | Web framework | FastAPI 0.115+ | Use lifespan context managers, not `@app.on_event` |
-| AI agents | PydanticAI 0.0.14+ | Typed `result_type=`, use `agent.run_stream()` for streaming |
-| LLM | OpenAI `gpt-4o-mini` | Default for all agents — cost-effective, good structured output |
+| AI agents | PydanticAI 1.x (`pydantic-ai-slim`) | Typed `output_type=`, `instructions=`, `agent.run_stream()` for streaming |
+| LLM | OpenAI, per-agent | `TenantConfig.model_*` fields pick the model per agent (cost vs quality) |
 | Web search | PydanticAI web search tool | Recipe lookup before AI generation — MVP |
 | Session store | Firestore (native async SDK) | `google-cloud-firestore` with `AsyncClient` |
 | Vector search | pgvector via `asyncpg` | Phase 2 — client-specific recipe KB |
@@ -316,9 +329,10 @@ from cookbot.models.tenant import TenantConfig
 def build_my_agent(config: TenantConfig) -> Agent[None, MyOutputModel]:
     """Factory function — always build agents with tenant config injected."""
     return Agent(
-        config.model,
-        result_type=MyOutputModel,
-        system_prompt=f"""
+        config.model_my_agent,        # per-agent model field on TenantConfig
+        output_type=MyOutputModel,
+        defer_model_check=True,
+        instructions=f"""
         You are {config.persona}.
         Language: {config.language}.
         ... task-specific instructions ...

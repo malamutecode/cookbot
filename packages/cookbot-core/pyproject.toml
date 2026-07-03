@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
-    "pydantic-ai[duckduckgo]>=0.0.14",
+    "pydantic-ai-slim[duckduckgo,openai,web-fetch]>=1.102.0",
     "pydantic-settings>=2.3",
     "google-cloud-firestore>=2.16",
     "asyncpg>=0.29",
@@ -12,7 +12,6 @@ dependencies = [
     "structlog>=24.2",
     "ddgs>=9.14.4",
     "tzdata>=2026.2",
-    "pydantic-ai-slim[web-fetch]>=1.102.0",
     "httpx>=0.28.1",
 ]
 

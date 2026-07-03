@@ -24,14 +24,17 @@ Sub-agents (stateless, one LLM call each)
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import structlog
 from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from cookbot.agents.recipe_gen import build_recipe_gen_agent, recipe_gen_prompt
 from cookbot.agents.recipe_options import (
@@ -93,10 +96,22 @@ class OnboardingState(BaseModel):
 
 class FoundRecipe(BaseModel):
     recipe: Recipe
-    source: str  # "web_search" | "ai_generated" | "not_found"
+    source: str  # "web_search" | "ai_generated" | "not_found" | "error"
     # True when the user picked a WEB proposal but the page couldn't be read, so
     # the content was AI-generated instead. The chat agent tells the user.
     web_pick_fell_back: bool = False
+
+
+class OnboardingUpdateResult(BaseModel):
+    complete: bool
+    next_missing_field: str | None
+    collected: OnboardingState
+
+
+class ProposeRecipesResult(BaseModel):
+    count: int
+    names: list[str]
+    message: str
 
 
 class CalendarAddResult(BaseModel):
@@ -115,6 +130,8 @@ class ShoppingListResult(BaseModel):
     sections: list[str]
     date_from: str
     date_to: str
+    # Set when the ShoppingListAgent failed — tells the chat agent to apologise.
+    error: str | None = None
 
 
 # ── Turn events (ordered side-effects, drained by the WS handler) ──────────────
@@ -158,11 +175,14 @@ TurnEvent = (
 
 # ── Agent deps (one instance per WS connection) ───────────────────────────────
 
-class ChatAgentDeps(BaseModel):
+@dataclass
+class ChatAgentDeps:
     """
     One instance per WebSocket connection. Fields fall into three lifetimes:
 
     1. Connection-durable — created once, survive every turn (do NOT reset).
+       Persisted to Firestore between turns via dump_chat_state(), so a
+       reconnect on a fresh container resumes the conversation.
     2. Per-turn input — refreshed by the WS handler at the start of each turn
        from the message payload / user's Firestore prefs.
     3. Per-turn output — `events`, an ordered list of side-effects appended by
@@ -173,29 +193,71 @@ class ChatAgentDeps(BaseModel):
     loose lines scattered in the handler — add a per-turn field here and to
     reset_turn() together so the two never drift.
     """
-    model_config = {"arbitrary_types_allowed": True}
 
     # ── 1. Connection-durable ────────────────────────────────────────────────
-    config: Any                                        # TenantConfig
-    onboarding: OnboardingState = OnboardingState()    # accumulates until complete
+    config: TenantConfig
+    onboarding: OnboardingState = field(default_factory=OnboardingState)  # accumulates until complete
     last_recipe: FoundRecipe | None = None             # set by get_recipe_details, used by add_to_calendar
-    last_proposals: list[RecipeSummary] = []           # proposals (1-4), consumed by get_recipe_details
+    last_proposals: list[RecipeSummary] = field(default_factory=list)  # proposals (1-4), consumed by get_recipe_details
 
     # ── 2. Per-turn input (refreshed each turn by the WS handler) ─────────────
-    calendar: CalendarState = CalendarState()          # current calendar from the WS payload
+    calendar: CalendarState = field(default_factory=CalendarState)  # current calendar from the WS payload
     search_site_filter: str = ""                       # hard site: restriction (sites_only mode only)
-    preferred_sites: list[str] = []                    # soft-prefer domains (sites_and_internet mode)
+    preferred_sites: list[str] = field(default_factory=list)  # soft-prefer domains (sites_and_internet mode)
     allow_ai_generated: bool = True                    # when False, skip RecipeGenAgent fallback
 
     # ── 3. Per-turn output (cleared by reset_turn) ────────────────────────────
     # Ordered side-effects, appended by tools in call order, drained by the WS handler.
-    events: list[TurnEvent] = []
+    events: list[TurnEvent] = field(default_factory=list)
 
     def reset_turn(self) -> None:
         """Clear the per-turn output events. Call once at the start of every WS
         turn, before streaming the agent response. Connection-durable and
         per-turn-input fields are intentionally left untouched."""
         self.events = []
+
+
+# ── Durable conversation state (Firestore-backed, Architecture Rule 3) ────────
+
+class ChatState(BaseModel):
+    """Snapshot of everything needed to resume a conversation on a fresh
+    container: the PydanticAI message history plus the connection-durable
+    deps fields. The WS handler saves it after every turn and restores it
+    on (re)connect.
+
+    The message history is stored as a JSON string rather than nested
+    documents — Firestore rejects directly nested arrays, which tool-call
+    parts can contain.
+    """
+    messages_json: str = "[]"
+    onboarding: OnboardingState = OnboardingState()
+    last_recipe: FoundRecipe | None = None
+    last_proposals: list[RecipeSummary] = []
+
+
+def dump_chat_state(
+    deps: ChatAgentDeps, message_history: list[ModelMessage]
+) -> dict[str, Any]:
+    """Serialize the resumable conversation state to a Firestore-safe dict."""
+    state = ChatState(
+        messages_json=ModelMessagesTypeAdapter.dump_json(message_history).decode(),
+        onboarding=deps.onboarding,
+        last_recipe=deps.last_recipe,
+        last_proposals=deps.last_proposals,
+    )
+    return state.model_dump(mode="json")
+
+
+def restore_chat_state(
+    raw: dict[str, Any], deps: ChatAgentDeps
+) -> list[ModelMessage]:
+    """Restore connection-durable deps fields from a dump_chat_state() dict
+    and return the deserialized message history."""
+    state = ChatState.model_validate(raw)
+    deps.onboarding = state.onboarding
+    deps.last_recipe = state.last_recipe
+    deps.last_proposals = state.last_proposals
+    return list(ModelMessagesTypeAdapter.validate_json(state.messages_json))
 
 
 # ── Date normalisation ────────────────────────────────────────────────────────
@@ -253,8 +315,9 @@ def _select_proposal(
 ) -> RecipeSummary | None:
     """Map the user's choice ('2' or a name) to one of the shown proposals.
 
-    Falls back to the first proposal if nothing matches but proposals exist.
-    Returns None only when there are no proposals at all.
+    Returns None when nothing matches — never guesses: silently resolving the
+    wrong card is worse than asking the user to clarify (the tool raises
+    ModelRetry in that case so the agent asks for a clear pick).
     """
     if not proposals:
         return None
@@ -267,7 +330,24 @@ def _select_proposal(
     for p in proposals:
         if lower in p.name.lower() or p.name.lower() in lower:
             return p
-    return proposals[0]
+    return None
+
+
+def _cached_agent(
+    cache: dict[str, Any] | None,
+    key: str,
+    factory: Callable[[TenantConfig], Any],
+    config: TenantConfig,
+) -> Any:
+    """Build a stateless sub-agent via its module-level factory, reusing a
+    previous build when a cache dict is provided. Lazy on purpose: an agent is
+    only built when its branch actually runs, and the factory name is resolved
+    at call time so tests can patch cookbot.agents.chat.build_*_agent."""
+    if cache is None:
+        return factory(config)
+    if key not in cache:
+        cache[key] = factory(config)
+    return cache[key]
 
 
 async def resolve_recipe(
@@ -278,6 +358,8 @@ async def resolve_recipe(
     config: TenantConfig,
     site_filter: str,
     allow_ai_generated: bool,
+    usage: RunUsage | None = None,
+    agent_cache: dict[str, Any] | None = None,
 ) -> FoundRecipe:
     """Resolve a chosen proposal to a full Recipe.
 
@@ -287,6 +369,9 @@ async def resolve_recipe(
          site filter if the filtered search finds nothing).
       3. Nothing found yet and AI allowed → generate with RecipeGenAgent.
       4. Nothing found and AI disabled → a "not_found" placeholder Recipe.
+
+    `usage` is the parent run's RunUsage (pass ctx.usage from the tool) so
+    sub-agent tokens aggregate into the chat turn's usage and limits.
     """
     recipe: Recipe | None = None
 
@@ -299,12 +384,13 @@ async def resolve_recipe(
             # Do NOT fall back to a name-search here: returning a recipe from a
             # different site would mis-attribute it (wrong recipe under a wrong
             # "source" link). If both attempts fail, fall through to AI generation.
-            fetch_agent = build_web_fetch_agent(config)
+            fetch_agent = _cached_agent(agent_cache, "web_fetch", build_web_fetch_agent, config)
             for attempt in (1, 2):
                 log.info("get_recipe_details_fetch_known_url",
                          url=selected.source_url, attempt=attempt)
                 recipe = (await fetch_agent.run(
-                    web_fetch_prompt(selected.source_url, servings)
+                    web_fetch_prompt(selected.source_url, servings),
+                    usage=usage,
                 )).output
                 if recipe is not None:
                     break
@@ -321,14 +407,16 @@ async def resolve_recipe(
                 free_notes="",
             )
             ws_parsed = ParsedIngredients(items=[], must_use=[], dietary_hints=[], missing_staples=[])
-            ws_agent = build_web_search_agent(config)
+            ws_agent = _cached_agent(agent_cache, "web_search", build_web_search_agent, config)
             recipe = (await ws_agent.run(
-                web_search_prompt(ws_parsed, ws_intent, site_filter)
+                web_search_prompt(ws_parsed, ws_intent, site_filter),
+                usage=usage,
             )).output
             if recipe is None and site_filter:
                 log.info("get_recipe_details_retry_no_filter", recipe_name=selected.name)
                 recipe = (await ws_agent.run(
-                    web_search_prompt(ws_parsed, ws_intent, site_filter="")
+                    web_search_prompt(ws_parsed, ws_intent, site_filter=""),
+                    usage=usage,
                 )).output
         # Provenance safety net: a web recipe must carry a source_url. If the
         # extractor omitted it but the proposal knew the URL, backfill it so the
@@ -364,8 +452,9 @@ async def resolve_recipe(
     web_pick_fell_back = bool(selected and selected.source == "web_search" and recipe is None)
 
     if recipe is None and allow_ai_generated:
-        gen_agent = build_recipe_gen_agent(config)
-        recipe = (await gen_agent.run(recipe_gen_prompt(parsed, intent))).output
+        gen_agent = _cached_agent(agent_cache, "recipe_gen", build_recipe_gen_agent, config)
+        generated: Recipe = (await gen_agent.run(recipe_gen_prompt(parsed, intent), usage=usage)).output
+        recipe = generated
         source = "ai_generated"
     elif recipe is not None:
         source = "web_search"
@@ -420,6 +509,12 @@ You MUST respond exclusively in {config.language}. Never use another language.
      web page could not be read, so this recipe was AI-generated. Tell the user
      briefly and honestly, e.g. "Nie udało mi się odczytać tej strony, więc
      przygotowałem przepis samodzielnie." then offer the usual next steps.
+   - If get_recipe_details returns source="not_found", no recipe was found on the
+     allowed sites — no card is shown. Explain this and suggest changing the source
+     settings or allowing AI-generated recipes.
+   - If a tool reports source="error" or an error message, a temporary technical
+     problem occurred — no card is shown. Apologise briefly and ask the user to
+     try again in a moment. Do not retry the tool yourself.
 
 ## After the first recipe — free-chat mode
 Once a recipe has been delivered, stay in free-chat mode indefinitely:
@@ -476,9 +571,11 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
 The user has been shown these recipe options:
 {names}
 
-MANDATORY: The user's message is their selection. Call get_recipe_details immediately
-with their choice (a number like "1" or the recipe name). Do not describe any recipe —
-the full recipe card is displayed automatically after the tool call.
+If the user's message picks one of them (a number like "1" or a recipe name),
+call get_recipe_details immediately with their choice. Do not describe the
+chosen recipe — the full recipe card is displayed automatically after the tool
+call. If the message is instead a question or comment about the options, answer
+it directly and invite them to pick one by number or name.
 """
             return ""  # onboarding done, no extra instructions needed
 
@@ -536,6 +633,11 @@ MANDATORY STEPS FOR THIS TURN:
 
     # ── Tools ────────────────────────────────────────────────────────────────
 
+    # Sub-agents are stateless and depend only on tenant config — build each
+    # once per chat agent (i.e. per connection) and reuse across turns. Filled
+    # lazily by _cached_agent so unused sub-agents are never built.
+    sub_agents: dict[str, Any] = {}
+
     @agent.tool
     async def update_onboarding(
         ctx: RunContext[ChatAgentDeps],
@@ -544,7 +646,7 @@ MANDATORY STEPS FOR THIS TURN:
         max_time_minutes: int | None = None,
         ingredients: list[str] | None = None,
         free_notes: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> OnboardingUpdateResult:
         """Record one or more onboarding answers. Always call this before asking the next question."""
         ob = ctx.deps.onboarding
         if dish_type is not None:
@@ -557,11 +659,11 @@ MANDATORY STEPS FOR THIS TURN:
             ob.ingredients = ingredients
         if free_notes is not None:
             ob.free_notes = free_notes
-        return {
-            "complete": ob.complete,
-            "next_missing_field": ob.next_missing_field(),
-            "collected": ob.model_dump(),
-        }
+        return OnboardingUpdateResult(
+            complete=ob.complete,
+            next_missing_field=ob.next_missing_field(),
+            collected=ob,
+        )
 
     @agent.tool
     async def propose_recipes(
@@ -572,7 +674,7 @@ MANDATORY STEPS FOR THIS TURN:
         servings: int = 2,
         dietary_hints: list[str] | None = None,
         free_notes: str = "",
-    ) -> dict[str, Any]:
+    ) -> ProposeRecipesResult:
         """Propose 4 recipe options. Call after onboarding is complete or on explicit user request. The options are sent to the frontend automatically."""
         cfg: TenantConfig = ctx.deps.config
         ob = ctx.deps.onboarding
@@ -589,26 +691,38 @@ MANDATORY STEPS FOR THIS TURN:
             dietary_hints=dietary_hints or [],
             missing_staples=[],
         )
-        opts_agent = build_recipe_options_agent(cfg)
-        result = await opts_agent.run(
-            recipe_options_prompt(
-                parsed, intent,
-                site_filter=ctx.deps.search_site_filter,
-                allow_ai_generated=ctx.deps.allow_ai_generated,
-                preferred_sites=ctx.deps.preferred_sites,
+        opts_agent = _cached_agent(sub_agents, "recipe_options", build_recipe_options_agent, cfg)
+        try:
+            result = await opts_agent.run(
+                recipe_options_prompt(
+                    parsed, intent,
+                    site_filter=ctx.deps.search_site_filter,
+                    allow_ai_generated=ctx.deps.allow_ai_generated,
+                    preferred_sites=ctx.deps.preferred_sites,
+                ),
+                usage=ctx.usage,
             )
-        )
-        proposals = result.output.proposals[:4]
-        # Best-effort: fill dish images from each web page's og:image (concurrent,
-        # never blocks the result — failures leave image_url=None for a placeholder).
-        await populate_proposal_images(proposals)
+            proposals = result.output.proposals[:4]
+            # Best-effort: fill dish images from each web page's og:image (concurrent,
+            # never blocks the result — failures leave image_url=None for a placeholder).
+            await populate_proposal_images(proposals)
+        except Exception as exc:
+            # Contain the failure at the tool boundary: the turn survives and the
+            # agent explains instead of the connection dying mid-stream.
+            log.exception("propose_recipes_failed", error=str(exc))
+            return ProposeRecipesResult(
+                count=0,
+                names=[],
+                message="error: recipe search failed temporarily — apologise briefly "
+                        "and invite the user to try again in a moment. Do not retry now.",
+            )
         ctx.deps.last_proposals = proposals          # durable — consumed by get_recipe_details
         ctx.deps.events.append(RecipeOptionsEvent(proposals=proposals))
-        return {
-            "count": len(proposals),
-            "names": [p.name for p in proposals],
-            "message": "Options sent to user — ask them to pick one by number or name.",
-        }
+        return ProposeRecipesResult(
+            count=len(proposals),
+            names=[p.name for p in proposals],
+            message="Options sent to user — ask them to pick one by number or name.",
+        )
 
     @agent.tool
     async def get_recipe_details(
@@ -617,18 +731,50 @@ MANDATORY STEPS FOR THIS TURN:
     ) -> FoundRecipe:
         """Get the full recipe for the option the user chose. choice is a number (1-4) or the recipe name."""
         selected = _select_proposal(ctx.deps.last_proposals, choice)
-        found = await resolve_recipe(
-            selected,
-            choice,
-            ctx.deps.onboarding,
-            config=ctx.deps.config,
-            site_filter=ctx.deps.search_site_filter,
-            allow_ai_generated=ctx.deps.allow_ai_generated,
-        )
+        if selected is None and ctx.deps.last_proposals:
+            # Never resolve a guess — silently delivering the wrong card is worse
+            # than asking. The proposals stay live so the user can still pick.
+            raise ModelRetry(
+                "The user's message does not clearly match any of the shown proposals. "
+                "If they are asking a question, answer it directly and invite them to "
+                "pick by number or name. Only call get_recipe_details with a clear "
+                "selection (a number 1-4 or one of the proposal names)."
+            )
+        try:
+            found = await resolve_recipe(
+                selected,
+                choice,
+                ctx.deps.onboarding,
+                config=ctx.deps.config,
+                site_filter=ctx.deps.search_site_filter,
+                allow_ai_generated=ctx.deps.allow_ai_generated,
+                usage=ctx.usage,
+                agent_cache=sub_agents,
+            )
+        except ModelRetry:
+            raise
+        except Exception as exc:
+            # Keep proposals/last_recipe untouched so the user can simply retry.
+            log.exception("get_recipe_details_failed", choice=choice, error=str(exc))
+            return FoundRecipe(
+                recipe=Recipe(
+                    name=choice,
+                    description="",
+                    ingredients=[],
+                    steps=[],
+                    prep_time_minutes=0,
+                    cook_time_minutes=0,
+                    difficulty="Easy",
+                    servings=ctx.deps.onboarding.servings or 2,
+                    tips=[],
+                ),
+                source="error",
+            )
         ctx.deps.last_recipe = found                 # durable — used by add_to_calendar
         ctx.deps.last_proposals = []                 # clear so selection prompt doesn't repeat
-        # Emit the recipe card unless nothing was found (placeholder stays silent).
-        if found.source != "not_found":
+        # Emit the recipe card only when there is a real recipe to show
+        # (not_found/error placeholders stay silent).
+        if found.source in ("web_search", "ai_generated"):
             ctx.deps.events.append(FinalRecipeEvent(recipe=found.recipe, source=found.source))
         return found
 
@@ -691,8 +837,19 @@ MANDATORY STEPS FOR THIS TURN:
             return ShoppingListResult(item_count=0, sections=[], date_from=date_from, date_to=date_to)
 
         raw_text = "\n".join(all_ingredients)
-        sl_agent = build_shopping_list_agent(ctx.deps.config)
-        shopping_list: ShoppingList = (await sl_agent.run(raw_text)).output
+        sl_agent = _cached_agent(sub_agents, "shopping_list", build_shopping_list_agent, ctx.deps.config)
+        try:
+            shopping_list: ShoppingList = (await sl_agent.run(raw_text, usage=ctx.usage)).output
+        except Exception as exc:
+            log.exception("get_shopping_list_failed", error=str(exc))
+            return ShoppingListResult(
+                item_count=0,
+                sections=[],
+                date_from=date_from,
+                date_to=date_to,
+                error="temporary failure while building the list — apologise briefly "
+                      "and ask the user to try again in a moment.",
+            )
         ctx.deps.events.append(ShoppingListEvent(shopping_list=shopping_list))
         return ShoppingListResult(
             item_count=len(shopping_list.items),
@@ -723,12 +880,32 @@ async def stream_chat_response(
         # After the block: history is updated in-place with this turn's messages.
 
     Side-effects are readable from deps.events (ordered) after the block.
+
+    The whole turn — chat requests plus every sub-agent call made from tools
+    (which pass usage=ctx.usage) — shares one usage budget, capped by the
+    tenant's UsageLimits so a runaway tool loop cannot burn unbounded tokens.
     """
+    config = deps.config
+    usage_limits = UsageLimits(
+        request_limit=config.usage_request_limit,
+        total_tokens_limit=config.usage_total_tokens_limit,
+    )
     async with agent.run_stream(
         user_message,
         deps=deps,
         message_history=message_history,
+        usage_limits=usage_limits,
     ) as result:
         yield result.stream_text(delta=True)
         # Extend history in-place so caller's list reference is updated
         message_history.extend(result.new_messages())
+        usage = result.usage
+        # Per-turn cost attribution (includes sub-agent calls via shared usage).
+        log.info(
+            "chat_turn_usage",
+            tenant=config.tenant_id,
+            requests=usage.requests,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+        )

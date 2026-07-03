@@ -35,6 +35,17 @@ class FirestoreService:
         raw: list[dict] = doc.to_dict().get("messages", [])  # type: ignore[union-attr]
         return [Message.model_validate(m) for m in raw]
 
+    async def save_chat_state(self, session_id: str, state: dict) -> None:
+        """Persist the resumable conversation snapshot (see
+        cookbot.agents.chat.dump_chat_state) on the session document."""
+        await self._session_ref(session_id).set({"chat_state": state}, merge=True)
+
+    async def get_chat_state(self, session_id: str) -> dict | None:
+        doc = await self._session_ref(session_id).get()
+        if not doc.exists:
+            return None
+        return doc.to_dict().get("chat_state")  # type: ignore[union-attr]
+
     async def save_session(self, session: Session) -> None:
         await self._session_ref(session.session_id).set(session.model_dump(mode="json"))
 

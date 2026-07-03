@@ -45,6 +45,8 @@ def _make_mock_firestore(session: Session | None = None) -> AsyncMock:
     mock.save_hitl_checkpoint = AsyncMock(return_value=None)
     mock.clear_hitl_checkpoint = AsyncMock(return_value=None)
     mock.get_hitl_checkpoint = AsyncMock(return_value=None)
+    mock.get_chat_state = AsyncMock(return_value=None)
+    mock.save_chat_state = AsyncMock(return_value=None)
     return mock
 
 
@@ -189,6 +191,51 @@ def test_ws_send_message_receives_token_response(
     assert call_count == 1
 
 
+# ── Chat-state persistence ────────────────────────────────────────────────────
+
+def test_ws_turn_persists_chat_state(
+    client_with_session: TestClient, valid_session_id: str
+) -> None:
+    """After a completed turn the handler saves the resumable snapshot."""
+    p1, p2 = _patch_chat_agent()
+    with p1, p2:
+        with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
+            ws.receive_json()  # greeting
+            ws.send_text('{"type":"message","content":"hej"}')
+            ws.receive_json()  # reply turn 1
+            # A second turn guarantees turn 1 (stream → events → save) finished.
+            ws.send_text('{"type":"message","content":"druga wiadomość"}')
+            ws.receive_json()  # reply turn 2
+            assert app.state.firestore.save_chat_state.await_count >= 1
+            call = app.state.firestore.save_chat_state.await_args_list[0]
+            assert call.args[0] == valid_session_id
+            assert isinstance(call.args[1], dict)
+
+
+def test_ws_connect_restores_chat_state_snapshot(
+    client_with_session: TestClient, valid_session_id: str
+) -> None:
+    """A persisted snapshot is loaded on connect and must not break the chat."""
+    from cookbot.agents.chat import ChatAgentDeps, OnboardingState, dump_chat_state
+
+    snapshot_deps = ChatAgentDeps(
+        config=_test_config,
+        onboarding=OnboardingState(dish_type="pasta", servings=2),
+    )
+    snapshot = dump_chat_state(snapshot_deps, [])
+    app.state.firestore.get_chat_state = AsyncMock(return_value=snapshot)
+
+    p1, p2 = _patch_chat_agent()
+    with p1, p2:
+        with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
+            greeting = ws.receive_json()
+            assert greeting["type"] == WsMessageType.TOKEN
+            ws.send_text('{"type":"message","content":"hej"}')
+            reply = ws.receive_json()
+            assert reply["type"] == WsMessageType.TOKEN
+    assert app.state.firestore.get_chat_state.await_count == 1
+
+
 # ── Spiżarnia toggle tests ────────────────────────────────────────────────────
 
 _SPIZ_UID = "spiz-user-001"
@@ -203,9 +250,16 @@ _SPIZARNIA = Spizarnia(
 
 @pytest.fixture()
 def client_spiz_session(valid_session_id: str) -> TestClient:
+    from cookbot.models.user import DEFAULT_SOURCES, UserSearchPrefs
+
     app.state.settings = _make_mock_settings()
     mock_fs = _make_mock_firestore(session=_make_session(valid_session_id, uid=None))
     mock_fs.get_spizarnia = AsyncMock(return_value=_SPIZARNIA)
+    # The authed path loads real prefs — a bare MagicMock here would smuggle
+    # non-str values into ChatAgentDeps.
+    mock_fs.get_search_prefs = AsyncMock(
+        return_value=UserSearchPrefs(uid=_SPIZ_UID, sources=list(DEFAULT_SOURCES))
+    )
     app.state.firestore = mock_fs
     app.dependency_overrides[get_tenant_config] = lambda: _test_config
 
@@ -243,9 +297,8 @@ def test_ws_spizarnia_toggle_sends_announcement(
         url = f"/v1/ws/{valid_session_id}?use_spizarnia=true"
         headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
         with client_spiz_session.websocket_connect(url, headers=headers) as ws:
-            for _ in range(5):
-                msg = ws.receive_json()
-                received.append(msg)
+            received.append(ws.receive_json())  # greeting
+            received.append(ws.receive_json())  # spiżarnia announcement
 
     contents = [m.get("content", "") for m in received]
     assert any("spiżarni" in c.lower() or "kurczak" in c.lower() for c in contents), (

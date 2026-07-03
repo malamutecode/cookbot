@@ -10,7 +10,8 @@ dependencies = [
     "httpx>=0.27",
     "beautifulsoup4>=4.12",
     "firebase-admin>=6.5",
-    "pydantic-ai-slim[web-fetch]>=1.102.0",
+    # Direct import of pydantic_ai.messages in the WS handler; extras come via cookbot-core.
+    "pydantic-ai-slim>=1.102.0",
 ]
 
 [tool.uv.sources]

@@ -22,6 +22,11 @@ class TenantConfig:
     embedding_model: str = "text-embedding-3-small"
     max_hitl_rounds: int = 3
     feature_nutrition: bool = False
+    # Per-turn guardrails: one chat turn (the ChatAgent run plus every sub-agent
+    # call made from its tools, which share usage via usage=ctx.usage) may not
+    # exceed these. Protects against runaway tool loops and TPM blowups.
+    usage_request_limit: int = 25
+    usage_total_tokens_limit: int = 120_000
 
     @property
     def ui(self) -> UiStrings:
