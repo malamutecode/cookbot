@@ -37,22 +37,25 @@ cookbot/
 ├── clients/
 │   └── tastyhub/              # example client app
 │       ├── app/
-│       │   ├── main.py        # FastAPI entry point
-│       │   ├── api/           # REST + WebSocket endpoints
-│       │   ├── config/        # TastyHub TenantConfig instance
-│       │   └── middleware/    # API key auth
+│       │   ├── main.py        # FastAPI entry point (all routers under /v1)
+│       │   ├── api/           # sessions, spizarnia, search_prefs, shopping_list, ui, websocket
+│       │   ├── config/        # Settings (env) + TastyHub TenantConfig instance
+│       │   ├── middleware/    # API key + Firebase token auth
+│       │   └── indexer/       # Phase 2 stub — empty
+│       ├── .env               # local secrets (from .env.example; not committed)
 │       ├── Dockerfile
 │       ├── cloudbuild.yaml
 │       └── pyproject.toml
 │
-├── frontend/
-│   ├── index.html             # mock cooking website for testing
-│   └── widget.js              # embeddable chat widget
+├── frontend/                  # Vite + React + TS test app (mock cooking site)
+│   ├── src/                   # App.tsx, components/, hooks/
+│   ├── widget.js              # embeddable chat widget
+│   └── vite.config.ts         # dev server on port 3000
 │
 ├── infrastructure/
 │   └── terraform/             # Phase 2 — do not touch yet
 │
-├── docker-compose.yml         # local dev: api + firestore emulator
+├── docker-compose.yml         # local dev: firestore emulator only
 ├── .env.example
 └── TASK.md                    # incremental build tasks — read before coding
 ```
@@ -206,7 +209,7 @@ the ChatAgent coordinates them.
 | Web framework | FastAPI 0.115+ | Use lifespan context managers, not `@app.on_event` |
 | AI agents | PydanticAI 1.x (`pydantic-ai-slim`) | Typed `output_type=`, `instructions=`, `agent.run_stream()` for streaming |
 | LLM | OpenAI, per-agent | `TenantConfig.model_*` fields pick the model per agent (cost vs quality) |
-| Web search | PydanticAI web search tool | Recipe lookup before AI generation — MVP |
+| Web search | PydanticAI common tools | `duckduckgo_search_tool()` + `web_fetch_tool()` — recipe lookup before AI generation |
 | Session store | Firestore (native async SDK) | `google-cloud-firestore` with `AsyncClient` |
 | Vector search | pgvector via `asyncpg` | Phase 2 — client-specific recipe KB |
 | Config | `pydantic-settings` | All config from ENV, validated at startup |
@@ -228,22 +231,33 @@ OPENAI_API_KEY=sk-...
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 FIRESTORE_DATABASE=(default)          # or named DB
 
+# Local dev only — points the SDK at the emulator instead of real GCP
+FIRESTORE_EMULATOR_HOST=localhost:8080
+
 # Client identity
 TENANT_ID=tastyhub
 API_KEY=tk_live_...                   # the key embedded in widget script tag
 
 # Optional — override defaults
 LOG_LEVEL=INFO
-OPENAI_MODEL=gpt-4o-mini
 MAX_HITL_ROUNDS=3
 SESSION_TTL_HOURS=24
+DEV_UID=                              # dev-only: accept x-dev-uid header as identity bypass; never set in prod
+
+# Per-agent model selection (see .env.example for the rationale per agent)
+MODEL_CHAT=gpt-4o-mini
+MODEL_SHOPPING_LIST=gpt-4o-mini
+MODEL_RECIPE_GEN=gpt-4o-mini
+MODEL_WEB_SEARCH=gpt-4o-mini
+MODEL_RECIPE_OPTIONS=gpt-4o-mini
 
 # Phase 2 only — not required for MVP
 # DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/cookbot
 # EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-**Local dev:** copy `.env.example` to `.env`, fill in values, docker-compose loads it automatically.
+**Local dev:** copy `.env.example` to `clients/tastyhub/.env` and fill in values —
+pydantic-settings loads that file at app startup (docker-compose only runs the emulator).
 **Cloud Run:** values come from Secret Manager via `--set-secrets` flag — never bake secrets into images.
 
 ---
@@ -262,8 +276,10 @@ cd ../../clients/tastyhub && uv sync
 cd clients/tastyhub
 uv run uvicorn app.main:app --reload --port 8000
 
-# 4. Open test frontend
-open frontend/index.html   # or serve it: python -m http.server 3000 -d frontend/
+# 4. Run the test frontend (Vite dev server → http://localhost:3000)
+cd frontend
+npm install        # first time only
+npm run dev
 ```
 
 **Quick health check:**
@@ -347,19 +363,28 @@ Agents carry system prompts that include tenant config. Module-level = single-te
 
 ```python
 # Always use typed send helpers, never ws.send_json(raw_dict)
+# (full catalogue in cookbot/protocols/ws_messages.py)
 await ws_send_token(websocket, content="Let me check...")
-await ws_send_hitl_checkpoint(websocket, recipe=recipe, round=1)
-await ws_send_final_recipe(websocket, recipe=recipe, source="ai_generated")
+await ws_send_recipe_options(websocket, proposals)                    # 4 cards
+await ws_send_final_recipe(websocket, recipe, RecipeSource.WEB_SEARCH)
+await ws_send_hitl_checkpoint(websocket, checkpoint, ui.hitl)         # labels from TenantConfig.ui
+await ws_send_error(websocket, message="Something went wrong.")
 ```
+
+In the chat flow, tools never call these directly — they append `TurnEvent`s to
+`deps.events` and the WS handler's `_emit_event` maps each event to its helper.
 
 ### Firestore key pattern
 
 ```
-sessions/{tenant_id}/{session_id}
+sessions/{tenant_id}/sessions/{session_id}       # subcollection, one doc per session
+  → session_id, tenant_id, uid, status, created_at, expires_at
   → messages: list[Message]
-  → hitl_state: HITLCheckpoint | null
-  → created_at: timestamp
-  → expires_at: timestamp
+  → hitl_checkpoint: HITLCheckpoint | absent
+  → chat_state: ChatState dump | absent          # resumable conversation snapshot
+
+users/{uid}/spizarnia/items                      # pantry
+users/{uid}/prefs/search                         # UserSearchPrefs (sources, allow_ai_generated)
 ```
 
 ### Error handling
@@ -371,6 +396,7 @@ from cookbot.exceptions import (
     SessionExpiredError,
     HITLTimeoutError,
     RecipeSearchError,
+    AgentError,
 )
 ```
 
@@ -431,7 +457,9 @@ gcloud run deploy cookbot-tastyhub \
 - **Don't call `asyncio.run()` inside async code** — await everything
 - **Don't use `print()` in production code** — use `structlog` logger
 - **Don't commit `.env`** — it's in `.gitignore`; use `.env.example` only
-- **Don't mock Firestore with unittest.mock** — use the Firestore emulator
+- **Don't test FirestoreService itself with unittest.mock** — its integration tests
+  run against the emulator (`tests/test_firestore.py`). Client unit tests may stub
+  the *service object* with `AsyncMock` (see Running Tests).
 - **Don't make real LLM calls in tests** — always use `TestModel`
 - **Don't add client-specific logic to cookbot-core** — it goes in clients/
 - **Don't skip type annotations** — pyright strict mode will fail CI
@@ -454,9 +482,12 @@ uv run pydeps cookbot --max-bacon=3 --noshow
 docker-compose up -d firestore-emulator
 export FIRESTORE_EMULATOR_HOST=localhost:8080
 
-# Inspect WebSocket manually
-npx wscat -c ws://localhost:8000/v1/ws/test-session-id \
-  -H "Authorization: Bearer tk_dev_local"
+# Inspect WebSocket manually — a session must exist first (created with the API key):
+SESSION=$(curl -s -X POST http://localhost:8000/v1/sessions \
+  -H "x-api-key: $API_KEY" | jq -r .session_id)
+npx wscat -c "ws://localhost:8000/v1/ws/$SESSION"
+# Authenticated user context: add -H "Authorization: Bearer <firebase-id-token>"
+# or (dev bypass, needs DEV_UID set in .env) -H "x-dev-uid: $DEV_UID"
 ```
 
 ---
