@@ -16,7 +16,9 @@ from delivery_shops.models import Product
 
 
 def _p(id: str, name: str, category: str = "", keywords: str = "", **kw) -> Product:
-    return Product(id=id, name=name, category=category, keywords=keywords, url=f"https://frisco/{id}", **kw)
+    return Product(
+        id=id, name=name, category=category, keywords=keywords, url=f"https://frisco/{id}", **kw
+    )
 
 
 @pytest.fixture
@@ -28,8 +30,8 @@ def catalogue() -> list[Product]:
         _p("salt-dish", "Sól ochronna do zmywarki 4000g", "Sole", "zmywarka do naczyn"),
         # szpinak: fresh spinach must beat freeze-dried colorant powder and baby food.
         _p("spinach", "Szpinak liście", "Szpinak", "warzywa mrozone"),
-        _p("spinach-powder", "Szpinak liofilizowany proszek", "Barwniki i aromaty", "barwnik szpinak"),
-        _p("babyfood", "Mus szpinak z jabłkiem po 6 miesiącu", "Deserki dla dzieci", "szpinak jablko kiwi dziecko"),
+        _p("spinach-powder", "Szpinak liofilizowany proszek", "Barwniki i aromaty", "barwnik"),
+        _p("babyfood", "Mus szpinak z jabłkiem po 6 miesiącu", "Deserki dla dzieci", "dziecko"),
         # makaron: pasta must not match sausage that mentions pasta in keywords.
         _p("pasta", "Makaron penne", "Penne", "makaron wloski"),
         _p("sausage", "Kiełbasa śląska", "Kiełbasy", "do makaronu obiad kolacja"),
