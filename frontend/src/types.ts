@@ -23,6 +23,33 @@ export interface ShoppingSection {
   items: ShopItem[]
 }
 
+export interface Product {
+  id: string
+  name: string
+  category?: string
+  brand?: string | null
+  price?: number | null
+  grammage?: number | null
+  unit?: string | null
+  url: string
+  image_url?: string | null
+  available: boolean
+}
+
+export interface ProductMatch {
+  ingredient: string
+  shop: string
+  product: Product
+  score: number
+}
+
+export interface GroceryMatchResult {
+  shop: string
+  matched: ProductMatch[]
+  unmatched: { ingredient: string }[]
+  generated_at?: string | null
+}
+
 export interface Recipe {
   name: string
   description: string
@@ -59,6 +86,12 @@ export interface UiStrings {
   spizarnia_add_button?: string
   shopping_list_heading?: string
   shopping_list_clear?: string
+  frisco_button?: string
+  frisco_heading?: string
+  frisco_not_found?: string
+  frisco_open?: string
+  frisco_loading?: string
+  frisco_generated_at?: string
   spizarnia_offer_add?: string
   spizarnia_offer_remove?: string
   spizarnia_offer_confirm?: string

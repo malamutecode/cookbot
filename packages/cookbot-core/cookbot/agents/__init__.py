@@ -5,6 +5,10 @@ from cookbot.agents.chat import (
     restore_chat_state,
     stream_chat_response,
 )
+from cookbot.agents.product_rerank import (
+    ReRankChoice,
+    build_product_rerank_agent,
+)
 from cookbot.agents.recipe_gen import build_recipe_gen_agent, recipe_gen_prompt
 from cookbot.agents.recipe_scale import (
     build_recipe_scale_agent,
@@ -19,6 +23,8 @@ __all__ = [
     "dump_chat_state",
     "restore_chat_state",
     "build_web_search_agent",
+    "build_product_rerank_agent",
+    "ReRankChoice",
     "build_recipe_gen_agent",
     "build_recipe_scale_agent",
     "scale_recipe_to_servings",

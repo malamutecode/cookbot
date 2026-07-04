@@ -769,6 +769,85 @@ not blocking** — gpt-4o-mini works reliably today.
 
 ---
 
+## STEP 41 — "Znajdź w Frisco": delivery-shop product matching
+
+**Goal:** Add a **"Znajdź w Frisco"** button on the shopping list that matches each
+list item to a real Frisco grocery product and shows a review panel (product name,
+price, image, grammage, a per-item "otwórz w Frisco" deep link) plus a
+"nie znaleziono" bucket. Frisco is a *delivery shop (provider)*, not a client — the
+capability is reusable across clients, and one client may enable several shops.
+
+### Architecture (decided 2026-07-04)
+- **New standalone package `packages/delivery-shops/`** (sibling to `cookbot-core`,
+  own `pyproject.toml`, cookbot-independent): generic `ProductMatcher` (keyword
+  inverted-index — no vector DB), models (`Product`, `ProductMatch`,
+  `GroceryMatchResult`), `DeliveryShop` Protocol + `get_shop` registry, and
+  `shops/frisco.py` `FriscoShop` (the only Frisco-aware code) + `SHOPS` registry.
+- **Client contributes config only:** `TenantConfig.delivery_shops = ["frisco"]`
+  + a thin route `POST /v1/grocery/{shop}/match`. No shop code in the client.
+- Runs **in-process** in the existing tastyhub Cloud Run service — **no new Docker
+  service**. delivery-shops is a library, imported like cookbot-core.
+
+### Feed facts (verified against the live feed 2026-07-04)
+- `https://commerce.frisco.pl/api/v1/integration/feeds/public?language=pl` — ~50 MB
+  JSON, `{ generatedAt, categories[9953], products[14663] }`.
+- Match on `name.pl` + `keywords.pl`; `price.price` may be **absent** (guard it);
+  filter to `isAvailable`; deep link = `productUrl`; thumbnail = `imageUrl`.
+
+### Tasks
+- [ ] Scaffold `packages/delivery-shops/` (pyproject, `delivery_shops/` with
+      `models.py`, `matcher.py`, `base.py`, `shops/frisco.py`, `shops/__init__.py`).
+- [x] `ProductMatcher`: NFKD ascii-fold + lowercase + stopword strip, inverted
+      `token → idx` index over name/category/keywords; score weights *where* a query
+      word lands (name ≫ category ≫ keywords) + name-substring/prefix boosts +
+      name-coverage + extra-token penalty + availability; `match` /
+      `match_candidates` / `match_all`. Price/grammage/category optional.
+- [x] `FriscoShop.load()`: async `httpx` fetch, in-memory TTL cache (default 12 h)
+      behind an `asyncio.Lock`, map Frisco schema → `Product` (incl. `category` from
+      `primaryCategory.name.pl`), available-only.
+- [x] `TenantConfig.delivery_shops: list[str]` field; tastyhub `["frisco"]`.
+- [x] `clients/tastyhub/pyproject.toml` depend on delivery-shops; `app/api/grocery.py`
+      route (404 for a shop not in `delivery_shops`; empty ingredients → empty result;
+      matcher cached on `app.state`); mounted in `main.py`.
+- [x] Frontend: `frisco_*` ui strings; "Znajdź w Frisco" button in `ShoppingList.tsx`;
+      new `FriscoPanel.tsx` (matched rows + "otwórz w Frisco" links + "nie znaleziono"
+      bucket + `generated_at` footer); types in `types.ts`.
+- [x] **LLM re-rank of the lexical shortlist.** delivery-shops exposes a `ReRanker`
+      callable seam (stays LLM-agnostic); cookbot-core adds `build_product_rerank_agent`
+      + `model_product_rerank`; the route re-ranks ambiguous shortlists (>1 candidate)
+      concurrently, falling back to the lexical #1 on decline/error. Fixes the
+      "plain vs flavoured" ties (cukier→plain not vanilla, sól→table not herbal,
+      pomidory→chopped not sun-dried-chili, pierś z kurczaka→fillet not wieners).
+- [x] Tests: package unit (`test_matcher.py`, `test_matching_quality.py` incl.
+      `price=None`, category, stopword and reranker-seam cases); package integration
+      (`test_frisco_live.py` — matching quality by category on the live feed); client
+      route test (unknown shop → 404, re-rank path via `TestModel`); rerank-agent unit
+      test in cookbot-core.
+
+### Deferred within this feature (do NOT forget — see "later" below)
+- [ ] **GCS blob cache for the feed/index.** Today each Cloud Run instance
+      re-downloads the ~50 MB feed and rebuilds its index on cold start, and holds
+      it in per-instance RAM. **Later**, move the parsed feed / built index to a
+      **GCS blob** (a scheduled job refreshes it daily from `generatedAt`; instances
+      load the pre-built blob instead of downloading + parsing 50 MB each). This is
+      the scaling fix and the shared-cache path if multiple clients enable Frisco —
+      still the same package, still in-process, **not** a separate microservice.
+
+### Verify
+```
+cd packages/delivery-shops && uv sync && uv run pytest -m "not integration" -q
+cd packages/delivery-shops && uv run pytest -m integration -v   (live feed)
+cd clients/tastyhub && uv sync && uv run pytest -q
+Manual: build a shopping list → click "Znajdź w Frisco" → panel shows matched
+  products with working "otwórz w Frisco" links + unmatched items in the bucket.
+curl -s -X POST localhost:8000/v1/grocery/frisco/match \
+  -H 'content-type: application/json' -d '{"ingredients":["cebula","mąka pszenna"]}' | jq
+```
+
+### ⏸ PAUSE 41
+
+---
+
 # PHASE 3 — PACKAGING & DEPLOYMENT
 
 ---

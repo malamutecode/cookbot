@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "cookbot-core",
+    "delivery-shops",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",
@@ -16,6 +17,7 @@ dependencies = [
 
 [tool.uv.sources]
 cookbot-core = { path = "../../packages/cookbot-core", editable = true }
+delivery-shops = { path = "../../packages/delivery-shops", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

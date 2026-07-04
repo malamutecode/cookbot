@@ -21,4 +21,5 @@ TASTYHUB_CONFIG = TenantConfig(
     embedding_model=_s.embedding_model,
     max_hitl_rounds=_s.max_hitl_rounds,
     feature_nutrition=False,
+    delivery_shops=["frisco"],
 )
