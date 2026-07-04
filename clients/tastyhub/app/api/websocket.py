@@ -1,14 +1,11 @@
-import structlog
 from datetime import UTC, datetime
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from app.config.settings import get_settings
+import structlog
 from cookbot.agents.chat import (
     CalendarAddEvent,
     CalendarRemoveEvent,
     ChatAgentDeps,
     FinalRecipeEvent,
-    OnboardingState,
     RecipeOptionsEvent,
     ShoppingListEvent,
     TurnEvent,
@@ -18,10 +15,9 @@ from cookbot.agents.chat import (
     stream_chat_response,
 )
 from cookbot.hitl.persistence import restore_checkpoint
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 from cookbot.models.calendar import CalendarState
-from cookbot.models.spizarnia import SpizarniaItem
 from cookbot.models.recipe import RecipeSource
+from cookbot.models.spizarnia import SpizarniaItem
 from cookbot.models.user import DEFAULT_SOURCES, UserSearchPrefs
 from cookbot.protocols.ws_messages import (
     WsInbound,
@@ -35,6 +31,10 @@ from cookbot.protocols.ws_messages import (
     ws_send_shopping_list_update,
     ws_send_token,
 )
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+from app.config.settings import get_settings
 
 log = structlog.get_logger()
 router = APIRouter()
@@ -121,6 +121,7 @@ async def websocket_endpoint(
         token = auth_header.removeprefix("Bearer ").strip()
         try:
             import firebase_admin.auth
+
             from app.middleware.auth import _get_firebase_app
             _get_firebase_app()
             decoded = firebase_admin.auth.verify_id_token(token)

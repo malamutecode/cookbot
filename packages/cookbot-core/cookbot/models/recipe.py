@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel
 
@@ -45,7 +45,7 @@ class RecipeSummary(BaseModel):
     image_url: str | None = None  # dish photo thumbnail, set when available
 
 
-class RecipeSource(str, Enum):
+class RecipeSource(StrEnum):
     TENANT_KB = "TENANT_KB"
     WEB_SEARCH = "WEB_SEARCH"
     AI_GENERATED = "AI_GENERATED"

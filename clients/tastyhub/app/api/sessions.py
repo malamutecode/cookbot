@@ -3,13 +3,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import firebase_admin.auth
+from cookbot.models.session import Session, SessionStatus
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.config.settings import get_settings
 from app.config.tenant import TASTYHUB_CONFIG
 from app.middleware.auth import _get_firebase_app
-from cookbot.models.session import Session, SessionStatus
 
 router = APIRouter()
 

@@ -5,7 +5,6 @@ import re
 
 import httpx
 import structlog
-
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool

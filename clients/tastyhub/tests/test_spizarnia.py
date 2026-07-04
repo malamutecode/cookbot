@@ -2,11 +2,11 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
+from cookbot.models.user import UserProfile
 from fastapi.testclient import TestClient
 
 from app.main import app
-from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
-from cookbot.models.user import UserProfile
 
 _UID = "user-spiz-test"
 
@@ -95,8 +95,8 @@ def test_add_items(client):
 
 def test_add_duplicate_updates_quantity(client):
     """add_spizarnia_items merge logic — tested at the Firestore service level."""
+
     from cookbot.services.firestore import FirestoreService
-    from unittest.mock import MagicMock
 
     svc = FirestoreService.__new__(FirestoreService)
     svc._tenant_id = _UID

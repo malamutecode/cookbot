@@ -6,11 +6,9 @@ directly (via agent._function_tools dict).  No real LLM calls are made.
 """
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
 from cookbot.agents.chat import (
@@ -25,7 +23,7 @@ from cookbot.agents.chat import (
     stream_chat_response,
 )
 from cookbot.models.calendar import CalendarEntry, CalendarState
-from cookbot.models.recipe import Recipe
+from cookbot.models.recipe import Recipe, RecipeSummary
 from cookbot.models.shopping import ShoppingItem, ShoppingList
 from cookbot.models.tenant import TenantConfig
 
@@ -139,7 +137,6 @@ def test_agent_registers_expected_tools() -> None:
 
 def test_reset_turn_clears_events_and_preserves_durable() -> None:
     from cookbot.agents.chat import FoundRecipe, RecipeOptionsEvent
-    from cookbot.models.recipe import RecipeSummary
 
     proposal = RecipeSummary(
         name="Pasta", description="d", difficulty="Easy",
@@ -421,8 +418,7 @@ async def test_add_to_calendar_normalizes_entry_date() -> None:
 
 # ── _select_proposal (pure selection logic) ───────────────────────────────────
 
-def _summary(name: str, source: str = "ai_generated", url: str | None = None) -> "RecipeSummary":
-    from cookbot.models.recipe import RecipeSummary
+def _summary(name: str, source: str = "ai_generated", url: str | None = None) -> RecipeSummary:
     return RecipeSummary(
         name=name, description="d", difficulty="Easy", total_time_minutes=20,
         key_ingredients=["x"], source=source, source_url=url,

@@ -1,13 +1,13 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from cookbot.models.session import Session
+from cookbot.models.tenant import TenantConfig
 from fastapi.testclient import TestClient
 
 from app.config.settings import Settings
 from app.main import VERSION, app
 from app.middleware.auth import get_tenant_config
-from cookbot.models.session import Session
-from cookbot.models.tenant import TenantConfig
 
 TEST_API_KEY = "tk_test_key"
 TEST_TENANT_ID = "tastyhub"

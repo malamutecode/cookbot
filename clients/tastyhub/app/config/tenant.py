@@ -1,6 +1,6 @@
-from app.config.settings import get_settings
-
 from cookbot.models.tenant import TenantConfig
+
+from app.config.settings import get_settings
 
 _s = get_settings()
 

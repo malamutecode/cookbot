@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from cookbot.hitl.models import HITLCheckpoint, HITLResponse
+from cookbot.hitl.models import HITLCheckpoint
 from cookbot.models.recipe import Recipe
 from cookbot.models.session import Message, Session, SessionStatus
 from cookbot.services.firestore import FirestoreService

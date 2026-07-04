@@ -1,8 +1,7 @@
-from fastapi import APIRouter, Request
-from pydantic import BaseModel
-
 from cookbot.agents.shopping_list import build_shopping_list_agent
 from cookbot.models.shopping import ShoppingList
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
 
 router = APIRouter()
 

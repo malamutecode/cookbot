@@ -1,7 +1,5 @@
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
 from cookbot.hitl.models import HITLCheckpoint, HITLOutcome, HITLResponse
 from cookbot.models.recipe import ParsedIngredients, Recipe, RecipeSearchResult, RecipeSource
 from cookbot.models.session import Message, Session, SessionStatus

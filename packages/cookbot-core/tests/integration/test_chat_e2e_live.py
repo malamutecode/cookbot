@@ -16,7 +16,6 @@ the web-vs-AI split rather than exact wording.
 """
 import asyncio
 
-import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
 from cookbot.agents.chat import (

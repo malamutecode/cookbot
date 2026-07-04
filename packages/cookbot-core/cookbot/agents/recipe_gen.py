@@ -11,7 +11,8 @@ def build_recipe_gen_agent(config: TenantConfig) -> Agent[None, Recipe]:
         defer_model_check=True,
         instructions=f"""
 You are {config.persona}.
-You MUST respond exclusively in {config.language}. Every field in the output — recipe name, description, ingredients, steps, tips — must be written in {config.language}. Never use any other language.
+You MUST respond exclusively in {config.language}. Every field in the output — recipe name,
+description, ingredients, steps, tips — must be written in {config.language}. Never use any other language.
 
 Generate a complete, practical home-cooking recipe from the provided ingredients and context.
 

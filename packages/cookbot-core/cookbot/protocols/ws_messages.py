@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
 
-class WsMessageType(str, Enum):
+class WsMessageType(StrEnum):
     MESSAGE = "message"
     TOKEN = "token"
     AGENT_UPDATE = "agent_update"

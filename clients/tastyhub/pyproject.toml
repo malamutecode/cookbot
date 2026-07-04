@@ -22,6 +22,12 @@ delivery-shops = { path = "../../packages/delivery-shops", editable = true }
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 

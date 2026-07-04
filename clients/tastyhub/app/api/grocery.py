@@ -11,13 +11,12 @@ from __future__ import annotations
 import asyncio
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
-
 from cookbot.agents.product_rerank import build_product_rerank_agent
 from delivery_shops.base import get_shop
 from delivery_shops.matcher import ProductMatcher
 from delivery_shops.models import GroceryMatchResult, ProductMatch, UnmatchedItem
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 log = structlog.get_logger()
 

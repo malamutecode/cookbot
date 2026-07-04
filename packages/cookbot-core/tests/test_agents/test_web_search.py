@@ -31,7 +31,13 @@ _RECIPE_DICT = {
     "tips": [],
 }
 
-_INTENT = UserIntent(dish_type="chicken", servings=2, max_time_minutes=30, available_ingredients=["chicken", "garlic"], free_notes="")
+_INTENT = UserIntent(
+    dish_type="chicken",
+    servings=2,
+    max_time_minutes=30,
+    available_ingredients=["chicken", "garlic"],
+    free_notes="",
+)
 _INGREDIENTS = ParsedIngredients(items=["chicken", "garlic"], must_use=[], dietary_hints=[], missing_staples=["salt"])
 
 

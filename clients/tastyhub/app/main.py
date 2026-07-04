@@ -1,7 +1,9 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 import structlog
+from cookbot.exceptions import SessionExpiredError, TenantNotFoundError
+from cookbot.services.firestore import FirestoreService
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,8 +11,6 @@ from fastapi.responses import JSONResponse
 from app.api import grocery, search_prefs, sessions, shopping_list, spizarnia, ui, websocket
 from app.config.settings import Settings, get_settings
 from app.config.tenant import TASTYHUB_CONFIG
-from cookbot.exceptions import SessionExpiredError, TenantNotFoundError
-from cookbot.services.firestore import FirestoreService
 
 log = structlog.get_logger()
 

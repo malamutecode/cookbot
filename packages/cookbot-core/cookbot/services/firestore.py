@@ -4,7 +4,7 @@ import structlog
 from google.cloud.firestore_v1.async_client import AsyncClient
 
 from cookbot.hitl.models import HITLCheckpoint
-from cookbot.models.session import Message, Session, SessionStatus
+from cookbot.models.session import Message, Session
 from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
 from cookbot.models.user import DEFAULT_SOURCES, UserProfile, UserSearchPrefs
 

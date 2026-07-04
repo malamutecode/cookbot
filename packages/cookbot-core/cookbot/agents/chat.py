@@ -277,7 +277,7 @@ def _normalize_date(raw: str) -> str:
     so any year BEFORE the current year is bumped to the current year.
     """
     import re  # noqa: PLC0415
-    from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
 
     s = (raw or "").strip()
     try:
@@ -556,7 +556,7 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
     # Inject current date on every turn so the model always has the correct value.
     @agent.system_prompt
     async def _current_date(_ctx: RunContext[ChatAgentDeps]) -> str:
-        from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
         try:
             now = datetime.now(ZoneInfo("Europe/Warsaw")).date()
         except Exception:
@@ -693,7 +693,8 @@ MANDATORY STEPS FOR THIS TURN:
         dietary_hints: list[str] | None = None,
         free_notes: str = "",
     ) -> ProposeRecipesResult:
-        """Propose 4 recipe options. Call after onboarding is complete or on explicit user request. The options are sent to the frontend automatically."""
+        """Propose 4 recipe options. Call after onboarding is complete or on explicit user
+        request. The options are sent to the frontend automatically."""
         cfg: TenantConfig = ctx.deps.config
         ob = ctx.deps.onboarding
         intent = UserIntent(
@@ -844,7 +845,8 @@ MANDATORY STEPS FOR THIS TURN:
         date_from: str,
         date_to: str,
     ) -> ShoppingListResult:
-        """Build a structured shopping list from calendar entries between date_from and date_to (inclusive, YYYY-MM-DD)."""
+        """Build a structured shopping list from calendar entries between date_from and
+        date_to (inclusive, YYYY-MM-DD)."""
         in_range = [
             e for e in ctx.deps.calendar.entries
             if date_from <= e.date <= date_to

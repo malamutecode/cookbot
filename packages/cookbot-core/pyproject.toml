@@ -21,6 +21,9 @@ markers = [
     "integration: hits real external services (OpenAI, DuckDuckGo, Firestore emulator). Excluded from the fast unit run via `-m 'not integration'`.",
 ]
 
+[tool.ruff]
+line-length = 120
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 

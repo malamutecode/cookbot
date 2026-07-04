@@ -1,10 +1,10 @@
 from urllib.parse import unquote
 
+from cookbot.models.user import RecipeSource, UserProfile, UserSearchPrefs
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.middleware.auth import get_current_user
-from cookbot.models.user import RecipeSource, UserProfile, UserSearchPrefs
 
 router = APIRouter()
 

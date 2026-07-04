@@ -3,11 +3,11 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from delivery_shops.models import Product
 from fastapi.testclient import TestClient
 
 from app.config.settings import Settings
 from app.main import app
-from delivery_shops.models import Product
 
 
 def _make_mock_settings() -> MagicMock:
@@ -46,11 +46,11 @@ def client(monkeypatch) -> TestClient:
     # Override the LLM re-ranker with a TestModel so no real API call happens.
     # TestModel fills the structured output with defaults (choice=None → the route
     # falls back to the lexical #1), keeping tests deterministic and offline.
-    import app.api.grocery as grocery_mod
+    from cookbot.agents.product_rerank import ReRankChoice
     from pydantic_ai import Agent
     from pydantic_ai.models.test import TestModel
 
-    from cookbot.agents.product_rerank import ReRankChoice
+    import app.api.grocery as grocery_mod
 
     def _build_test_agent(config):  # noqa: ANN001
         return Agent(TestModel(), output_type=ReRankChoice)

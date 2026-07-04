@@ -1,5 +1,5 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel
 
@@ -19,7 +19,7 @@ class HITLResponse(BaseModel):
     modification: str | None = None
 
 
-class HITLOutcome(str, Enum):
+class HITLOutcome(StrEnum):
     APPROVED = "APPROVED"
     MODIFIED = "MODIFIED"
     REJECTED = "REJECTED"

@@ -3,12 +3,12 @@ from datetime import UTC, datetime
 
 import firebase_admin
 import firebase_admin.auth
+from cookbot.models.tenant import TenantConfig
+from cookbot.models.user import UserProfile
 from fastapi import Header, HTTPException, status
 
 from app.config.settings import get_settings
 from app.config.tenant import TASTYHUB_CONFIG
-from cookbot.models.tenant import TenantConfig
-from cookbot.models.user import UserProfile
 
 _firebase_app: firebase_admin.App | None = None
 

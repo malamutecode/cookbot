@@ -21,7 +21,13 @@ _INGREDIENTS = ParsedIngredients(
     missing_staples=["salt", "olive oil"],
 )
 
-_INTENT = UserIntent(dish_type="stir-fry", servings=2, max_time_minutes=30, available_ingredients=["chicken", "spinach", "garlic"], free_notes="")
+_INTENT = UserIntent(
+    dish_type="stir-fry",
+    servings=2,
+    max_time_minutes=30,
+    available_ingredients=["chicken", "spinach", "garlic"],
+    free_notes="",
+)
 
 _RECIPE_DICT = {
     "name": "Garlic Chicken Stir-fry",

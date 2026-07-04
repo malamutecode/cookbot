@@ -1,16 +1,16 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cookbot.models.session import Session, SessionStatus
+from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
+from cookbot.models.tenant import TenantConfig
+from cookbot.protocols.ws_messages import WsMessageType
 from fastapi.testclient import TestClient
 
 from app.config.settings import Settings
 from app.main import app
 from app.middleware.auth import get_tenant_config
-from cookbot.models.session import Session, SessionStatus
-from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
-from cookbot.models.tenant import TenantConfig
-from cookbot.protocols.ws_messages import WsMessageType
 
 TEST_TENANT_ID = "tastyhub"
 TEST_API_KEY = "tk_test_key"
