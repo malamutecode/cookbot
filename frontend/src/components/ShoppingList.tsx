@@ -78,7 +78,15 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
             section: i.section,
           }),
         )
-        if (organized.length) onChange(organized)
+        // Safety net: never lose an item to the organizer. If any input item has
+        // no representative in the result (e.g. the model dropped it), keep the
+        // originals it missed, placed in "inne" so nothing silently disappears.
+        const baseName = (n: string) => n.split(' — ')[0].trim().toLowerCase()
+        const organizedNames = new Set(organized.map(o => baseName(o.name)))
+        const dropped = items.filter(o => !organizedNames.has(baseName(o.name)))
+        const preserved = dropped.map(o => ({ name: o.name, checked: false, section: 'inne' }))
+        const finalItems = [...organized, ...preserved]
+        if (finalItems.length) onChange(finalItems)
       }
     } catch {
       // best-effort; leave the list unchanged on failure
