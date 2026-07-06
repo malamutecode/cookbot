@@ -8,8 +8,12 @@ merge bug.
 
 from __future__ import annotations
 
-from cookbot.agents.shopping_list import shopping_list_instructions
+from pydantic_ai import models
+
+from cookbot.agents.shopping_list import build_shopping_list_agent, shopping_list_instructions
 from cookbot.models.tenant import TenantConfig
+
+models.ALLOW_MODEL_REQUESTS = False
 
 _CONFIG = TenantConfig(
     tenant_id="t",
@@ -27,3 +31,15 @@ def test_prompt_forbids_generalising_qualified_products() -> None:
     assert "śmietanka 30%" in text
     assert "SEPARATE lines" in text
     assert "generalise" in text.lower()
+
+
+def test_prompt_requires_measure_conversion_tool() -> None:
+    text = shopping_list_instructions(_CONFIG)
+    assert "convert_measure" in text
+    assert "80 ml" in text  # the corrected 1/3 szklanki value is spelled out
+
+
+def test_measure_conversion_tool_is_registered() -> None:
+    agent = build_shopping_list_agent(_CONFIG)
+    tool_names = set(agent._function_toolset.tools)
+    assert "convert_measure_tool" in tool_names
