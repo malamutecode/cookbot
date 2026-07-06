@@ -48,15 +48,24 @@ ShoppingListAgent, and **export** as clean text to paste anywhere.
   the **"inne"** section rather than dropping it. (Covered by an agent-prompt note
   + a live test.)
 
-### FR4 — Export / share
-- A button "Wyślij / Kopiuj" (or "Udostępnij") that:
-  - builds a clean **plain-text** rendering of the list (grouped by section when
-    sections are present, otherwise a flat bulleted list, with a heading);
-  - copies it to the clipboard (`navigator.clipboard.writeText`), showing a brief
-    "Skopiowano ✓" confirmation;
-  - where the platform supports it (mobile), also offers the native share sheet via
-    `navigator.share({ text })` so it can go straight to Messenger / mail.
-- Export never mutates the list.
+### FR4 — Export / share (two separate buttons)
+- **"Kopiuj"** — builds a clean **plain-text** rendering of the list (grouped by
+  section when present, else a flat bulleted list, with a heading) and copies it to
+  the clipboard (`navigator.clipboard.writeText`), showing a brief "Skopiowano ✓".
+- **"Udostępnij"** — opens the native OS share sheet via `navigator.share({ text })`
+  (mobile / supported browsers) so the list can go straight to Messenger / mail.
+  Shown only when `navigator.share` exists (mostly mobile); hidden on desktop.
+- Neither mutates the list.
+
+### FR6 — Supermarket-aisle categories
+- The organizer assigns each item to a **store aisle**, not just cooking sections,
+  so the shopper can look at one aisle at a time: warzywa/owoce, nabiał i jaja,
+  mięso/ryby/wędliny, pieczywo, mrożonki, produkty suche/sypkie, napoje,
+  słodycze/przekąski, chemia/dom, higiena/kosmetyki, inne.
+- Household/hygiene/drink items get a real aisle (papier toaletowy → chemia/dom),
+  and produce like czosnek/cebula goes to warzywa/owoce — never "inne".
+- The taxonomy lives once in `SECTIONS` (backend) and is mirrored by the frontend
+  `SECTION_ORDER` for display ordering.
 
 ### FR5 — Persistence
 - The shopping list persists to **localStorage** (key `tastyhub_shopping`), matching

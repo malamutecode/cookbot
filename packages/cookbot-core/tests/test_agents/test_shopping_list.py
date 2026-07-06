@@ -50,3 +50,17 @@ def test_prompt_keeps_non_food_items() -> None:
     # Non-cooking items must never be dropped; unknown ones go to "inne".
     assert "NEVER drop an item" in text
     assert "inne" in text
+
+
+def test_prompt_uses_supermarket_aisle_taxonomy() -> None:
+    from cookbot.agents.shopping_list import SECTIONS_ORDER
+
+    text = shopping_list_instructions(_CONFIG)
+    # Household / hygiene / drink aisles must exist so items like "papier toaletowy"
+    # get a real home instead of falling into "inne".
+    for section in ("chemia/dom", "higiena/kosmetyki", "napoje", "mrożonki"):
+        assert section in SECTIONS_ORDER
+        assert section in text
+    # The examples must steer the two reported failures to the right aisle.
+    assert "papier toaletowy" in text  # → chemia/dom
+    assert "czosnek" in text           # → warzywa/owoce

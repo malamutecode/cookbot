@@ -90,7 +90,8 @@ export interface UiStrings {
   shopping_list_add_button?: string
   shopping_list_organize?: string
   shopping_list_organizing?: string
-  shopping_list_export?: string
+  shopping_list_copy?: string
+  shopping_list_share?: string
   shopping_list_copied?: string
   shopping_list_empty?: string
   frisco_button?: string

@@ -56,14 +56,28 @@ async def test_szklanka_amount_is_converted_via_tool(pl_config) -> None:
     assert "30 g" in qtys, f"expected '2 łyżki' → 30 g, got: {qtys}"
 
 
-async def test_non_food_items_are_kept_in_inne(pl_config) -> None:
-    """Manually-added items may be anything — non-food items must survive the
-    organize step (dropped-item bug), landing in the "inne" section."""
+def _section_of(result, needle: str) -> str | None:
+    for item in result.output.items:
+        if needle in item.name.lower():
+            return item.section
+    return None
+
+
+async def test_items_get_correct_supermarket_aisle(pl_config) -> None:
+    """The reported bug: czosnek landed in "inne" and household items had no home.
+    With the aisle taxonomy, items must be assigned to the aisle that sells them."""
     agent = build_shopping_list_agent(pl_config)
-    result = await agent.run("mleko\nbaterie AA\nworki na śmieci")
+    result = await agent.run(
+        "czosnek 4 szt\npapier toaletowy\nręcznik papierowy\nmleko\nchleb\npiwo"
+    )
     names = _names(result)
 
-    assert any("bateri" in n for n in names), f"'baterie AA' was dropped: {names}"
-    assert any("worki" in n or "śmiec" in n or "smiec" in n for n in names), (
-        f"'worki na śmieci' was dropped: {names}"
-    )
+    # Nothing dropped.
+    for needle in ("czosnek", "papier toaletowy", "ręcznik", "mleko", "chleb", "piwo"):
+        assert any(needle.split()[0] in n for n in names), f"{needle!r} dropped: {names}"
+
+    # Garlic is produce, never "inne" (the reported #1 bug).
+    assert _section_of(result, "czosnek") == "warzywa/owoce"
+    # Household paper goes to the chemia/dom aisle, not "inne" (reported #2 bug).
+    assert _section_of(result, "papier toaletowy") == "chemia/dom"
+    assert _section_of(result, "ręcznik") == "chemia/dom"

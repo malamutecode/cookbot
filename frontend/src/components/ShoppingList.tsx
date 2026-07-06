@@ -9,7 +9,20 @@ interface Props {
   ui: UiStrings
 }
 
-const SECTION_ORDER = ['warzywa/owoce', 'nabiał', 'mięso/ryby', 'piekarnia', 'suche produkty', 'inne']
+// Mirrors SECTIONS_ORDER in cookbot/agents/shopping_list.py (store-aisle order).
+const SECTION_ORDER = [
+  'warzywa/owoce',
+  'nabiał i jaja',
+  'mięso/ryby/wędliny',
+  'pieczywo',
+  'mrożonki',
+  'produkty suche/sypkie',
+  'napoje',
+  'słodycze/przekąski',
+  'chemia/dom',
+  'higiena/kosmetyki',
+  'inne',
+]
 
 export default function ShoppingList({ items, onChange, ui }: Props) {
   const hasSections = items.some(i => i.section)
@@ -95,19 +108,9 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
     }
   }
 
-  async function exportList() {
+  async function copyList() {
     const text = renderListText(items, ui.shopping_list_heading ?? 'Lista zakupów')
     if (!text) return
-    // Prefer the native share sheet (mobile → straight to Messenger/mail); fall
-    // back to clipboard on desktop / unsupported browsers.
-    try {
-      if (navigator.share) {
-        await navigator.share({ text })
-        return
-      }
-    } catch {
-      // user cancelled or share failed → fall through to copy
-    }
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
@@ -116,6 +119,19 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
       // clipboard blocked — nothing else we can do silently
     }
   }
+
+  async function shareList() {
+    const text = renderListText(items, ui.shopping_list_heading ?? 'Lista zakupów')
+    if (!text) return
+    try {
+      await navigator.share?.({ text })
+    } catch {
+      // user cancelled or share unsupported — no-op
+    }
+  }
+
+  // navigator.share is mainly a mobile capability; only show "Udostępnij" when it exists.
+  const canShare = typeof navigator !== 'undefined' && !!navigator.share
 
   // Group by section when section data is present
   const sections: { name: string; entries: { item: ShopItem; idx: number }[] }[] = []
@@ -175,9 +191,16 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
         <button style={styles.primaryBtn} onClick={organize} disabled={organizing || isEmpty}>
           {organizing ? (ui.shopping_list_organizing ?? 'Układam…') : (ui.shopping_list_organize ?? 'Poukładaj listę zakupów')}
         </button>
-        <button style={styles.secondaryBtn} onClick={exportList} disabled={isEmpty}>
-          {copied ? (ui.shopping_list_copied ?? 'Skopiowano ✓') : (ui.shopping_list_export ?? 'Kopiuj / Udostępnij')}
+      </div>
+      <div style={styles.actions}>
+        <button style={styles.secondaryBtn} onClick={copyList} disabled={isEmpty}>
+          {copied ? (ui.shopping_list_copied ?? 'Skopiowano ✓') : (ui.shopping_list_copy ?? 'Kopiuj')}
         </button>
+        {canShare && (
+          <button style={styles.secondaryBtn} onClick={shareList} disabled={isEmpty}>
+            {ui.shopping_list_share ?? 'Udostępnij'}
+          </button>
+        )}
       </div>
       <div style={styles.actions}>
         <button style={styles.clearBtn} onClick={clearChecked} disabled={isEmpty}>
