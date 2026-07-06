@@ -12,12 +12,20 @@ import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry } from './types'
 import { API_BASE, TEST_USER } from './config'
 
 const CAL_KEY = 'tastyhub_calendar'
+const SHOP_KEY = 'tastyhub_shopping'
 
 function loadCalendar(): CalendarDay[] {
   try { return JSON.parse(localStorage.getItem(CAL_KEY) ?? '[]') } catch { return [] }
 }
 function saveCalendar(days: CalendarDay[]) {
   localStorage.setItem(CAL_KEY, JSON.stringify(days))
+}
+
+function loadShopItems(): ShopItem[] {
+  try { return JSON.parse(localStorage.getItem(SHOP_KEY) ?? '[]') } catch { return [] }
+}
+function saveShopItems(items: ShopItem[]) {
+  localStorage.setItem(SHOP_KEY, JSON.stringify(items))
 }
 
 export default function App() {
@@ -27,7 +35,7 @@ export default function App() {
   const [page, setPage]           = useState<Page>('chat')
   const [ui, setUi]               = useState<UiStrings>({})
   const [spizEnabled, setSpizEnabled] = useState(false)
-  const [shopItems, setShopItems] = useState<ShopItem[]>([])
+  const [shopItems, setShopItems] = useState<ShopItem[]>(loadShopItems)
   const [calDays, setCalDays]     = useState<CalendarDay[]>(loadCalendar)
   const [chatProcessing, setChatProcessing] = useState(false)
 
@@ -39,6 +47,10 @@ export default function App() {
       .then(setUi)
       .catch(() => {})
   }, [])
+
+  // Persist the shopping list to localStorage on every change (like the calendar),
+  // so a hand-built list survives reloads.
+  useEffect(() => { saveShopItems(shopItems) }, [shopItems])
 
   const createSession = useCallback(async (token: string | null) => {
     const resp = await fetch(`${API_BASE}/v1/sessions`, { method: 'POST', headers: authHeaders(token) })

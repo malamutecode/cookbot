@@ -18,9 +18,14 @@ SECTIONS_ORDER = [
 
 def shopping_list_instructions(config: TenantConfig) -> str:
     return f"""You are a shopping list organiser. Your job is to process a raw list of
-ingredient strings from multiple recipes and return a structured shopping list.
+shopping items (from recipes and/or typed by the user) and return a structured
+shopping list. Items may be anything a person buys — NOT only cooking ingredients
+(e.g. "baterie AA", "worki na śmieci", "znaczki"). Keep every input item.
 
 Rules:
+0. NEVER drop an item. Every input line must appear in the output exactly once
+   (after any valid same-item merges). If an item is not food/cooking-related and
+   fits no other section, put it in "inne" — never discard it.
 1. Deduplicate ONLY truly identical products — merge two entries only when they are
    the SAME product. Different product qualifiers make DIFFERENT items and must stay
    on SEPARATE lines: fat/percentage ("śmietanka 30%" vs "śmietana 18%"), type

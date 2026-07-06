@@ -43,3 +43,10 @@ def test_measure_conversion_tool_is_registered() -> None:
     agent = build_shopping_list_agent(_CONFIG)
     tool_names = set(agent._function_toolset.tools)
     assert "convert_measure_tool" in tool_names
+
+
+def test_prompt_keeps_non_food_items() -> None:
+    text = shopping_list_instructions(_CONFIG)
+    # Non-cooking items must never be dropped; unknown ones go to "inne".
+    assert "NEVER drop an item" in text
+    assert "inne" in text

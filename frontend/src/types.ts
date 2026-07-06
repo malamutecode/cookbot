@@ -86,6 +86,13 @@ export interface UiStrings {
   spizarnia_add_button?: string
   shopping_list_heading?: string
   shopping_list_clear?: string
+  shopping_list_add_placeholder?: string
+  shopping_list_add_button?: string
+  shopping_list_organize?: string
+  shopping_list_organizing?: string
+  shopping_list_export?: string
+  shopping_list_copied?: string
+  shopping_list_empty?: string
   frisco_button?: string
   frisco_heading?: string
   frisco_not_found?: string

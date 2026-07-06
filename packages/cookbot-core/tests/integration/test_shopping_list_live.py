@@ -54,3 +54,16 @@ async def test_szklanka_amount_is_converted_via_tool(pl_config) -> None:
     # The known wrong value the LLM produced before must not appear.
     assert "150 ml" not in qtys, f"stale 150 ml conversion resurfaced: {qtys}"
     assert "30 g" in qtys, f"expected '2 łyżki' → 30 g, got: {qtys}"
+
+
+async def test_non_food_items_are_kept_in_inne(pl_config) -> None:
+    """Manually-added items may be anything — non-food items must survive the
+    organize step (dropped-item bug), landing in the "inne" section."""
+    agent = build_shopping_list_agent(pl_config)
+    result = await agent.run("mleko\nbaterie AA\nworki na śmieci")
+    names = _names(result)
+
+    assert any("bateri" in n for n in names), f"'baterie AA' was dropped: {names}"
+    assert any("worki" in n or "śmiec" in n or "smiec" in n for n in names), (
+        f"'worki na śmieci' was dropped: {names}"
+    )
