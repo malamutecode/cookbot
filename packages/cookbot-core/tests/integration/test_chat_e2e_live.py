@@ -141,3 +141,35 @@ async def test_full_onboarding_to_web_recipe(pl_config) -> None:
     assert entry.date.endswith("-08-10"), f"expected ...-08-10, got {entry.date!r}"
     assert entry.date.startswith(str(__import__('datetime').date.today().year)), \
         f"calendar date not in current year: {entry.date!r}"
+
+
+async def test_direct_recipe_request_skips_onboarding(pl_config) -> None:
+    """A first message that names a specific dish must go straight to proposals,
+    without the agent asking the onboarding questions (servings/time/etc.)."""
+    agent = build_chat_agent(pl_config)
+    deps = ChatAgentDeps(
+        config=pl_config,
+        preferred_sites=["kwestiasmaku.com", "aniagotuje.pl"],
+        allow_ai_generated=True,
+    )
+    history: list = []
+
+    reply, events = await _say(agent, deps, history, "Przepis na halloumi dla 2 osób")
+
+    # The dish and servings were captured from the single message.
+    assert deps.onboarding.dish_type, "dish_type not recorded from the direct request"
+    assert "halloumi" in deps.onboarding.dish_type.lower()
+    assert deps.onboarding.servings == 2, (
+        f"servings should be parsed as 2, got {deps.onboarding.servings!r}"
+    )
+
+    # Crucially: proposals came back on THIS first turn — no onboarding Q&A.
+    opt_events = [e for e in events if isinstance(e, RecipeOptionsEvent)]
+    assert opt_events, (
+        "expected recipe proposals on the first turn for a direct request; "
+        f"got events: {[type(e).__name__ for e in events]} / reply: {reply!r}"
+    )
+    proposals = opt_events[0].proposals
+    assert len(proposals) >= 2, f"expected >=2 proposals, got {len(proposals)}"
+    for p in proposals:
+        assert p.name and p.key_ingredients

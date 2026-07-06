@@ -83,6 +83,17 @@ class OnboardingState(BaseModel):
             return "free_notes"
         return None
 
+    def has_concrete_dish(self) -> bool:
+        """True when the user named a specific dish (not the "any" sentinel used
+        for "zaproponuj coś"). This is the signal for a direct recipe request."""
+        return bool(self.dish_type) and self.dish_type.strip().lower() not in {"any", ""}
+
+    def ready_to_search(self) -> bool:
+        """The agent may propose recipes when onboarding is complete OR when the
+        user already named a concrete dish — the other fields have sensible
+        defaults, so a specific request shouldn't be blocked on them."""
+        return self.complete or self.has_concrete_dish()
+
     def to_intent(self) -> UserIntent:
         return UserIntent(
             dish_type=self.dish_type or "any",
@@ -107,6 +118,10 @@ class OnboardingUpdateResult(BaseModel):
     complete: bool
     next_missing_field: str | None
     collected: OnboardingState
+    # True when the user has named a concrete dish → the agent should call
+    # propose_recipes now instead of asking the remaining onboarding questions.
+    ready_to_search: bool = False
+    next_action: str = ""  # human-readable instruction for the model
 
 
 class ProposeRecipesResult(BaseModel):
@@ -495,6 +510,123 @@ async def resolve_recipe(
     return FoundRecipe(recipe=recipe, source=source, web_pick_fell_back=web_pick_fell_back)
 
 
+# ── Dynamic onboarding system prompt (module-level so it's unit-testable) ─────
+
+def onboarding_status_prompt(
+    ob: OnboardingState,
+    questions: list[str],
+    *,
+    last_proposals: list[RecipeSummary],
+    last_recipe: FoundRecipe | None,
+) -> str:
+    """Build the per-turn onboarding/routing system prompt.
+
+    Three branches: recipe-selection (proposals shown, awaiting pick), the direct
+    recipe fast path (user named a concrete dish → search now), and guided
+    onboarding (vague request → ask the next missing field)."""
+    if ob.complete:
+        # If proposals were sent and the user is picking, mandate the tool call.
+        if last_proposals and last_recipe is None:
+            names = "\n".join(f"  {i+1}. {p.name}" for i, p in enumerate(last_proposals))
+            return f"""## RECIPE SELECTION IN PROGRESS
+The user has been shown these recipe options:
+{names}
+
+If the user's message picks one of them (a number like "1" or a recipe name),
+call get_recipe_details immediately with their choice. Do not describe the
+chosen recipe — the full recipe card is displayed automatically after the tool
+call. If the message is instead a question or comment about the options, answer
+it directly and invite them to pick one by number or name.
+"""
+        return ""  # onboarding done, no extra instructions needed
+
+    # ── Direct recipe request fast path ──────────────────────────────────────
+    # If the user already named a concrete dish (not "zaproponuj coś"), they know
+    # what they want — skip the remaining onboarding questions and search straight
+    # away. The other fields keep their sensible defaults.
+    if ob.has_concrete_dish():
+        known = []
+        if ob.dish_type:
+            known.append(f"dish = {ob.dish_type!r}")
+        if ob.servings is not None:
+            known.append(f"servings = {ob.servings}")
+        if ob.max_time_minutes is not None:
+            known.append(f"time limit (min) = {ob.max_time_minutes}")
+        if ob.ingredients is not None:
+            known.append(f"ingredients = {ob.ingredients!r}")
+        known_str = "\n".join(f"  {k}" for k in known) or "  (dish only)"
+        return f"""
+## DIRECT RECIPE REQUEST — the user named a specific dish
+
+Already known from the conversation:
+{known_str}
+
+The user knows what they want — DO NOT ask the onboarding questions (servings,
+time, ingredients, extra notes). Instead, this turn:
+1. If the latest message contains any details you haven't recorded yet (servings,
+   a time limit, specific ingredients, notes), call update_onboarding ONCE to
+   capture them. Skip this if there is nothing new to record.
+2. Then call propose_recipes immediately for the named dish, passing whatever is
+   known (dish_type is required; use collected servings/time/ingredients if
+   present, otherwise the defaults). Do NOT ask any further questions first.
+"""
+
+    # ── Guided onboarding (vague request) ────────────────────────────────────
+    field_map: list[tuple[str, Any, str, str]] = [
+        ("dish_type",        ob.dish_type,        "dish type",   questions[0]),
+        ("servings",         ob.servings,          "servings",    questions[1]),
+        ("max_time_minutes", ob.max_time_minutes,  "time",        questions[2]),
+        ("ingredients",      ob.ingredients,       "ingredients", questions[3]),
+        ("free_notes",       ob.free_notes,        "notes",       questions[4]),
+    ]
+
+    collected_lines = [
+        f"  {label} = {value!r}"
+        for _, value, label, _ in field_map
+        if value is not None
+    ]
+    missing_lines = [
+        f"  {i+1}. field={field!r}  →  ask: \"{question}\""
+        for i, (field, value, _, question) in enumerate(field_map)
+        if value is None
+    ]
+
+    next_field, _next_question = next(
+        (field, question)
+        for field, value, _, question in field_map
+        if value is None
+    )
+
+    collected_str = "\n".join(collected_lines) or "  (none yet)"
+    missing_str = "\n".join(missing_lines)
+
+    return f"""
+## ONBOARDING IN PROGRESS — follow these instructions exactly
+
+Collected so far:
+{collected_str}
+
+Still needed (in order):
+{missing_str}
+
+MANDATORY STEPS FOR THIS TURN:
+1. The user's message is a response to the question about {next_field!r}.
+   Call update_onboarding immediately with the parsed value for {next_field!r}.
+   Parsing rules:
+   - Any dish name → dish_type = that name (e.g. "makaron" → "pasta" or keep as-is)
+   - "zaproponuj" / "nie wiem" / "cokolwiek" / "surprise me" → dish_type = "any"
+   - A number / "tylko dla mnie" / "dla dwojga" → servings as integer
+   - Time like "30 minut" → max_time_minutes = 30; "bez pośpiechu" / "nie ma znaczenia" → 0
+   - List of ingredients → ingredients = [list]; "nie" / "brak" / "nic" → ingredients = []
+   - Any extra notes → free_notes = that text; "nie" / "nic" → free_notes = ""
+2. After update_onboarding returns, FOLLOW its `next_action` field:
+   - if `ready_to_search` is true (the user named a specific dish, or all fields are
+     set) → call propose_recipes immediately; do NOT ask more questions.
+   - otherwise → ask ONLY the next missing question.
+3. NEVER re-ask a question whose field is already listed in "Collected so far".
+"""
+
+
 # ── Agent factory (call once per connection) ──────────────────────────────────
 
 def build_chat_agent(config: TenantConfig) -> Agent[ChatAgentDeps, str]:  # noqa: C901
@@ -517,6 +649,10 @@ You MUST respond exclusively in {config.language}. Never use another language.
 - Answer general cooking questions directly.
 
 ## Recipe flow
+0. If the user's message already names a SPECIFIC dish (e.g. "przepis na halloumi
+   dla 2 osób"), they know what they want — skip the onboarding questions and call
+   propose_recipes straight away for that dish. Only run the guided questions when
+   the request is vague ("coś na obiad", "zaproponuj coś").
 1. When the user wants a recipe, call propose_recipes — this shows 4 options.
 2. Tell the user to pick one (e.g. "Który przepis Cię interesuje?").
 3. When the user picks (says a number or name), call get_recipe_details with their choice.
@@ -575,79 +711,16 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         )
 
     # Dynamic system prompt — injected on every turn, shows exactly what's
-    # been collected and what the model MUST do next.
+    # been collected and what the model MUST do next. Delegates to the module-level
+    # onboarding_status_prompt so the logic is unit-testable without a live run.
     @agent.system_prompt
     async def _onboarding_status(ctx: RunContext[ChatAgentDeps]) -> str:
-        ob = ctx.deps.onboarding
-        if ob.complete:
-            # If proposals were sent and user is picking, mandate the tool call.
-            if ctx.deps.last_proposals and ctx.deps.last_recipe is None:
-                names = "\n".join(
-                    f"  {i+1}. {p.name}" for i, p in enumerate(ctx.deps.last_proposals)
-                )
-                return f"""## RECIPE SELECTION IN PROGRESS
-The user has been shown these recipe options:
-{names}
-
-If the user's message picks one of them (a number like "1" or a recipe name),
-call get_recipe_details immediately with their choice. Do not describe the
-chosen recipe — the full recipe card is displayed automatically after the tool
-call. If the message is instead a question or comment about the options, answer
-it directly and invite them to pick one by number or name.
-"""
-            return ""  # onboarding done, no extra instructions needed
-
-        field_map: list[tuple[str, Any, str, str]] = [
-            ("dish_type",        ob.dish_type,        "dish type",   questions[0]),
-            ("servings",         ob.servings,          "servings",    questions[1]),
-            ("max_time_minutes", ob.max_time_minutes,  "time",        questions[2]),
-            ("ingredients",      ob.ingredients,       "ingredients", questions[3]),
-            ("free_notes",       ob.free_notes,        "notes",       questions[4]),
-        ]
-
-        collected_lines = [
-            f"  {label} = {value!r}"
-            for _, value, label, _ in field_map
-            if value is not None
-        ]
-        missing_lines = [
-            f"  {i+1}. field={field!r}  →  ask: \"{question}\""
-            for i, (field, value, _, question) in enumerate(field_map)
-            if value is None
-        ]
-
-        next_field, next_question = next(
-            (field, question)
-            for field, value, _, question in field_map
-            if value is None
+        return onboarding_status_prompt(
+            ctx.deps.onboarding,
+            questions,
+            last_proposals=ctx.deps.last_proposals,
+            last_recipe=ctx.deps.last_recipe,
         )
-
-        collected_str = "\n".join(collected_lines) or "  (none yet)"
-        missing_str = "\n".join(missing_lines)
-
-        return f"""
-## ONBOARDING IN PROGRESS — follow these instructions exactly
-
-Collected so far:
-{collected_str}
-
-Still needed (in order):
-{missing_str}
-
-MANDATORY STEPS FOR THIS TURN:
-1. The user's message is a response to the question about {next_field!r}.
-   Call update_onboarding immediately with the parsed value for {next_field!r}.
-   Parsing rules:
-   - Any dish name → dish_type = that name (e.g. "makaron" → "pasta" or keep as-is)
-   - "zaproponuj" / "nie wiem" / "cokolwiek" / "surprise me" → dish_type = "any"
-   - A number / "tylko dla mnie" / "dla dwojga" → servings as integer
-   - Time like "30 minut" → max_time_minutes = 30; "bez pośpiechu" / "nie ma znaczenia" → 0
-   - List of ingredients → ingredients = [list]; "nie" / "brak" / "nic" → ingredients = []
-   - Any extra notes → free_notes = that text; "nie" / "nic" → free_notes = ""
-2. After update_onboarding returns, if complete=false: ask ONLY the next missing question.
-3. If complete=true: call propose_recipes immediately using the collected values.
-4. NEVER re-ask a question whose field is already listed in "Collected so far".
-"""
 
     # ── Tools ────────────────────────────────────────────────────────────────
 
@@ -665,7 +738,10 @@ MANDATORY STEPS FOR THIS TURN:
         ingredients: list[str] | None = None,
         free_notes: str | None = None,
     ) -> OnboardingUpdateResult:
-        """Record one or more onboarding answers. Always call this before asking the next question."""
+        """Record one or more onboarding answers. Always call this before asking the
+        next question. After it returns, FOLLOW its `next_action`: if
+        `ready_to_search` is true, call propose_recipes immediately (do not ask more
+        questions); otherwise ask only the next missing question."""
         ob = ctx.deps.onboarding
         if dish_type is not None:
             ob.dish_type = dish_type
@@ -677,10 +753,27 @@ MANDATORY STEPS FOR THIS TURN:
             ob.ingredients = ingredients
         if free_notes is not None:
             ob.free_notes = free_notes
+
+        ready = ob.ready_to_search()
+        if ob.complete:
+            action = "All onboarding fields are set — call propose_recipes now."
+        elif ob.has_concrete_dish():
+            # Direct request: the user named a specific dish, so search now with the
+            # collected values + defaults. Do NOT ask the remaining questions.
+            action = (
+                "The user named a specific dish — call propose_recipes NOW with the "
+                "collected dish and any known servings/time/ingredients (defaults for "
+                "the rest). Do NOT ask about time, ingredients, or extra notes."
+            )
+        else:
+            nxt = ob.next_missing_field()
+            action = f"Ask only the next onboarding question (field {nxt!r})."
         return OnboardingUpdateResult(
             complete=ob.complete,
             next_missing_field=ob.next_missing_field(),
             collected=ob,
+            ready_to_search=ready,
+            next_action=action,
         )
 
     @agent.tool

@@ -20,6 +20,7 @@ from cookbot.agents.chat import (
     RecipeOptionsEvent,
     ShoppingListEvent,
     build_chat_agent,
+    onboarding_status_prompt,
     stream_chat_response,
 )
 from cookbot.models.calendar import CalendarEntry, CalendarState
@@ -113,6 +114,67 @@ def test_onboarding_to_intent_uses_set_values() -> None:
     assert intent.max_time_minutes == 45
     assert intent.available_ingredients == ["carrot", "celery"]
     assert intent.free_notes == "no salt"
+
+
+def test_has_concrete_dish_true_for_named_dish() -> None:
+    assert OnboardingState(dish_type="halloumi").has_concrete_dish()
+    assert OnboardingState(dish_type="Makaron Carbonara").has_concrete_dish()
+
+
+def test_has_concrete_dish_false_for_any_or_none() -> None:
+    assert not OnboardingState().has_concrete_dish()          # not answered
+    assert not OnboardingState(dish_type="any").has_concrete_dish()  # "zaproponuj coś"
+    assert not OnboardingState(dish_type="  ANY ").has_concrete_dish()
+    assert not OnboardingState(dish_type="").has_concrete_dish()
+
+
+def test_ready_to_search_on_concrete_dish_without_full_onboarding() -> None:
+    # A named dish is enough to search, even though servings/time/etc. are unset.
+    ob = OnboardingState(dish_type="halloumi", servings=2)
+    assert not ob.complete
+    assert ob.ready_to_search()
+
+
+def test_ready_to_search_false_for_vague_incomplete() -> None:
+    assert not OnboardingState(dish_type="any").ready_to_search()
+    assert not OnboardingState().ready_to_search()
+
+
+# ── onboarding_status_prompt routing ──────────────────────────────────────────
+
+_QUESTIONS = ["Q_dish", "Q_servings", "Q_time", "Q_ingredients", "Q_notes"]
+
+
+def _prompt(ob: OnboardingState) -> str:
+    return onboarding_status_prompt(ob, _QUESTIONS, last_proposals=[], last_recipe=None)
+
+
+def test_prompt_direct_request_for_concrete_dish() -> None:
+    # "Przepis na halloumi dla 2 osób" → dish + servings known, rest empty.
+    text = _prompt(OnboardingState(dish_type="halloumi", servings=2))
+    assert "DIRECT RECIPE REQUEST" in text
+    assert "propose_recipes" in text
+    # Must NOT push the guided question march.
+    assert "ONBOARDING IN PROGRESS" not in text
+    assert "ask ONLY the next missing question" not in text
+
+
+def test_prompt_guided_for_vague_request() -> None:
+    text = _prompt(OnboardingState(dish_type="any"))
+    assert "ONBOARDING IN PROGRESS" in text
+    assert "DIRECT RECIPE REQUEST" not in text
+
+
+def test_prompt_guided_when_nothing_collected() -> None:
+    text = _prompt(OnboardingState())
+    assert "ONBOARDING IN PROGRESS" in text
+    assert "DIRECT RECIPE REQUEST" not in text
+
+
+def test_prompt_empty_when_complete_and_no_proposals() -> None:
+    ob = OnboardingState(dish_type="soup", servings=2, max_time_minutes=30,
+                         ingredients=[], free_notes="")
+    assert _prompt(ob) == ""
 
 
 # ── Agent build ───────────────────────────────────────────────────────────────
