@@ -21,6 +21,11 @@ function formatDate(iso: string): string {
   return `${d.getDate()}.${d.getMonth() + 1}`
 }
 
+// Polish plural for "day": 1 dzień, 2-4 dni, else dni.
+function dayWord(n: number): string {
+  return n === 1 ? 'dzień' : 'dni'
+}
+
 interface Props {
   days: CalendarDay[]
   onChange: (days: CalendarDay[]) => void
@@ -32,6 +37,9 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [detailRecipe, setDetailRecipe] = useState<Recipe | null>(null)
   const [exportLoading, setExportLoading] = useState(false)
+  // Days selected for the shopping list. null = "all days with recipes" (default);
+  // once the user touches a checkbox we track an explicit set of ISO dates.
+  const [selectedDays, setSelectedDays] = useState<Set<string> | null>(null)
 
   const weekDates = getWeekDates(weekOffset)
 
@@ -43,6 +51,26 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
   function getDayData(date: string): CalendarDay {
     return days.find(d => d.date === date) ?? { date, recipes: [], freeText: '' }
   }
+
+  // A day is "selected" for the shopping list when its checkbox is ticked.
+  // Default (selectedDays === null): every day in the visible week that has recipes.
+  function isDaySelected(date: string): boolean {
+    if (selectedDays === null) return getDayData(date).recipes.length > 0
+    return selectedDays.has(date)
+  }
+
+  function toggleDaySelected(date: string) {
+    setSelectedDays(prev => {
+      // Materialise the current effective selection, then flip this day.
+      const base = prev ?? new Set(weekDates.filter(d => getDayData(d).recipes.length > 0))
+      const next = new Set(base)
+      if (next.has(date)) next.delete(date)
+      else next.add(date)
+      return next
+    })
+  }
+
+  const selectedDates = weekDates.filter(isDaySelected)
 
   function updateDay(date: string, updater: (d: CalendarDay) => CalendarDay) {
     const existing = days.find(d => d.date === date)
@@ -74,7 +102,7 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
   }
 
   async function exportShoppingList() {
-    const allIngredients = weekDates.flatMap(date =>
+    const allIngredients = selectedDates.flatMap(date =>
       getDayData(date).recipes.flatMap(r => r.ingredients)
     )
     if (!allIngredients.length) return
@@ -108,6 +136,9 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
   }
 
   const hasAnyRecipes = weekDates.some(d => getDayData(d).recipes.length > 0)
+  // The list can only be built from selected days that actually contain recipes.
+  const selectedWithRecipes = selectedDates.filter(d => getDayData(d).recipes.length > 0)
+  const canExport = selectedWithRecipes.length > 0 && !exportLoading
 
   return (
     <div style={styles.page}>
@@ -124,11 +155,14 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
         </span>
         <button style={styles.navBtn} onClick={() => setWeekOffset(w => w + 1)}>Następny tydzień →</button>
         <button
-          style={{ ...styles.exportBtn, ...(!hasAnyRecipes || exportLoading ? styles.exportBtnDisabled : {}) }}
+          style={{ ...styles.exportBtn, ...(!canExport ? styles.exportBtnDisabled : {}) }}
           onClick={exportShoppingList}
-          disabled={!hasAnyRecipes || exportLoading}
+          disabled={!canExport}
+          title={hasAnyRecipes && !canExport ? 'Zaznacz co najmniej jeden dzień z przepisami' : undefined}
         >
-          {exportLoading ? 'Przetwarzam…' : 'Utwórz listę zakupów dla tygodnia'}
+          {exportLoading
+            ? 'Przetwarzam…'
+            : `Utwórz listę zakupów (${selectedWithRecipes.length} ${dayWord(selectedWithRecipes.length)})`}
         </button>
       </div>
 
@@ -149,6 +183,16 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList }:
               onDrop={e => onDrop(e, date)}
             >
               <div style={styles.dayHeader}>
+                {day.recipes.length > 0 && (
+                  <input
+                    type="checkbox"
+                    checked={isDaySelected(date)}
+                    onChange={() => toggleDaySelected(date)}
+                    style={styles.dayCheckbox}
+                    title="Uwzględnij ten dzień w liście zakupów"
+                    aria-label={`Uwzględnij ${DAYS_PL[idx]} w liście zakupów`}
+                  />
+                )}
                 <span style={styles.dayName}>{DAYS_PL[idx]}</span>
                 <span style={styles.dayDate}>{formatDate(date)}</span>
                 {isToday && <span style={styles.todayBadge}>Dziś</span>}
@@ -283,10 +327,11 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 10px',
     borderBottom: '1px solid #e8e0d8',
     display: 'flex',
-    alignItems: 'baseline',
+    alignItems: 'center',
     gap: 6,
     flexShrink: 0,
   },
+  dayCheckbox: { accentColor: '#c0392b', cursor: 'pointer', margin: 0 },
   dayName: { fontWeight: 600, fontSize: '0.8rem', color: '#333' },
   dayDate: { fontSize: '0.75rem', color: '#888' },
   todayBadge: { background: '#c0392b', color: '#fff', borderRadius: 4, padding: '1px 6px', fontSize: '0.68rem', marginLeft: 'auto' },
