@@ -28,6 +28,16 @@ _EXTRACT_INSTRUCTIONS = """
      you missed the list; scan the page again. Include items under any sub-headers
      (e.g. "sos", "do podania"). Common items are easy to overlook: onion (cebula),
      garlic (czosnek), salt, pepper, oil/butter — double-check none are missing.
+     PRESERVE EVERY PRODUCT QUALIFIER EXACTLY — the specific product form is part of
+     the ingredient and must never be dropped or generalised:
+       * fat / percentage: "śmietanka 30%" is NOT "śmietana"; "mleko 3,2%" is not "mleko".
+       * product type / suffix: "śmietanka" (cream for cooking) ≠ "śmietana" (soured
+         cream); "masło extra" ≠ "masło"; keep "-ka"/"-ta" and words like "tłusta",
+         "kwaśna", "gęsta", "light".
+       * variety / cut / size: "papryka czerwona", "cukier trzcinowy",
+         "pierś z kurczaka", "duże jajko" — keep the qualifier word.
+     Copy the ingredient's full wording verbatim; never simplify a specific product
+     to its generic name.
    - steps: ALL preparation steps in order, as written. A real recipe has multiple
      steps — one step is almost always wrong; re-scan for the full method.
    - prep_time_minutes, cook_time_minutes (integers)
@@ -63,6 +73,10 @@ _SEARCH_INSTRUCTIONS = """
    - name, description
    - ingredients: EVERY item, with the EXACT quantities as written — do NOT scale
      or recalculate. Common items are easy to miss: onion, garlic, salt, oil.
+     PRESERVE EVERY PRODUCT QUALIFIER EXACTLY — never generalise a specific product
+     to its generic name: "śmietanka 30%" ≠ "śmietana", "mleko 3,2%" ≠ "mleko",
+     "masło extra" ≠ "masło". Keep fat %, type suffixes (-ka/-ta), and variety
+     words (czerwona, trzcinowy, tłusta) verbatim.
    - steps: numbered, actionable, as written on the page
    - prep_time_minutes, cook_time_minutes (integers)
    - difficulty: exactly "Easy", "Medium", or "Hard"

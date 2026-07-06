@@ -86,6 +86,12 @@ async def test_kwestiasmaku_extraction_is_faithful(pl_config) -> None:
             f"fabricated/rescaled makaron amount {bad!r} in: {recipe.ingredients}"
         )
 
+    # Product qualifiers must survive extraction: the page says "śmietanki" (cream
+    # for cooking), NOT generic "śmietana". Dropping the qualifier is the reported bug.
+    assert "smietank" in ingr or "śmietank" in ingr, (
+        f"'śmietanka' qualifier lost (generalised to śmietana?): {recipe.ingredients}"
+    )
+
     # The page is for 2 portions; extraction must report that, not a pushed-in target.
     assert recipe.servings == 2, f"expected 2 servings from the page, got {recipe.servings}"
 
