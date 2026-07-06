@@ -2,27 +2,13 @@ import { useState } from 'react'
 import { GroceryMatchResult, ShopItem, UiStrings } from '../types'
 import { API_BASE } from '../config'
 import FriscoPanel from './FriscoPanel'
+import { SECTION_ORDER, mergeOrganized, renderListText } from '../lib/shoppingList'
 
 interface Props {
   items: ShopItem[]
   onChange: (items: ShopItem[]) => void
   ui: UiStrings
 }
-
-// Mirrors SECTIONS_ORDER in cookbot/agents/shopping_list.py (store-aisle order).
-const SECTION_ORDER = [
-  'warzywa/owoce',
-  'nabiał i jaja',
-  'mięso/ryby/wędliny',
-  'pieczywo',
-  'mrożonki',
-  'produkty suche/sypkie',
-  'napoje',
-  'słodycze/przekąski',
-  'chemia/dom',
-  'higiena/kosmetyki',
-  'inne',
-]
 
 export default function ShoppingList({ items, onChange, ui }: Props) {
   const hasSections = items.some(i => i.section)
@@ -84,22 +70,10 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
       })
       if (resp.ok) {
         const data = await resp.json()
-        const organized: ShopItem[] = (data.items ?? []).map(
-          (i: { name: string; quantity: string; section: string }) => ({
-            name: i.quantity ? `${i.name} — ${i.quantity}` : i.name,
-            checked: false,
-            section: i.section,
-          }),
-        )
-        // Safety net: never lose an item to the organizer. If any input item has
-        // no representative in the result (e.g. the model dropped it), keep the
-        // originals it missed, placed in "inne" so nothing silently disappears.
-        const baseName = (n: string) => n.split(' — ')[0].trim().toLowerCase()
-        const organizedNames = new Set(organized.map(o => baseName(o.name)))
-        const dropped = items.filter(o => !organizedNames.has(baseName(o.name)))
-        const preserved = dropped.map(o => ({ name: o.name, checked: false, section: 'inne' }))
-        const finalItems = [...organized, ...preserved]
-        if (finalItems.length) onChange(finalItems)
+        // Trust the organizer's output (it keeps every item and may rename/
+        // normalize them). mergeOrganized only guards the empty-response case —
+        // reconciling by name here previously duplicated renamed items into "inne".
+        onChange(mergeOrganized(items, data.items ?? []))
       }
     } catch {
       // best-effort; leave the list unchanged on failure
@@ -228,33 +202,6 @@ function ItemRow({ item, onToggle, onRemove }: { item: ShopItem; onToggle: () =>
       <button style={styles.removeBtn} onClick={onRemove} title="Usuń" aria-label="Usuń pozycję">×</button>
     </div>
   )
-}
-
-// Plain-text render for export — paste-safe (no markdown), grouped by section.
-function renderListText(items: ShopItem[], heading: string): string {
-  if (items.length === 0) return ''
-  const hasSections = items.some(i => i.section)
-  const lines: string[] = [heading, '']
-  if (hasSections) {
-    const bySection = new Map<string, ShopItem[]>()
-    items.forEach(i => {
-      const sec = i.section ?? 'inne'
-      if (!bySection.has(sec)) bySection.set(sec, [])
-      bySection.get(sec)!.push(i)
-    })
-    const ordered = [
-      ...SECTION_ORDER.filter(s => bySection.has(s)),
-      ...[...bySection.keys()].filter(s => !SECTION_ORDER.includes(s)),
-    ]
-    ordered.forEach(sec => {
-      lines.push(`${sec}:`)
-      bySection.get(sec)!.forEach(i => lines.push(`- ${i.name}`))
-      lines.push('')
-    })
-  } else {
-    items.forEach(i => lines.push(`- ${i.name}`))
-  }
-  return lines.join('\n').trim()
 }
 
 const styles: Record<string, React.CSSProperties> = {
