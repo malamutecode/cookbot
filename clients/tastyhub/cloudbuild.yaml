@@ -1,0 +1,88 @@
+# Cloud Build → Artifact Registry → Cloud Run for the Feedek backend.
+#
+# Run from the REPO ROOT (build context must be the root — see Dockerfile):
+#   gcloud builds submit --config clients/tastyhub/cloudbuild.yaml \
+#     --substitutions=_REGION=europe-west1,_AR_REPO=feedek,_SERVICE=cookbot-tastyhub
+#
+# Prereqs (one-time, see DEPLOY.md): Artifact Registry repo created, secrets
+# openai-key + api-key in Secret Manager, Cloud Run + the build SA granted access.
+#
+# ⚠ This file deploys with --set-env-vars, which REPLACES all env vars each run.
+# Keep the full desired env set here (ALLOWED_ORIGINS, ADMIN_UIDS, quota defaults)
+# so a redeploy never silently drops one. Values that are your call are TODO-marked.
+
+substitutions:
+  _REGION: europe-west1
+  _AR_REPO: feedek
+  _SERVICE: cookbot-tastyhub
+  # Comma-separated origins allowed to call the API directly / open the WebSocket.
+  # Set to your Firebase Hosting domain(s) at deploy time, e.g.
+  #   https://feedek.web.app,https://feedek.firebaseapp.com
+  _ALLOWED_ORIGINS: "*"
+  # Firebase uids seeded as admins (comma-separated). Set to YOUR uid.
+  _ADMIN_UIDS: ""
+  _DEFAULT_DAILY_TOKEN_LIMIT: "1000000"
+  _DEFAULT_MONTHLY_TOKEN_LIMIT: "10000000"
+
+images:
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
+  - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  # 1) Build (context = repo root, so cache mounts + monorepo COPYs resolve).
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - clients/tastyhub/Dockerfile
+      - -t
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}"
+      - -t
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:latest"
+      - .
+
+  # 2) Push both tags.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}"
+
+  # 3) Deploy to Cloud Run.
+  #    --allow-unauthenticated: the browser reaches the API through the Firebase
+  #    Hosting rewrite (and opens the WebSocket to the Cloud Run URL directly), so
+  #    the service must be publicly reachable. App-level security is the API key +
+  #    Firebase ID-token verification in the middleware, NOT Cloud Run IAM.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - "${_SERVICE}"
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${SHORT_SHA}
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --port=8080
+      - --cpu=1
+      # 1Gi headroom: the Frisco matcher parses a ~50MB feed into ~14k product
+      # objects + an inverted index, held in per-instance RAM (lazy, on first
+      # /v1/grocery lookup). 512Mi risks OOM once that's built.
+      - --memory=1Gi
+      - --min-instances=0
+      - --max-instances=1
+      - --timeout=3600
+      - --concurrency=40
+      - --labels=client_id=tastyhub,app=cookbot
+      - --set-secrets=OPENAI_API_KEY=openai-key:latest,API_KEY=api-key:latest
+      - >-
+        --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},FIRESTORE_DATABASE=(default),TENANT_ID=tastyhub,ALLOWED_ORIGINS=${_ALLOWED_ORIGINS},ADMIN_UIDS=${_ADMIN_UIDS},DEFAULT_DAILY_TOKEN_LIMIT=${_DEFAULT_DAILY_TOKEN_LIMIT},DEFAULT_MONTHLY_TOKEN_LIMIT=${_DEFAULT_MONTHLY_TOKEN_LIMIT},QUOTA_TIMEZONE=Europe/Warsaw,LOG_LEVEL=INFO
+
+timeout: 1200s

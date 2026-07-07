@@ -1,0 +1,40 @@
+# Docker build context is the repo root (see clients/tastyhub/Dockerfile).
+# Keep the context small and never ship secrets or virtualenvs into the image.
+
+# Virtualenvs (rebuilt inside the image by `uv sync`)
+**/.venv/
+**/venv/
+
+# Python caches / build artifacts
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/build/
+**/dist/
+
+# Secrets & local env — MUST NOT enter the image
+**/.env
+**/.env.*
+!**/.env.example
+
+# Frontend (deployed separately to Firebase Hosting, not in the backend image)
+frontend/
+
+# Infra / docs not needed at runtime
+infrastructure/
+docker-compose.yml
+**/*.md
+scripts/
+
+# Tests (not run in the runtime image)
+**/tests/
+
+# VCS / editor / OS
+.git/
+.github/
+.idea/
+.vscode/
+**/.DS_Store

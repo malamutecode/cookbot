@@ -1,10 +1,31 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Resolve .env relative to this file: app/config/settings.py → clients/tastyhub/.env
 _ENV_FILE = Path(__file__).parent.parent.parent / ".env"  # clients/tastyhub/.env
+
+
+def _split_csv(v: object) -> object:
+    """Accept a comma-separated string for list[str] env vars.
+
+    pydantic-settings otherwise tries to JSON-parse a list field's env value, so
+    `ALLOWED_ORIGINS=https://a,https://b` would crash the app at startup. Split
+    plain strings on commas; pass through anything already a list (or JSON).
+    """
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        if s.startswith("["):  # a JSON array — parse it ourselves (NoDecode is set)
+            import json
+
+            return json.loads(s)
+        return [part.strip() for part in s.split(",") if part.strip()]
+    return v
 
 
 class Settings(BaseSettings):
@@ -18,7 +39,9 @@ class Settings(BaseSettings):
     tenant_id: str = "tastyhub"
     api_key: str
     recipe_source_url: str = "https://tastyhub.com/sitemap-recipes.xml"
-    allowed_origins: list[str] = ["*"]
+    # NoDecode: skip pydantic-settings' eager JSON decode so _split_csv can accept
+    # a comma-separated env string (Cloud Run passes plain strings, not JSON).
+    allowed_origins: Annotated[list[str], NoDecode] = ["*"]
 
     # LLM — per-agent model overrides.
     # NOTE on models: gpt-4o-mini is used for the recipe agents because it
@@ -44,10 +67,15 @@ class Settings(BaseSettings):
     dev_uid: str = ""  # when set, x-dev-uid header is accepted as a user identity bypass
 
     # User management + per-user token quotas (STEP 42)
-    admin_uids: list[str] = []               # uids seeded as admins (bootstrap)
+    admin_uids: Annotated[list[str], NoDecode] = []   # uids seeded as admins (bootstrap)
     default_daily_token_limit: int = 0       # 0 ⇒ unlimited
     default_monthly_token_limit: int = 0     # 0 ⇒ unlimited
     quota_timezone: str = "Europe/Warsaw"    # day/month boundaries for resets
+
+    # Accept comma-separated env strings for list fields (Cloud Run --set-env-vars
+    # passes plain strings, not JSON). See _split_csv.
+    _split_origins = field_validator("allowed_origins", mode="before")(_split_csv)
+    _split_admins = field_validator("admin_uids", mode="before")(_split_csv)
 
 
 @lru_cache
