@@ -23,6 +23,7 @@ function normalizeIsoDate(raw?: string): string | undefined {
 
 interface Props {
   sessionId: string
+  idToken: string | null
   useSpizarnia: boolean
   ui: UiStrings
   shopItems: ShopItem[]
@@ -56,7 +57,7 @@ function calendarToWsPayload(calDays: CalendarDay[]) {
   }
 }
 
-export default function ChatPanel({ sessionId, useSpizarnia, ui, shopItems, onShopItemsChange, onAddToCalendar, onCalendarRemove, calDays, onProcessingChange }: Props) {
+export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopItems, onShopItemsChange, onAddToCalendar, onCalendarRemove, calDays, onProcessingChange }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [inputEnabled, setInputEnabled] = useState(false)
@@ -125,7 +126,13 @@ export default function ChatPanel({ sessionId, useSpizarnia, ui, shopItems, onSh
   function connectWS() {
     const params = new URLSearchParams()
     if (useSpizarnia) params.set('use_spizarnia', 'true')
-    if (DEV_MODE) params.set('dev_uid', DEV_UID)
+    if (DEV_MODE) {
+      params.set('dev_uid', DEV_UID)
+    } else if (idToken) {
+      // Browsers can't set headers on a WebSocket, so the Firebase ID token goes
+      // in the query string; the backend accepts a `token` param.
+      params.set('token', idToken)
+    }
     const qs = params.toString() ? `?${params.toString()}` : ''
     const ws = new WebSocket(`${WS_BASE}/v1/ws/${sessionId}${qs}`)
     wsRef.current = ws

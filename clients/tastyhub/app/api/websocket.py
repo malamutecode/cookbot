@@ -137,6 +137,7 @@ async def websocket_endpoint(
     session_id: str,
     use_spizarnia: bool = Query(default=False),
     dev_uid: str = Query(default=""),
+    token: str = Query(default=""),
 ) -> None:
     firestore = websocket.app.state.firestore
 
@@ -149,22 +150,27 @@ async def websocket_endpoint(
         await websocket.close(code=4003)
         return
 
-    # Resolve uid — try Bearer token first, then DEV_UID bypass (header or query param)
+    # Resolve uid. Auth sources, in order:
+    #   1. DEV_UID bypass (x-dev-uid header or dev_uid query param) — local dev.
+    #   2. Firebase ID token — from the `authorization: Bearer` header OR the
+    #      `token` query param. Browsers can't set headers on a WebSocket, so the
+    #      production frontend passes the token as a query param.
     uid: str | None = None
     settings = get_settings()
     auth_header = websocket.headers.get("authorization", "")
+    header_token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+    id_token = header_token or token.strip()
     x_dev_uid = websocket.headers.get("x-dev-uid", "") or dev_uid
     if x_dev_uid and settings.dev_uid and x_dev_uid == settings.dev_uid:
         uid = x_dev_uid
-    elif auth_header.startswith("Bearer "):
-        token = auth_header.removeprefix("Bearer ").strip()
+    elif id_token:
         email: str = ""
         try:
             import firebase_admin.auth
 
             from app.middleware.auth import _get_firebase_app
             _get_firebase_app()
-            decoded = firebase_admin.auth.verify_id_token(token)
+            decoded = firebase_admin.auth.verify_id_token(id_token)
             uid = decoded["uid"]
             email = decoded.get("email", "")
         except Exception as exc:

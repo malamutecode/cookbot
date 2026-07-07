@@ -10,7 +10,7 @@ import SourcesPage from './components/SourcesPage'
 import AdminPage from './components/AdminPage'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
 import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView } from './types'
-import { API_BASE, TEST_USER } from './config'
+import { API_BASE, TEST_USER, DEV_MODE } from './config'
 import { t } from './theme'
 
 const CAL_KEY = 'tastyhub_calendar'
@@ -83,7 +83,30 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  function handleLogout() {
+  // Keep the ID token fresh. Firebase auto-refreshes (~hourly); onIdTokenChanged
+  // fires with the new token so long chat sessions and WS reconnects stay valid.
+  // Dev mode uses the dev-uid bypass and has no Firebase session to watch.
+  useEffect(() => {
+    if (DEV_MODE || !loggedIn) return
+    let unsub = () => {}
+    ;(async () => {
+      const { onIdTokenChanged } = await import('firebase/auth')
+      const { firebaseAuth } = await import('./firebase')
+      unsub = onIdTokenChanged(firebaseAuth(), async user => {
+        setIdToken(user ? await user.getIdToken() : null)
+      })
+    })().catch(() => {})
+    return () => unsub()
+  }, [loggedIn])
+
+  async function handleLogout() {
+    if (!DEV_MODE) {
+      try {
+        const { signOut } = await import('firebase/auth')
+        const { firebaseAuth } = await import('./firebase')
+        await signOut(firebaseAuth())
+      } catch { /* ignore — clearing local state below is enough */ }
+    }
     setLoggedIn(false)
     setIdToken(null)
     setSessionId('')
@@ -185,6 +208,7 @@ export default function App() {
             <Panel minSize={40} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               <ChatPanel
                 sessionId={sessionId}
+                idToken={idToken}
                 useSpizarnia={spizEnabled}
                 ui={ui}
                 shopItems={shopItems}

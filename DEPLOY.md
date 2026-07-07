@@ -1,11 +1,11 @@
 # Feedek — Deployment Runbook
 
-Backend → **Cloud Run**, frontend → **Firebase Hosting** (frontend part added in
-the next phase). This file is the ordered list of commands **you** run. Claude
-prepared the Dockerfile / cloudbuild.yaml / config but does not execute deploys.
+Backend → **Cloud Run**, frontend → **Firebase Hosting**. This file is the ordered
+list of commands **you** run. Claude prepared the Dockerfile / cloudbuild.yaml /
+firebase.json / config but does not execute deploys.
 
-> **Part 1 (this document) covers the BACKEND only.** Frontend + real Firebase
-> Auth is a separate follow-up.
+- **Part 1 — Backend → Cloud Run** (sections 0–8)
+- **Part 2 — Frontend → Firebase Hosting + real Firebase Auth** (sections 9–13)
 
 ---
 
@@ -72,7 +72,7 @@ The Cloud Run deploy mounts `OPENAI_API_KEY` and `API_KEY` from Secret Manager �
 they are **never** baked into the image or set as plain env vars.
 
 ```bash
-# OpenAI key
+# OpenAI key — paste your key inline when you run this; do NOT commit it to this file.
 printf '%s' 'sk-...your-openai-key...' | \
   gcloud secrets create openai-key --data-file=- --replication-policy=automatic
 
@@ -252,6 +252,88 @@ You'll need it in **Part 2** for the frontend:
 ```bash
 gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)'
 ```
+
+---
+
+# PART 2 — Frontend → Firebase Hosting + real Firebase Auth
+
+The frontend is a static Vite/React SPA served by **Firebase Hosting** (free CDN).
+Hosting rewrites `/v1/**` and `/health` to the Cloud Run backend, so REST is
+**same-origin** (no CORS). The **WebSocket** connects directly to the Cloud Run
+URL (`VITE_WS_BASE`), carrying the Firebase ID token as a `token` query param.
+
+## 9. Firebase project + Auth (one-time)
+
+You need a Firebase project *on the same GCP project* as the backend (Firebase and
+GCP projects are 1:1). If you haven't already:
+
+1. **Firebase console** → add project → select your existing GCP `$PROJECT_ID`.
+2. **Authentication → Sign-in method → Email/Password → Enable** (same as step 5b).
+3. **Project settings → General → Your apps → Add app → Web (</>)** → register.
+   Copy the shown `firebaseConfig` values — you'll paste them into the frontend env.
+
+Set the default Firebase project for the CLI (edit `.firebaserc` or run):
+```bash
+firebase login          # if not already
+firebase use --add      # pick $PROJECT_ID, or edit .firebaserc's "default"
+```
+
+## 10. Frontend production env (one-time; edit to change config)
+
+```bash
+cd frontend
+cp .env.production.example .env.production
+```
+Edit `frontend/.env.production` and fill in:
+- `VITE_WS_BASE` — the `wss://` form of the Cloud Run URL from step 8, e.g.
+  `wss://cookbot-tastyhub-abc123-ew.a.run.app`.
+- `VITE_FIREBASE_*` — the web app config values from step 9.
+- `VITE_DEV_MODE=false` (so the app uses real Firebase auth, not the dev bypass).
+- `VITE_API_BASE=` stays **empty** (REST is same-origin via the Hosting rewrite).
+
+`.env.production` is gitignored — never commit it. (These Firebase values are not
+secrets — they ship in the client bundle — but keep the file untracked anyway.)
+
+## 11. Build + deploy the frontend
+
+```bash
+cd frontend
+npm ci                  # first time, or after dependency changes
+npm run build           # → frontend/dist  (tsc -b + vite build)
+cd ..
+
+firebase deploy --only hosting
+```
+
+The deploy prints your Hosting URL(s), typically:
+- `https://<project-id>.web.app`
+- `https://<project-id>.firebaseapp.com`
+
+> These must match the backend's `ALLOWED_ORIGINS` (step 6). If your real Hosting
+> domain differs from `feedek.web.app`, redeploy the backend with the correct
+> `_ALLOWED_ORIGINS` so the WebSocket origin check passes.
+
+## 12. Smoke test the full stack
+
+1. Open the Hosting URL. You should see the **Feedek** login screen (not the dev
+   bypass — real auth, because `VITE_DEV_MODE=false`).
+2. Log in with the admin account from step 5b (email + the temporary password).
+3. Confirm: chat streams a reply (WebSocket connected), the **Admin** tab is
+   visible (your uid is in `ADMIN_UIDS`), and Źródła/Kalendarz load.
+4. Try a **non-whitelisted** email (if you have one) → login is refused by the
+   backend (403 / the app shows an error) because of `ALLOWED_EMAILS`.
+
+If chat REST works but the **WebSocket won't connect**: check `VITE_WS_BASE` points
+at the Cloud Run host with `wss://`, and that the backend `ALLOWED_ORIGINS`
+includes your Hosting origin. WS auth failures are logged as `ws_token_verify_failed`
+or `ws_email_not_allowed` in Cloud Run logs.
+
+## 13. Redeploys
+
+- **Frontend only:** `cd frontend && npm run build && cd .. && firebase deploy --only hosting`
+- **Backend only:** re-run section 6.
+- They are independent — a frontend change never requires a backend redeploy and
+  vice versa.
 
 ---
 

@@ -20,14 +20,28 @@ export default function Login({ ui, onLogin }: Props) {
     setLoading(true)
     try {
       if (DEV_MODE) {
+        // Local dev bypass — no real auth; App uses the dev-uid identity.
         if (email === 'admin@admin.com' && password === 'admin') {
           onLogin(null)
         } else {
           setError('Dev mode: use admin@admin.com / admin')
         }
+        return
+      }
+      // Production: real Firebase email/password auth → ID token.
+      const { signInWithEmailAndPassword } = await import('firebase/auth')
+      const { firebaseAuth } = await import('../firebase')
+      const cred = await signInWithEmailAndPassword(firebaseAuth(), email.trim(), password)
+      const idToken = await cred.user.getIdToken()
+      onLogin(idToken)
+    } catch (err) {
+      const code = (err as { code?: string })?.code ?? ''
+      if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        setError('Nieprawidłowy e-mail lub hasło.')
+      } else if (code === 'auth/too-many-requests') {
+        setError('Zbyt wiele prób. Spróbuj ponownie później.')
       } else {
-        // Production Firebase auth — fill in when DEV_MODE=false
-        setError('Firebase auth not configured')
+        setError('Logowanie nie powiodło się. Spróbuj ponownie.')
       }
     } finally {
       setLoading(false)
