@@ -173,3 +173,39 @@ async def test_direct_recipe_request_skips_onboarding(pl_config) -> None:
     assert len(proposals) >= 2, f"expected >=2 proposals, got {len(proposals)}"
     for p in proposals:
         assert p.name and p.key_ingredients
+
+
+async def test_paste_url_then_add_to_calendar(pl_config) -> None:
+    """Paste a recipe link → the agent extracts it → add to the calendar with the
+    real recipe attached. This is the end-to-end paste→recipe→calendar chain."""
+    from cookbot.agents.chat import CalendarAddEvent, FinalRecipeEvent
+
+    agent = build_chat_agent(pl_config)
+    deps = ChatAgentDeps(config=pl_config, allow_ai_generated=True)
+    history: list = []
+
+    # A known-good recipe page (verified elsewhere to extract cleanly).
+    url = "https://www.kwestiasmaku.com/przepis/makaron-ze-szpinakiem"
+    reply, events = await _say(agent, deps, history, f"Dodaj ten przepis do mojej listy: {url}")
+
+    recipe_events = [e for e in events if isinstance(e, FinalRecipeEvent)]
+    assert recipe_events, (
+        "expected a recipe card after pasting a URL; "
+        f"events: {[type(e).__name__ for e in events]} / reply: {reply!r}"
+    )
+    recipe = recipe_events[0].recipe
+    assert recipe.ingredients, "extracted recipe has no ingredients"
+    assert recipe.steps, "extracted recipe has no steps"
+    assert recipe.source_url and recipe.source_url.startswith("http")
+
+    # Now add it to the calendar — the entry must carry the real recipe.
+    reply, events = await _say(agent, deps, history, "dodaj do kalendarza na 12.08")
+    add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
+    assert add_events, (
+        "expected a CalendarAddEvent after asking to add; "
+        f"events: {[type(e).__name__ for e in events]} / reply: {reply!r}"
+    )
+    entry = add_events[0].entry
+    assert entry.date.endswith("-08-12")
+    assert entry.recipe is not None and entry.recipe.get("ingredients"), \
+        "calendar entry must carry the extracted recipe (with ingredients)"

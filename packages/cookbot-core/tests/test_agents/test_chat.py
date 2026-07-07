@@ -189,6 +189,7 @@ def test_agent_registers_expected_tools() -> None:
         "update_onboarding",
         "propose_recipes",
         "get_recipe_details",
+        "get_recipe_from_url",
         "add_to_calendar",
         "remove_from_calendar",
         "get_shopping_list",
@@ -741,6 +742,78 @@ async def test_resolve_recipe_ai_proposal_generates_directly() -> None:
     assert len(gen_calls) == 1
     # Picking an AI proposal is NOT a "web pick that fell back" — no note needed.
     assert found.web_pick_fell_back is False
+
+
+# ── get_recipe_from_url tool ──────────────────────────────────────────────────
+
+async def test_get_recipe_from_url_extracts_and_shows_card() -> None:
+    from cookbot.agents.chat import FinalRecipeEvent, FoundRecipe
+    deps = _make_deps()
+    # Explicit source_url=None so the backfill assertion is deterministic, and a
+    # copy so the tool's in-place backfill doesn't mutate the shared _RECIPE.
+    fetch_factory, fetch_calls = _stub_agent_factory(_RECIPE.model_copy(update={"source_url": None}))
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory):
+        agent = build_chat_agent(_CONFIG)
+        fn = _get_tool(agent, "get_recipe_from_url")
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        found = await fn(ctx, url="https://kwestiasmaku.com/przepis/x")
+
+    assert isinstance(found, FoundRecipe)
+    assert found.source == "web_search"
+    assert len(fetch_calls) == 1
+    # last_recipe set so add_to_calendar can attach it; card emitted.
+    assert deps.last_recipe is found
+    events = _events_of(deps, FinalRecipeEvent)
+    assert len(events) == 1
+    # Provenance: source_url backfilled from the pasted URL (the stub recipe had none).
+    assert deps.last_recipe.recipe.source_url == "https://kwestiasmaku.com/przepis/x"
+
+
+async def test_get_recipe_from_url_not_found_emits_no_card() -> None:
+    from cookbot.agents.chat import FinalRecipeEvent
+    deps = _make_deps()
+    fetch_factory, _ = _stub_agent_factory(None)  # page has no readable recipe
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory):
+        agent = build_chat_agent(_CONFIG)
+        fn = _get_tool(agent, "get_recipe_from_url")
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        found = await fn(ctx, url="https://example.com/not-a-recipe")
+
+    assert found.source == "not_found"
+    assert _events_of(deps, FinalRecipeEvent) == []
+
+
+async def test_get_recipe_from_url_then_add_to_calendar_carries_recipe() -> None:
+    """The end-to-end point: paste URL → extract → add to calendar with the real
+    recipe attached (so the shopping list gets its ingredients)."""
+    from cookbot.agents.chat import CalendarAddEvent
+    deps = _make_deps()
+    fetch_factory, _ = _stub_agent_factory(_RECIPE.model_copy())
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory):
+        agent = build_chat_agent(_CONFIG)
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        await _get_tool(agent, "get_recipe_from_url")(ctx, url="https://x.test/przepis")
+        add = await _get_tool(agent, "add_to_calendar")(
+            ctx, recipe_name="Test Pasta", ingredients=_RECIPE.ingredients,
+            target_date="2026-08-10",
+        )
+
+    assert add.date == "2026-08-10"
+    add_events = _events_of(deps, CalendarAddEvent)
+    assert len(add_events) == 1
+    entry = add_events[0].entry
+    # The full recipe (with ingredients) is attached to the calendar entry.
+    assert entry.recipe is not None
+    assert entry.recipe["ingredients"] == _RECIPE.ingredients
 
 
 # ── Turn events: ordering and emission gating ─────────────────────────────────

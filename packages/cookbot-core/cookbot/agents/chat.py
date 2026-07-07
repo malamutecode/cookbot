@@ -649,7 +649,12 @@ You MUST respond exclusively in {config.language}. Never use another language.
 - Answer general cooking questions directly.
 
 ## Recipe flow
-0. If the user's message already names a SPECIFIC dish (e.g. "przepis na halloumi
+0a. If the user PASTES A RECIPE LINK (a URL) and wants that recipe or to add it,
+   call get_recipe_from_url with the link — do NOT call propose_recipes or run
+   onboarding. The recipe card is shown automatically; then offer to add it to the
+   calendar. If it returns source="not_found" or "error", no card is shown —
+   explain briefly (the page had no readable recipe / a temporary problem).
+0b. If the user's message already names a SPECIFIC dish (e.g. "przepis na halloumi
    dla 2 osób"), they know what they want — skip the onboarding questions and call
    propose_recipes straight away for that dish. Only run the guided questions when
    the request is vague ("coś na obiad", "zaproponuj coś").
@@ -888,6 +893,59 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # (not_found/error placeholders stay silent).
         if found.source in ("web_search", "ai_generated"):
             ctx.deps.events.append(FinalRecipeEvent(recipe=found.recipe, source=found.source))
+        return found
+
+    @agent.tool
+    async def get_recipe_from_url(
+        ctx: RunContext[ChatAgentDeps],
+        url: str,
+    ) -> FoundRecipe:
+        """Extract the recipe from a URL the user pasted, then show its card.
+
+        Use this when the user provides a recipe LINK (not one of the proposals).
+        After it returns the recipe card is shown; the user can then add it to the
+        calendar. Do not call propose_recipes or run onboarding for a pasted link.
+        """
+        cfg: TenantConfig = ctx.deps.config
+        fetch_agent = _cached_agent(sub_agents, "web_fetch", build_web_fetch_agent, cfg)
+        recipe: Recipe | None = None
+        try:
+            # Extraction is occasionally flaky — retry once before giving up.
+            for attempt in (1, 2):
+                log.info("get_recipe_from_url_fetch", url=url, attempt=attempt)
+                recipe = (await fetch_agent.run(web_fetch_prompt(url), usage=ctx.usage)).output
+                if recipe is not None:
+                    break
+        except Exception as exc:
+            log.exception("get_recipe_from_url_failed", url=url, error=str(exc))
+            return FoundRecipe(
+                recipe=Recipe(
+                    name=url, description="", ingredients=[], steps=[],
+                    prep_time_minutes=0, cook_time_minutes=0, difficulty="Easy",
+                    servings=ctx.deps.onboarding.servings or 2, tips=[],
+                ),
+                source="error",
+            )
+
+        if recipe is None:
+            # The page had no readable recipe — tell the user, show no card.
+            return FoundRecipe(
+                recipe=Recipe(
+                    name=url, description="", ingredients=[], steps=[],
+                    prep_time_minutes=0, cook_time_minutes=0, difficulty="Easy",
+                    servings=ctx.deps.onboarding.servings or 2, tips=[],
+                ),
+                source="not_found",
+            )
+
+        # Preserve provenance (Rule 5): anchor the source link to the pasted URL if
+        # the extractor didn't capture one.
+        if not recipe.source_url:
+            recipe.source_url = url
+        found = FoundRecipe(recipe=recipe, source="web_search")
+        ctx.deps.last_recipe = found                 # durable — used by add_to_calendar
+        ctx.deps.last_proposals = []                 # a pasted link isn't a selection
+        ctx.deps.events.append(FinalRecipeEvent(recipe=recipe, source="web_search"))
         return found
 
     @agent.tool
