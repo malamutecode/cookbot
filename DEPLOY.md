@@ -128,6 +128,43 @@ gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
 
 ---
 
+## 5b. Seed the first admin user (one-time)
+
+`ADMIN_UIDS` takes a Firebase **uid**, not an email — and a uid only exists once
+the account does. So create your admin account first, then use the printed uid in
+the deploy. The seed script (`clients/tastyhub/scripts/seed_admin.py`) creates the
+account with a **random temporary password** you change after first login.
+
+**Prereq — enable the sign-in provider:** Firebase console → **Authentication →
+Sign-in method → Email/Password → Enable**. (Without it, `create_user` fails.)
+
+```bash
+# Authenticate as yourself so the script's firebase-admin uses your credentials.
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
+
+cd clients/tastyhub
+uv run python scripts/seed_admin.py                     # defaults to pawe213@gmail.com
+# or: uv run python scripts/seed_admin.py --email you@example.com
+# or: uv run python scripts/seed_admin.py --password 'ChosenPass123'
+cd ../..
+```
+
+The script prints:
+- **uid** → paste into `_ADMIN_UIDS` in step 6.
+- **temporary password** (only for a newly created account) → **save it now**, it
+  is not stored anywhere else. Log in with it, then change it via your app's reset
+  flow or the Firebase console (Authentication → user → ⋮ → Reset password).
+
+It is **idempotent**: re-running on an existing account only prints the uid and
+never touches the password.
+
+```bash
+export ADMIN_UID="<uid printed by the script>"
+```
+
+---
+
 ## 6. Deploy (repeat for every release)
 
 Run from the **repo root** (the build context must be the root — the client's
@@ -137,14 +174,13 @@ Run from the **repo root** (the build context must be the root — the client's
 gcloud builds submit --config clients/tastyhub/cloudbuild.yaml \
   --substitutions=_REGION=$REGION,_AR_REPO=$AR_REPO,_SERVICE=$SERVICE,\
 _ALLOWED_ORIGINS="https://feedek.web.app,https://feedek.firebaseapp.com",\
-_ADMIN_UIDS="<YOUR_FIREBASE_UID>",\
+_ADMIN_UIDS="$ADMIN_UID",\
 _DEFAULT_DAILY_TOKEN_LIMIT="1000000",\
 _DEFAULT_MONTHLY_TOKEN_LIMIT="10000000"
 ```
 
-- `_ADMIN_UIDS` — your Firebase uid, so your first login becomes an admin (find
-  it in the Firebase console → Authentication, or from a decoded ID token).
-  Until Part 2 wires real auth you can leave it empty and set it on the redeploy.
+- `_ADMIN_UIDS` — the uid from step 5b (`$ADMIN_UID`), so your first login becomes
+  an admin. You can seed several, comma-separated.
 - `_ALLOWED_ORIGINS` — the Firebase Hosting domains (adjust to your real hosting
   site id). Before the frontend exists you can smoke-test with `"*"`.
 
