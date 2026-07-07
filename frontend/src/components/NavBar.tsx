@@ -21,7 +21,10 @@ export default function NavBar({ page, onNavigate, onLogout, ui, chatProcessing,
       `}</style>
       <span style={styles.logo}>
         <span style={styles.logoMark}>🍳</span>
-        TastyHub
+        <span style={styles.brandText}>
+          <span style={styles.brandName}>Feedek</span>
+          <span style={styles.brandTagline}>Twój pomocnik w gotowaniu i zakupach</span>
+        </span>
       </span>
       <nav style={styles.nav}>
         <button
@@ -75,13 +78,26 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 10,
   },
   logo: {
-    fontWeight: 700,
-    fontSize: '1.15rem',
-    letterSpacing: 0.2,
     marginRight: 12,
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+  },
+  brandText: {
+    display: 'flex',
+    flexDirection: 'column',
+    lineHeight: 1.15,
+  },
+  brandName: {
+    fontWeight: 700,
+    fontSize: '1.15rem',
+    letterSpacing: 0.2,
+  },
+  brandTagline: {
+    fontSize: '0.68rem',
+    fontWeight: 400,
+    color: 'rgba(255,255,255,0.78)',
+    letterSpacing: 0.1,
   },
   logoMark: {
     display: 'inline-flex',

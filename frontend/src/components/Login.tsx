@@ -39,8 +39,9 @@ export default function Login({ ui, onLogin }: Props) {
       <div style={styles.box}>
         <div style={styles.logo}>
           <span style={styles.logoMark}>🍳</span>
-          TastyHub
+          Feedek
         </div>
+        <div style={styles.tagline}>Twój pomocnik w gotowaniu i zakupach</div>
         <h2 style={styles.heading}>{ui.login_heading ?? 'Zaloguj się'}</h2>
         <form onSubmit={handleSubmit}>
           <label style={styles.label}>{ui.login_email ?? 'E-mail'}</label>
@@ -91,10 +92,15 @@ const styles: Record<string, React.CSSProperties> = {
     color: t.color.primary,
     fontSize: '1.45rem',
     fontWeight: 700,
-    marginBottom: 8,
+    marginBottom: 4,
     display: 'flex',
     alignItems: 'center',
     gap: 10,
+  },
+  tagline: {
+    fontSize: '0.82rem',
+    color: t.color.textMuted,
+    marginBottom: 18,
   },
   logoMark: {
     display: 'inline-flex',
