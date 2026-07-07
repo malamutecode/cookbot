@@ -4,6 +4,36 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TastyHub — Chef Bot</title>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          'Helvetica Neue', Arial, sans-serif;
+        color: #0f172a;
+        background: #f8fafc;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeLegibility;
+      }
+      /* Consistent focus ring for keyboard users on interactive controls */
+      button:focus-visible, input:focus-visible, textarea:focus-visible,
+      a:focus-visible, [role="switch"]:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+      }
+      button { font-family: inherit; }
+      /* Slim, modern scrollbars */
+      * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+      *::-webkit-scrollbar { width: 10px; height: 10px; }
+      *::-webkit-scrollbar-thumb {
+        background: #cbd5e1; border-radius: 999px;
+        border: 2px solid transparent; background-clip: content-box;
+      }
+      *::-webkit-scrollbar-thumb:hover { background: #94a3b8; background-clip: content-box; }
+      *::-webkit-scrollbar-track { background: transparent; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

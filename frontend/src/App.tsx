@@ -10,6 +10,7 @@ import SourcesPage from './components/SourcesPage'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
 import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry } from './types'
 import { API_BASE, TEST_USER } from './config'
+import { t } from './theme'
 
 const CAL_KEY = 'tastyhub_calendar'
 const SHOP_KEY = 'tastyhub_shopping'
@@ -145,14 +146,14 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'sans-serif', background: '#fffdf8' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: t.font.sans, background: t.color.bg }}>
       <NavBar page={page} onNavigate={setPage} onLogout={handleLogout} ui={ui} chatProcessing={chatProcessing} />
 
       {/* Chat page — always mounted to preserve WebSocket + message history */}
       <div style={{ flex: 1, overflow: 'hidden', display: page === 'chat' ? 'flex' : 'none' }}>
         {sessionId && (
           <PanelGroup direction="horizontal" style={{ flex: 1, overflow: 'hidden' }}>
-            <Panel defaultSize={28} minSize={18} maxSize={50} style={{ display: 'flex', flexDirection: 'column', background: '#fff', borderRight: '1px solid #e8e0d8', overflow: 'hidden' }}>
+            <Panel defaultSize={28} minSize={18} maxSize={50} style={{ display: 'flex', flexDirection: 'column', background: t.color.surface, borderRight: `1px solid ${t.color.border}`, overflow: 'hidden' }}>
               <PanelGroup direction="vertical">
                 <Panel defaultSize={55} minSize={25} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   <SpizarniaPanel
@@ -164,14 +165,14 @@ export default function App() {
                     ui={ui}
                   />
                 </Panel>
-                <PanelResizeHandle style={{ height: 4, background: '#e8e0d8', cursor: 'row-resize' }} />
+                <PanelResizeHandle style={{ height: 4, background: t.color.border, cursor: 'row-resize' }} />
                 <Panel defaultSize={45} minSize={20} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   <ShoppingList items={shopItems} onChange={setShopItems} ui={ui} />
                 </Panel>
               </PanelGroup>
             </Panel>
 
-            <PanelResizeHandle style={{ width: 5, background: '#e8e0d8', cursor: 'col-resize' }} />
+            <PanelResizeHandle style={{ width: 5, background: t.color.border, cursor: 'col-resize' }} />
 
             <Panel minSize={40} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
               <ChatPanel

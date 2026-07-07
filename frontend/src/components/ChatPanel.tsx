@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
 import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay } from '../types'
 import { WS_BASE, DEV_MODE, DEV_UID } from '../config'
+import { t } from '../theme'
 
 // The calendar grid matches day cells by exact YYYY-MM-DD string. Coerce common
 // agent date forms (unpadded, day-first, year-less) so the entry actually shows.
@@ -393,7 +394,7 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
         <div style={{ padding: 14 }}>
         <div style={styles.recipeHeader}>
           <h4 style={styles.recipeName}>{recipe.name}</h4>
-          <span style={{ ...styles.badge, background: source === 'WEB_SEARCH' ? '#2980b9' : '#888' }}>
+          <span style={{ ...styles.badge, background: source === 'WEB_SEARCH' ? t.color.accent : t.color.textMuted }}>
             {source === 'WEB_SEARCH' ? 'web' : 'AI'}
           </span>
         </div>
@@ -431,7 +432,7 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
                 <div style={styles.optionHeader}>
                   <span style={styles.optionNum}>{i + 1}</span>
                   <span style={styles.optionName}>{p.name}</span>
-                  <span style={{ ...styles.badge, background: p.source === 'web_search' ? '#2980b9' : '#888' }}>{p.source === 'web_search' ? 'web' : 'AI'}</span>
+                  <span style={{ ...styles.badge, background: p.source === 'web_search' ? t.color.accent : t.color.textMuted }}>{p.source === 'web_search' ? 'web' : 'AI'}</span>
                 </div>
                 <p style={styles.optionDesc}>{p.description}</p>
                 <div style={styles.optionMeta}>⏱ {p.total_time_minutes} min · {p.difficulty}</div>
@@ -490,7 +491,7 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
     const no  = ui.spizarnia_offer_skip    ?? 'Nie'
     return (
       <div style={styles.offerCard}>
-        <h4 style={{ marginBottom: 10, color: '#1a5e2a' }}>Spiżarnia</h4>
+        <h4 style={{ marginBottom: 10, color: t.color.success }}>Spiżarnia</h4>
         {missing.length > 0 && (
           <div style={styles.offerRow}>
             <span style={{ flex: 1, fontSize: '0.83rem' }}>
@@ -524,60 +525,60 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  panel: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
-  statusBar: { fontSize: '0.75rem', padding: '4px 16px', background: '#fef9f0', color: '#888', borderBottom: '1px solid #e8e0d8', flexShrink: 0 },
-  messages: { flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 10, fontSize: '0.88rem' },
-  inputRow: { display: 'flex', padding: '10px 14px', gap: 8, borderTop: '1px solid #e8e0d8', background: '#fafafa', flexShrink: 0 },
-  input: { flex: 1, border: '1px solid #e8e0d8', borderRadius: 8, padding: '8px 12px', fontSize: '0.88rem' },
-  sendBtn: { background: '#c0392b', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', fontSize: '0.88rem', cursor: 'pointer' },
-  sendBtnDisabled: { opacity: 0.45, cursor: 'default' },
-  restartBtn: { background: '#fff', color: '#888', border: '1px solid #e8e0d8', borderRadius: 8, padding: '8px 12px', fontSize: '0.8rem', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
+  panel: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: t.color.bg },
+  statusBar: { fontSize: '0.73rem', padding: '5px 18px', background: t.color.surfaceMuted, color: t.color.textMuted, borderBottom: `1px solid ${t.color.border}`, flexShrink: 0 },
+  messages: { flex: 1, overflowY: 'auto', padding: 18, display: 'flex', flexDirection: 'column', gap: 12, fontSize: '0.88rem' },
+  inputRow: { display: 'flex', padding: '12px 16px', gap: 8, borderTop: `1px solid ${t.color.border}`, background: t.color.surface, flexShrink: 0 },
+  input: { flex: 1, border: `1px solid ${t.color.borderStrong}`, borderRadius: t.radius.md, padding: '9px 13px', fontSize: '0.88rem', outline: 'none', background: t.color.surface },
+  sendBtn: { background: t.color.primary, color: '#fff', border: 'none', borderRadius: t.radius.md, padding: '9px 20px', fontSize: '0.88rem', fontWeight: 600, cursor: 'pointer', boxShadow: t.shadow.sm },
+  sendBtnDisabled: { opacity: 0.45, cursor: 'default', boxShadow: 'none' },
+  restartBtn: { background: t.color.surface, color: t.color.textMuted, border: `1px solid ${t.color.border}`, borderRadius: t.radius.md, padding: '9px 12px', fontSize: '0.8rem', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' },
 
-  typingBubble: { background: '#f5f5f5', padding: '10px 14px', borderRadius: 8, alignSelf: 'flex-start', display: 'flex', gap: 5, alignItems: 'center' },
-  typingDot: { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#aaa', animation: 'cp-bounce 1.2s ease-in-out infinite' },
+  typingBubble: { background: t.color.surfaceMuted, padding: '11px 15px', borderRadius: t.radius.lg, alignSelf: 'flex-start', display: 'flex', gap: 5, alignItems: 'center', boxShadow: t.shadow.sm },
+  typingDot: { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: t.color.textFaint, animation: 'cp-bounce 1.2s ease-in-out infinite' },
 
-  msgBot:   { background: '#f5f5f5', padding: '9px 13px', borderRadius: 8, maxWidth: '88%', alignSelf: 'flex-start', whiteSpace: 'pre-wrap', lineHeight: 1.5 },
-  msgUser:  { background: '#fff3e0', padding: '9px 13px', borderRadius: 8, maxWidth: '88%', alignSelf: 'flex-end', border: '1px solid #f0dcc0' },
-  msgError: { background: '#fdecea', padding: '9px 13px', borderRadius: 8, maxWidth: '88%', alignSelf: 'flex-start', color: '#c0392b' },
+  msgBot:   { background: t.color.surface, padding: '10px 14px', borderRadius: t.radius.lg, borderTopLeftRadius: 4, maxWidth: '88%', alignSelf: 'flex-start', whiteSpace: 'pre-wrap', lineHeight: 1.55, border: `1px solid ${t.color.border}`, boxShadow: t.shadow.sm, color: t.color.text },
+  msgUser:  { background: t.color.primary, color: '#fff', padding: '10px 14px', borderRadius: t.radius.lg, borderTopRightRadius: 4, maxWidth: '88%', alignSelf: 'flex-end', boxShadow: t.shadow.sm },
+  msgError: { background: t.color.dangerSoft, padding: '10px 14px', borderRadius: t.radius.lg, maxWidth: '88%', alignSelf: 'flex-start', color: t.color.danger, border: `1px solid #fecaca` },
 
   optionsWrap: { alignSelf: 'stretch' },
-  optionsLabel: { fontSize: '0.82rem', color: '#666', marginBottom: 8 },
-  optionsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 },
-  optionCard: { background: '#fffbf2', border: '1px solid #e8d8b0', borderRadius: 10, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontSize: '0.82rem' },
+  optionsLabel: { fontSize: '0.82rem', color: t.color.textMuted, marginBottom: 8 },
+  optionsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 },
+  optionCard: { background: t.color.surface, border: `1px solid ${t.color.border}`, borderRadius: t.radius.lg, overflow: 'hidden', display: 'flex', flexDirection: 'column', fontSize: '0.82rem', boxShadow: t.shadow.sm },
   optionImg: { width: '100%', height: 110, objectFit: 'cover', display: 'block' },
-  optionImgPlaceholder: { width: '100%', height: 110, background: '#f0ebe0' },
-  optionBody: { padding: 10, display: 'flex', flexDirection: 'column', gap: 4, flex: 1 },
+  optionImgPlaceholder: { width: '100%', height: 110, background: t.color.surfaceMuted },
+  optionBody: { padding: 12, display: 'flex', flexDirection: 'column', gap: 4, flex: 1 },
   optionHeader: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 },
-  optionNum: { background: '#c0392b', color: '#fff', borderRadius: '50%', width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0 },
-  optionName: { fontWeight: 600, flex: 1, fontSize: '0.84rem' },
-  optionDesc: { color: '#555', margin: 0, lineHeight: 1.4, fontSize: '0.8rem' },
-  optionMeta: { color: '#888', fontSize: '0.75rem' },
-  optionIngr: { color: '#777', fontSize: '0.75rem', fontStyle: 'italic' },
-  optionBtn: { marginTop: 4, background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: '0.78rem', cursor: 'pointer', alignSelf: 'flex-start' },
+  optionNum: { background: t.color.primary, color: '#fff', borderRadius: '50%', width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0 },
+  optionName: { fontWeight: 600, flex: 1, fontSize: '0.84rem', color: t.color.text },
+  optionDesc: { color: t.color.textMuted, margin: 0, lineHeight: 1.4, fontSize: '0.8rem' },
+  optionMeta: { color: t.color.textFaint, fontSize: '0.75rem' },
+  optionIngr: { color: t.color.textMuted, fontSize: '0.75rem', fontStyle: 'italic' },
+  optionBtn: { marginTop: 6, background: t.color.primary, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '5px 12px', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' },
 
-  recipeCard: { background: '#fffbf2', border: '1px solid #e8d8b0', borderRadius: 10, overflow: 'hidden', alignSelf: 'stretch', fontSize: '0.85rem' },
+  recipeCard: { background: t.color.surface, border: `1px solid ${t.color.border}`, borderRadius: t.radius.lg, overflow: 'hidden', alignSelf: 'stretch', fontSize: '0.85rem', boxShadow: t.shadow.md },
   recipeImg: { width: '100%', height: 180, objectFit: 'cover', display: 'block' },
   recipeHeader: { display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 },
-  recipeName: { margin: 0, fontSize: '1rem' },
-  badge: { background: '#c0392b', color: '#fff', borderRadius: 4, padding: '1px 7px', fontSize: '0.72rem' },
-  recipeMeta: { color: '#888', fontSize: '0.78rem', marginTop: 6 },
-  ul: { paddingLeft: 18, margin: '6px 0' },
-  recipeFooter: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 },
-  calBtn: { background: '#2980b9', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: '0.8rem', cursor: 'pointer' },
-  sourceLink: { fontSize: '0.78rem', color: '#2980b9', textDecoration: 'none', borderBottom: '1px dotted #2980b9' },
+  recipeName: { margin: 0, fontSize: '1.05rem', color: t.color.text },
+  badge: { background: t.color.primary, color: '#fff', borderRadius: t.radius.sm, padding: '2px 8px', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4 },
+  recipeMeta: { color: t.color.textMuted, fontSize: '0.78rem', marginTop: 8 },
+  ul: { paddingLeft: 18, margin: '6px 0', color: t.color.text },
+  recipeFooter: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 },
+  calBtn: { background: t.color.primary, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '7px 14px', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer', boxShadow: t.shadow.sm },
+  sourceLink: { fontSize: '0.78rem', color: t.color.primary, textDecoration: 'none', borderBottom: `1px dotted ${t.color.primary}` },
 
-  hitlCard: { background: '#f0f8ff', border: '1px solid #b0d4f1', borderRadius: 10, padding: 14, alignSelf: 'stretch', fontSize: '0.85rem' },
+  hitlCard: { background: t.color.primarySoft, border: `1px solid ${t.color.primaryBorder}`, borderRadius: t.radius.lg, padding: 16, alignSelf: 'stretch', fontSize: '0.85rem' },
   hitlBtns: { display: 'flex', gap: 8, flexWrap: 'wrap' },
-  btnApprove: { background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: '0.82rem', cursor: 'pointer' },
-  btnModify:  { background: '#f39c12', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: '0.82rem', cursor: 'pointer' },
-  btnReject:  { background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: '0.82rem', cursor: 'pointer' },
-  btnSend:    { background: '#2980b9', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: '0.82rem', cursor: 'pointer' },
+  btnApprove: { background: t.color.success, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '8px 15px', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' },
+  btnModify:  { background: t.color.warning, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '8px 15px', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' },
+  btnReject:  { background: t.color.danger, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '8px 15px', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' },
+  btnSend:    { background: t.color.primary, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '7px 13px', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer' },
   modifyRow:  { display: 'flex', gap: 6, marginTop: 8 },
-  modifyInput: { flex: 1, border: '1px solid #ccc', borderRadius: 6, padding: '6px 10px', fontSize: '0.82rem' },
+  modifyInput: { flex: 1, border: `1px solid ${t.color.borderStrong}`, borderRadius: t.radius.sm, padding: '7px 11px', fontSize: '0.82rem', outline: 'none' },
 
-  offerCard: { background: '#f0fff4', border: '1px solid #a8d8b0', borderRadius: 10, padding: 14, alignSelf: 'stretch', fontSize: '0.85rem' },
-  offerRow:  { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  offerCard: { background: t.color.successSoft, border: `1px solid ${t.color.successBorder}`, borderRadius: t.radius.lg, padding: 16, alignSelf: 'stretch', fontSize: '0.85rem' },
+  offerRow:  { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 10 },
   offerBtns: { display: 'flex', gap: 6 },
-  btnYes: { background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: '0.8rem', cursor: 'pointer' },
-  btnNo:  { background: '#e0e0e0', color: '#444', border: 'none', borderRadius: 6, padding: '5px 12px', fontSize: '0.8rem', cursor: 'pointer' },
+  btnYes: { background: t.color.success, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '6px 13px', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' },
+  btnNo:  { background: t.color.surface, color: t.color.textMuted, border: `1px solid ${t.color.borderStrong}`, borderRadius: t.radius.sm, padding: '6px 13px', fontSize: '0.8rem', cursor: 'pointer' },
 }

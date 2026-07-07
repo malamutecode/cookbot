@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { UiStrings } from '../types'
 import { DEV_MODE } from '../config'
+import { t } from '../theme'
 
 interface Props {
   ui: UiStrings
@@ -36,7 +37,10 @@ export default function Login({ ui, onLogin }: Props) {
   return (
     <div style={styles.screen}>
       <div style={styles.box}>
-        <div style={styles.logo}>TastyHub</div>
+        <div style={styles.logo}>
+          <span style={styles.logoMark}>🍳</span>
+          TastyHub
+        </div>
         <h2 style={styles.heading}>{ui.login_heading ?? 'Zaloguj się'}</h2>
         <form onSubmit={handleSubmit}>
           <label style={styles.label}>{ui.login_email ?? 'E-mail'}</label>
@@ -73,39 +77,60 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#fffdf8',
+    background: `radial-gradient(1200px 600px at 50% -10%, ${t.color.primarySoft} 0%, ${t.color.bg} 55%)`,
   },
   box: {
-    background: '#fff',
-    border: '1px solid #e8e0d8',
-    borderRadius: 14,
+    background: t.color.surface,
+    border: `1px solid ${t.color.border}`,
+    borderRadius: t.radius.xl,
     padding: '40px 36px',
-    width: 340,
-    boxShadow: '0 4px 24px rgba(0,0,0,0.09)',
+    width: 360,
+    boxShadow: t.shadow.lg,
   },
-  logo: { color: '#c0392b', fontSize: '1.4rem', fontWeight: 'bold', marginBottom: 6 },
-  heading: { fontSize: '1.1rem', marginBottom: 24, color: '#2d2d2d' },
-  label: { display: 'block', fontSize: '0.82rem', color: '#888', marginBottom: 4 },
+  logo: {
+    color: t.color.primary,
+    fontSize: '1.45rem',
+    fontWeight: 700,
+    marginBottom: 8,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+  },
+  logoMark: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    background: t.color.primarySoft,
+    fontSize: '1.15rem',
+  },
+  heading: { fontSize: '1.05rem', fontWeight: 600, marginBottom: 26, color: t.color.text },
+  label: { display: 'block', fontSize: '0.82rem', fontWeight: 500, color: t.color.textMuted, marginBottom: 6 },
   input: {
     width: '100%',
-    border: '1px solid #e8e0d8',
-    borderRadius: 8,
-    padding: '9px 12px',
+    border: `1px solid ${t.color.border}`,
+    borderRadius: t.radius.md,
+    padding: '10px 12px',
     fontSize: '0.9rem',
-    marginBottom: 14,
-    background: '#fafafa',
+    marginBottom: 16,
+    background: t.color.surfaceMuted,
     boxSizing: 'border-box',
+    outline: 'none',
   },
   btn: {
     width: '100%',
-    background: '#c0392b',
+    background: t.color.primary,
     color: '#fff',
     border: 'none',
-    borderRadius: 8,
-    padding: 10,
+    borderRadius: t.radius.md,
+    padding: 11,
     fontSize: '0.95rem',
+    fontWeight: 600,
     cursor: 'pointer',
-    marginTop: 4,
+    marginTop: 6,
+    boxShadow: t.shadow.sm,
   },
-  error: { color: '#c0392b', fontSize: '0.82rem', marginTop: 10 },
+  error: { color: t.color.danger, fontSize: '0.82rem', marginTop: 12 },
 }

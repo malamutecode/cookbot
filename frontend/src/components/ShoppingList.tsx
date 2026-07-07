@@ -3,6 +3,7 @@ import { GroceryMatchResult, ShopItem, UiStrings } from '../types'
 import { API_BASE } from '../config'
 import FriscoPanel from './FriscoPanel'
 import { SECTION_ORDER, mergeOrganized, renderListText } from '../lib/shoppingList'
+import { t } from '../theme'
 
 interface Props {
   items: ShopItem[]
@@ -196,7 +197,7 @@ function ItemRow({ item, onToggle, onRemove }: { item: ShopItem; onToggle: () =>
   return (
     <div style={styles.row}>
       <label style={styles.rowLabel}>
-        <input type="checkbox" checked={item.checked} onChange={onToggle} style={{ accentColor: '#c0392b' }} />
+        <input type="checkbox" checked={item.checked} onChange={onToggle} style={{ accentColor: t.color.primary }} />
         <span style={{ ...(item.checked ? styles.strikethrough : {}) }}>{item.name}</span>
       </label>
       <button style={styles.removeBtn} onClick={onRemove} title="Usuń" aria-label="Usuń pozycję">×</button>
@@ -205,21 +206,21 @@ function ItemRow({ item, onToggle, onRemove }: { item: ShopItem; onToggle: () =>
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  section: { display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', padding: 14, borderTop: '1px solid #e8e0d8' },
-  sectionTitle: { fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: 0.5, color: '#888', marginBottom: 10 },
-  addRow: { display: 'flex', gap: 6, marginBottom: 8, flexShrink: 0 },
-  addInput: { flex: 1, minWidth: 0, border: '1px solid #e8e0d8', borderRadius: 6, padding: '5px 8px', fontSize: '0.84rem', outline: 'none' },
-  addBtn: { background: '#fff', border: '1px solid #c0392b', borderRadius: 6, padding: '5px 12px', fontSize: '0.78rem', color: '#c0392b', cursor: 'pointer', fontWeight: 600, flexShrink: 0 },
-  list: { flex: 1, overflowY: 'auto', fontSize: '0.84rem', marginBottom: 8 },
-  emptyHint: { color: '#bbb', fontSize: '0.82rem', textAlign: 'center', padding: '18px 0' },
-  groupHeader: { fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: 0.5, color: '#c0392b', fontWeight: 600, padding: '8px 0 3px', borderBottom: '1px solid #f0e8e0', marginBottom: 2 },
-  row: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: '1px solid #f5f0eb' },
-  rowLabel: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, cursor: 'pointer', minWidth: 0 },
-  strikethrough: { textDecoration: 'line-through', color: '#aaa' },
-  removeBtn: { background: 'none', border: 'none', color: '#c99', fontSize: '1.1rem', lineHeight: 1, cursor: 'pointer', padding: '0 4px', flexShrink: 0 },
-  actions: { display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center', marginTop: 6 },
-  primaryBtn: { background: '#c0392b', border: '1px solid #c0392b', borderRadius: 6, padding: '6px 12px', fontSize: '0.78rem', color: '#fff', cursor: 'pointer', fontWeight: 600, flex: 1 },
-  secondaryBtn: { background: '#fff', border: '1px solid #c0392b', borderRadius: 6, padding: '6px 12px', fontSize: '0.78rem', color: '#c0392b', cursor: 'pointer', fontWeight: 600 },
-  clearBtn: { background: 'none', border: '1px solid #e8e0d8', borderRadius: 6, padding: '4px 10px', fontSize: '0.78rem', color: '#888', cursor: 'pointer', flexShrink: 0 },
-  friscoBtn: { background: 'none', border: '1px solid #e8e0d8', borderRadius: 6, padding: '4px 10px', fontSize: '0.78rem', color: '#888', cursor: 'pointer', flexShrink: 0 },
+  section: { display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', padding: 16, borderTop: `1px solid ${t.color.border}` },
+  sectionTitle: { fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, color: t.color.textMuted, marginBottom: 12 },
+  addRow: { display: 'flex', gap: 6, marginBottom: 10, flexShrink: 0 },
+  addInput: { flex: 1, minWidth: 0, border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '7px 10px', fontSize: '0.84rem', outline: 'none' },
+  addBtn: { background: t.color.surface, border: `1px solid ${t.color.primary}`, borderRadius: t.radius.sm, padding: '7px 12px', fontSize: '0.78rem', color: t.color.primary, cursor: 'pointer', fontWeight: 600, flexShrink: 0 },
+  list: { flex: 1, overflowY: 'auto', fontSize: '0.84rem', marginBottom: 10 },
+  emptyHint: { color: t.color.textFaint, fontSize: '0.82rem', textAlign: 'center', padding: '18px 0' },
+  groupHeader: { fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: 0.6, color: t.color.primary, fontWeight: 700, padding: '10px 0 4px', borderBottom: `1px solid ${t.color.divider}`, marginBottom: 2 },
+  row: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0', borderBottom: `1px solid ${t.color.divider}` },
+  rowLabel: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, cursor: 'pointer', minWidth: 0, color: t.color.text },
+  strikethrough: { textDecoration: 'line-through', color: t.color.textFaint },
+  removeBtn: { background: 'none', border: 'none', color: t.color.textFaint, fontSize: '1.1rem', lineHeight: 1, cursor: 'pointer', padding: '0 4px', flexShrink: 0 },
+  actions: { display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center', marginTop: 8 },
+  primaryBtn: { background: t.color.primary, border: `1px solid ${t.color.primary}`, borderRadius: t.radius.sm, padding: '8px 12px', fontSize: '0.78rem', color: '#fff', cursor: 'pointer', fontWeight: 600, flex: 1, boxShadow: t.shadow.sm },
+  secondaryBtn: { background: t.color.surface, border: `1px solid ${t.color.primary}`, borderRadius: t.radius.sm, padding: '7px 12px', fontSize: '0.78rem', color: t.color.primary, cursor: 'pointer', fontWeight: 600 },
+  clearBtn: { background: 'none', border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '6px 10px', fontSize: '0.78rem', color: t.color.textMuted, cursor: 'pointer', flexShrink: 0 },
+  friscoBtn: { background: 'none', border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '6px 10px', fontSize: '0.78rem', color: t.color.textMuted, cursor: 'pointer', flexShrink: 0 },
 }

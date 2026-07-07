@@ -1,4 +1,5 @@
 import { Page, UiStrings } from '../types'
+import { t } from '../theme'
 
 interface Props {
   page: Page
@@ -17,7 +18,10 @@ export default function NavBar({ page, onNavigate, onLogout, ui, chatProcessing 
           50%       { opacity: 0.4; transform: scale(0.7); }
         }
       `}</style>
-      <span style={styles.logo}>TastyHub</span>
+      <span style={styles.logo}>
+        <span style={styles.logoMark}>🍳</span>
+        TastyHub
+      </span>
       <nav style={styles.nav}>
         <button
           style={{ ...styles.navBtn, ...(page === 'chat' ? styles.navBtnActive : {}) }}
@@ -50,33 +54,55 @@ export default function NavBar({ page, onNavigate, onLogout, ui, chatProcessing 
 
 const styles: Record<string, React.CSSProperties> = {
   header: {
-    background: '#c0392b',
+    background: `linear-gradient(90deg, ${t.color.primaryHover} 0%, ${t.color.primary} 100%)`,
     color: '#fff',
-    padding: '0 20px',
+    padding: '0 22px',
     display: 'flex',
     alignItems: 'center',
     gap: 16,
-    height: 48,
+    height: 56,
     flexShrink: 0,
+    boxShadow: t.shadow.md,
+    zIndex: 10,
   },
-  logo: { fontWeight: 'bold', fontSize: '1.1rem', letterSpacing: 0.5, marginRight: 16 },
-  nav: { display: 'flex', gap: 4, flex: 1 },
+  logo: {
+    fontWeight: 700,
+    fontSize: '1.15rem',
+    letterSpacing: 0.2,
+    marginRight: 12,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  logoMark: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    background: 'rgba(255,255,255,0.18)',
+    fontSize: '1rem',
+  },
+  nav: { display: 'flex', gap: 6, flex: 1 },
   navBtn: {
-    background: 'rgba(255,255,255,0.15)',
-    color: '#fff',
+    background: 'transparent',
+    color: 'rgba(255,255,255,0.82)',
     border: 'none',
-    borderRadius: 6,
-    padding: '5px 18px',
+    borderRadius: t.radius.md,
+    padding: '7px 16px',
     fontSize: '0.88rem',
+    fontWeight: 500,
     cursor: 'pointer',
-    transition: 'background 0.15s',
+    transition: 'background 0.15s, color 0.15s',
     display: 'flex',
     alignItems: 'center',
     gap: 6,
   },
   navBtnActive: {
-    background: 'rgba(255,255,255,0.35)',
-    fontWeight: 'bold',
+    background: 'rgba(255,255,255,0.22)',
+    color: '#fff',
+    fontWeight: 600,
   },
   processingDot: {
     display: 'inline-block',
@@ -88,12 +114,14 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   logoutBtn: {
-    background: 'rgba(255,255,255,0.15)',
+    background: 'rgba(255,255,255,0.14)',
     color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    padding: '5px 14px',
+    border: '1px solid rgba(255,255,255,0.25)',
+    borderRadius: t.radius.md,
+    padding: '6px 15px',
     fontSize: '0.82rem',
+    fontWeight: 500,
     cursor: 'pointer',
+    transition: 'background 0.15s',
   },
 }

@@ -1,4 +1,5 @@
 import { GroceryMatchResult, UiStrings } from '../types'
+import { t } from '../theme'
 
 interface Props {
   result: GroceryMatchResult
@@ -80,25 +81,25 @@ export default function FriscoPanel({ result, ui, onClose }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
-  panel: { background: '#fff', borderRadius: 12, width: 'min(560px, 92vw)', maxHeight: '84vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 40px rgba(0,0,0,0.25)' },
-  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eee' },
-  heading: { fontSize: '1rem', margin: 0, color: '#c0392b' },
-  close: { background: 'none', border: 'none', fontSize: '1.6rem', lineHeight: 1, cursor: 'pointer', color: '#888' },
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  panel: { background: t.color.surface, borderRadius: t.radius.xl, width: 'min(560px, 92vw)', maxHeight: '84vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: t.shadow.lg },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '15px 18px', borderBottom: `1px solid ${t.color.border}` },
+  heading: { fontSize: '1.05rem', fontWeight: 600, margin: 0, color: t.color.primary },
+  close: { background: 'none', border: 'none', fontSize: '1.6rem', lineHeight: 1, cursor: 'pointer', color: t.color.textMuted },
   body: { overflowY: 'auto', padding: '8px 12px' },
-  row: { display: 'flex', alignItems: 'center', gap: 12, padding: '10px 8px', borderBottom: '1px solid #f4efe9', textDecoration: 'none', color: 'inherit' },
+  row: { display: 'flex', alignItems: 'center', gap: 12, padding: '11px 8px', borderBottom: `1px solid ${t.color.divider}`, textDecoration: 'none', color: 'inherit' },
   thumbWrap: { flexShrink: 0, width: 52, height: 52 },
-  thumb: { width: 52, height: 52, objectFit: 'contain', borderRadius: 6, background: '#faf7f3' },
-  thumbPlaceholder: { width: 52, height: 52, borderRadius: 6, background: '#f0e8e0' },
+  thumb: { width: 52, height: 52, objectFit: 'contain', borderRadius: t.radius.sm, background: t.color.surfaceMuted },
+  thumbPlaceholder: { width: 52, height: 52, borderRadius: t.radius.sm, background: t.color.surfaceMuted },
   info: { flex: 1, minWidth: 0 },
-  ingredient: { fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: 0.4, color: '#c0392b', fontWeight: 600 },
-  productName: { fontSize: '0.9rem', color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  meta: { display: 'flex', gap: 8, fontSize: '0.75rem', color: '#999' },
+  ingredient: { fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: 0.4, color: t.color.primary, fontWeight: 600 },
+  productName: { fontSize: '0.9rem', color: t.color.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  meta: { display: 'flex', gap: 8, fontSize: '0.75rem', color: t.color.textFaint },
   right: { flexShrink: 0, textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 },
-  price: { fontSize: '0.9rem', fontWeight: 600, color: '#333' },
-  open: { fontSize: '0.72rem', color: '#c0392b' },
+  price: { fontSize: '0.9rem', fontWeight: 700, color: t.color.text },
+  open: { fontSize: '0.72rem', color: t.color.primary },
   notFound: { padding: '12px 8px' },
-  notFoundHeader: { fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: 0.4, color: '#999', fontWeight: 600, marginBottom: 6 },
-  notFoundItem: { fontSize: '0.85rem', color: '#777', padding: '2px 0' },
-  footer: { padding: '8px 18px', borderTop: '1px solid #eee', fontSize: '0.72rem', color: '#aaa' },
+  notFoundHeader: { fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: 0.4, color: t.color.textMuted, fontWeight: 600, marginBottom: 6 },
+  notFoundItem: { fontSize: '0.85rem', color: t.color.textMuted, padding: '2px 0' },
+  footer: { padding: '9px 18px', borderTop: `1px solid ${t.color.border}`, fontSize: '0.72rem', color: t.color.textFaint },
 }

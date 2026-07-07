@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { API_BASE } from '../config'
 import { authHeaders } from '../hooks/useSpizarnia'
+import { t } from '../theme'
 
 interface RecipeSource {
   url: string
@@ -102,7 +103,7 @@ export default function SourcesPage({ idToken }: Props) {
   }
 
   if (loading) return <div style={styles.page}><p style={{ color: '#888' }}>Ładowanie…</p></div>
-  if (!prefs) return <div style={styles.page}><p style={{ color: '#c0392b' }}>Błąd ładowania ustawień.</p></div>
+  if (!prefs) return <div style={styles.page}><p style={{ color: t.color.danger }}>Błąd ładowania ustawień.</p></div>
 
   return (
     <div style={styles.page}>
@@ -145,7 +146,7 @@ export default function SourcesPage({ idToken }: Props) {
                 checked={prefs.search_mode === mode}
                 onChange={() => setMode(mode)}
                 disabled={saving}
-                style={{ accentColor: '#c0392b' }}
+                style={{ accentColor: t.color.primary }}
               />
               {label}
             </label>
@@ -166,7 +167,7 @@ export default function SourcesPage({ idToken }: Props) {
                   checked={src.enabled}
                   onChange={e => toggleSource(src.url, e.target.checked)}
                   disabled={saving}
-                  style={{ accentColor: '#c0392b' }}
+                  style={{ accentColor: t.color.primary }}
                 />
                 <div>
                   <div style={styles.sourceName}>{src.name}</div>
@@ -206,33 +207,33 @@ export default function SourcesPage({ idToken }: Props) {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: { flex: 1, overflowY: 'auto', padding: '24px 32px', background: '#fffdf8', maxWidth: 640 },
-  heading: { fontSize: '1.1rem', fontWeight: 700, marginBottom: 20, color: '#2d2d2d' },
+  page: { flex: 1, overflowY: 'auto', padding: '28px 32px', background: t.color.bg, maxWidth: 680 },
+  heading: { fontSize: '1.25rem', fontWeight: 700, marginBottom: 24, color: t.color.text },
 
-  section: { marginBottom: 28 },
-  sectionTitle: { fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: 0.5, color: '#888', marginBottom: 12 },
+  section: { marginBottom: 28, background: t.color.surface, border: `1px solid ${t.color.border}`, borderRadius: t.radius.lg, padding: 20, boxShadow: t.shadow.sm },
+  sectionTitle: { fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, color: t.color.textMuted, marginBottom: 14 },
 
-  modeGroup: { display: 'flex', flexDirection: 'column', gap: 8 },
-  modeLabel: { display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.9rem', cursor: 'pointer' },
+  modeGroup: { display: 'flex', flexDirection: 'column', gap: 10 },
+  modeLabel: { display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.9rem', cursor: 'pointer', color: t.color.text },
 
-  empty: { color: '#aaa', fontSize: '0.85rem' },
-  sourceList: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 },
-  sourceRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff', border: '1px solid #e8e0d8', borderRadius: 8, padding: '8px 12px' },
+  empty: { color: t.color.textFaint, fontSize: '0.85rem' },
+  sourceList: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 },
+  sourceRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: t.color.surfaceMuted, border: `1px solid ${t.color.border}`, borderRadius: t.radius.md, padding: '10px 14px' },
   sourceLabel: { display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', flex: 1 },
-  sourceName: { fontSize: '0.88rem', fontWeight: 500 },
-  sourceUrl: { fontSize: '0.75rem', color: '#888' },
-  removeBtn: { background: 'none', border: 'none', color: '#bbb', cursor: 'pointer', fontSize: '0.8rem', padding: '0 4px' },
+  sourceName: { fontSize: '0.88rem', fontWeight: 500, color: t.color.text },
+  sourceUrl: { fontSize: '0.75rem', color: t.color.textMuted },
+  removeBtn: { background: 'none', border: 'none', color: t.color.textFaint, cursor: 'pointer', fontSize: '0.85rem', padding: '0 4px' },
 
   toggleRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, cursor: 'pointer' },
   toggleLabel: { display: 'flex', flexDirection: 'column', gap: 3 },
-  toggleDesc: { fontSize: '0.78rem', color: '#888' },
-  toggle: { flexShrink: 0, width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s', padding: 0 },
-  toggleOn: { background: '#27ae60' },
-  toggleOff: { background: '#ccc' },
-  toggleThumb: { position: 'absolute', top: 3, left: 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', display: 'block' },
+  toggleDesc: { fontSize: '0.78rem', color: t.color.textMuted },
+  toggle: { flexShrink: 0, width: 46, height: 26, borderRadius: t.radius.pill, border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s', padding: 0 },
+  toggleOn: { background: t.color.primary },
+  toggleOff: { background: t.color.borderStrong },
+  toggleThumb: { position: 'absolute', top: 3, left: 3, width: 20, height: 20, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', display: 'block', boxShadow: t.shadow.sm },
   toggleThumbOn: { left: 23 },
 
   addRow: { display: 'flex', gap: 8, flexWrap: 'wrap' },
-  addInput: { flex: 1, minWidth: 160, border: '1px solid #e8e0d8', borderRadius: 6, padding: '7px 10px', fontSize: '0.85rem' },
-  addBtn: { background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: '0.85rem', cursor: 'pointer', whiteSpace: 'nowrap' },
+  addInput: { flex: 1, minWidth: 160, border: `1px solid ${t.color.border}`, borderRadius: t.radius.md, padding: '9px 12px', fontSize: '0.85rem', outline: 'none' },
+  addBtn: { background: t.color.primary, color: '#fff', border: 'none', borderRadius: t.radius.md, padding: '9px 18px', fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: t.shadow.sm },
 }

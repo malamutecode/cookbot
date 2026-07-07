@@ -1,5 +1,6 @@
 import { useState, KeyboardEvent } from 'react'
 import { SpizarniaItem, UiStrings } from '../types'
+import { t } from '../theme'
 
 interface Props {
   items: SpizarniaItem[]
@@ -29,7 +30,7 @@ export default function SpizarniaPanel({ items, useSpizarnia, onToggle, onAdd, o
           type="checkbox"
           checked={useSpizarnia}
           onChange={e => onToggle(e.target.checked)}
-          style={{ accentColor: '#c0392b' }}
+          style={{ accentColor: t.color.primary }}
         />
         <span style={{ fontSize: '0.82rem' }}>{ui.spizarnia_toggle ?? 'Użyj składników z spiżarni'}</span>
       </label>
@@ -63,16 +64,16 @@ export default function SpizarniaPanel({ items, useSpizarnia, onToggle, onAdd, o
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  section: { display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', padding: 14 },
-  sectionTitle: { fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: 0.5, color: '#888', marginBottom: 10 },
-  toggle: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer' },
+  section: { display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', padding: 16 },
+  sectionTitle: { fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, color: t.color.textMuted, marginBottom: 12 },
+  toggle: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, cursor: 'pointer', color: t.color.text },
   list: { flex: 1, overflowY: 'auto', fontSize: '0.84rem', marginBottom: 10 },
-  empty: { color: '#888', fontStyle: 'italic', fontSize: '0.8rem' },
-  row: { display: 'flex', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #f5f0eb', gap: 6 },
+  empty: { color: t.color.textFaint, fontStyle: 'italic', fontSize: '0.8rem' },
+  row: { display: 'flex', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${t.color.divider}`, gap: 6, color: t.color.text },
   itemName: { flex: 1 },
-  qty: { color: '#888', fontSize: '0.76rem' },
-  rmBtn: { background: 'none', border: 'none', color: '#888', fontSize: '0.9rem', cursor: 'pointer', padding: '0 2px', lineHeight: 1 },
+  qty: { color: t.color.textMuted, fontSize: '0.76rem' },
+  rmBtn: { background: 'none', border: 'none', color: t.color.textFaint, fontSize: '0.9rem', cursor: 'pointer', padding: '0 2px', lineHeight: 1 },
   addRow: { display: 'flex', gap: 6, flexShrink: 0 },
-  addInput: { flex: 1, border: '1px solid #e8e0d8', borderRadius: 6, padding: '5px 8px', fontSize: '0.82rem' },
-  addBtn: { background: '#c0392b', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 10px', fontSize: '0.8rem', cursor: 'pointer' },
+  addInput: { flex: 1, border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '7px 10px', fontSize: '0.82rem', outline: 'none' },
+  addBtn: { background: t.color.primary, color: '#fff', border: 'none', borderRadius: t.radius.sm, padding: '7px 12px', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' },
 }
