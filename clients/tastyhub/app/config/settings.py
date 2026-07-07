@@ -23,12 +23,9 @@ class Settings(BaseSettings):
     # LLM — per-agent model overrides.
     # NOTE on models: gpt-4o-mini is used for the recipe agents because it
     # extracts reliably in one shot. gpt-4o (no -mini) tripped this org's 30k TPM
-    # limit on large recipe pages → empty extraction. GPT-5 mini was evaluated but
-    # gets stuck re-calling the web_fetch tool instead of committing to the
-    # structured output (tool-loop), returning None ~3/4 of the time; migrating the
-    # recipe agents to GPT-5 needs the Responses API + tool-loop tuning — see
-    # TASK.md STEP 40. The 4o family is slated for retirement (June 2026), so that
-    # migration is time-bound but not urgent.
+    # limit on large recipe pages → empty extraction, so we keep the recipe agents
+    # on gpt-4o-mini. gpt-4o-mini is not deprecated; swap the model on merit (a
+    # better/cheaper option), not on a schedule.
     openai_api_key: str
     # Fast conversational agents
     model_chat: str = "gpt-4o-mini"
@@ -45,6 +42,12 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 24
     firestore_emulator_host: str = ""  # set in .env for local dev, empty on Cloud Run
     dev_uid: str = ""  # when set, x-dev-uid header is accepted as a user identity bypass
+
+    # User management + per-user token quotas (STEP 42)
+    admin_uids: list[str] = []               # uids seeded as admins (bootstrap)
+    default_daily_token_limit: int = 0       # 0 ⇒ unlimited
+    default_monthly_token_limit: int = 0     # 0 ⇒ unlimited
+    quota_timezone: str = "Europe/Warsaw"    # day/month boundaries for resets
 
 
 @lru_cache

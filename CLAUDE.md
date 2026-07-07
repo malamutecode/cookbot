@@ -252,6 +252,12 @@ MAX_HITL_ROUNDS=3
 SESSION_TTL_HOURS=24
 DEV_UID=                              # dev-only: accept x-dev-uid header as identity bypass; never set in prod
 
+# User management + per-user token quotas (STEP 42)
+ADMIN_UIDS=                          # comma-separated Firebase uids seeded as admins (bootstrap)
+DEFAULT_DAILY_TOKEN_LIMIT=0          # per-user daily token budget a new user inherits; 0 = unlimited
+DEFAULT_MONTHLY_TOKEN_LIMIT=0        # per-user monthly token budget; 0 = unlimited
+QUOTA_TIMEZONE=Europe/Warsaw         # day/month boundaries for quota resets
+
 # Per-agent model selection (see .env.example for the rationale per agent)
 MODEL_CHAT=gpt-4o-mini
 MODEL_SHOPPING_LIST=gpt-4o-mini

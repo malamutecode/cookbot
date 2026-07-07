@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 from cookbot.models.ui_strings import UiStrings, ui_strings_for
+from cookbot.models.user import TokenQuota
 
 
 @dataclass
@@ -15,9 +16,9 @@ class TenantConfig:
     # model_recipe_gen / model_web_search / model_recipe_options default to a
     # stronger model for better recipe quality.
     model_chat: str = "gpt-4o-mini"
-    model_recipe_gen: str = "gpt-4o"
-    model_web_search: str = "gpt-4o"
-    model_recipe_options: str = "gpt-4o"
+    model_recipe_gen: str = "gpt-4o-mini"
+    model_web_search: str = "gpt-4o-mini"
+    model_recipe_options: str = "gpt-4o-mini"
     model_shopping_list: str = "gpt-4o-mini"
     # Re-ranks the lexical product-match shortlist for delivery-shop matching.
     # A cheap model is enough — it only picks the best of a handful of candidates.
@@ -37,7 +38,24 @@ class TenantConfig:
     # exceed these. Protects against runaway tool loops and TPM blowups.
     usage_request_limit: int = 25
     usage_total_tokens_limit: int = 120_000
+    # Per-USER (not per-turn) default token budgets, inherited by a new user
+    # record until an admin overrides them. 0 ⇒ unlimited. Metering accumulates
+    # each turn's total tokens against these across a day / calendar month.
+    default_daily_token_limit: int = 0
+    default_monthly_token_limit: int = 0
+    # Timezone whose day/month boundaries define the quota reset windows.
+    quota_timezone: str = "Europe/Warsaw"
+    # uids seeded as admins on first record creation (bootstrap before any admin
+    # exists). The client sets this from ADMIN_UIDS env.
+    admin_uids: list[str] = field(default_factory=list)
 
     @property
     def ui(self) -> UiStrings:
         return ui_strings_for(self.language)
+
+    def default_quota(self) -> TokenQuota:
+        """The token budget a brand-new user record inherits (0 ⇒ unlimited)."""
+        return TokenQuota(
+            daily_limit=self.default_daily_token_limit,
+            monthly_limit=self.default_monthly_token_limit,
+        )

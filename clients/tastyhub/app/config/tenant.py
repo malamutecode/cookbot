@@ -22,4 +22,8 @@ TASTYHUB_CONFIG = TenantConfig(
     max_hitl_rounds=_s.max_hitl_rounds,
     feature_nutrition=False,
     delivery_shops=["frisco"],
+    default_daily_token_limit=_s.default_daily_token_limit,
+    default_monthly_token_limit=_s.default_monthly_token_limit,
+    quota_timezone=_s.quota_timezone,
+    admin_uids=_s.admin_uids,
 )

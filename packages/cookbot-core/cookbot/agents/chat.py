@@ -225,12 +225,17 @@ class ChatAgentDeps:
     # ── 3. Per-turn output (cleared by reset_turn) ────────────────────────────
     # Ordered side-effects, appended by tools in call order, drained by the WS handler.
     events: list[TurnEvent] = field(default_factory=list)
+    # Total tokens (input + output) this turn spent, incl. sub-agent calls. Set by
+    # stream_chat_response after the stream; the WS handler meters it against the
+    # user's quota. 0 until a turn completes.
+    last_turn_total_tokens: int = 0
 
     def reset_turn(self) -> None:
         """Clear the per-turn output events. Call once at the start of every WS
         turn, before streaming the agent response. Connection-durable and
         per-turn-input fields are intentionally left untouched."""
         self.events = []
+        self.last_turn_total_tokens = 0
 
 
 # ── Durable conversation state (Firestore-backed, Architecture Rule 3) ────────
@@ -1071,6 +1076,9 @@ async def stream_chat_response(
         # Extend history in-place so caller's list reference is updated
         message_history.extend(result.new_messages())
         usage = result.usage
+        # Surface this turn's spend so the WS handler can meter it against the
+        # user's daily/monthly quota (per-turn output — cleared by reset_turn).
+        deps.last_turn_total_tokens = usage.total_tokens or 0
         # Per-turn cost attribution (includes sub-agent calls via shared usage).
         log.info(
             "chat_turn_usage",

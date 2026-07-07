@@ -15,840 +15,186 @@
 
 ---
 
-## Current Step: → Phase 2c COMPLETE (STEP 38 done; 35 skipped). Next: Phase 3 deployment (STEP 27/28).
+## Current Step: → Phases 1–2c + Frisco + STEP 42 (user management + token quotas) COMPLETE. Next: Phase 3 deployment — STEP 27 (Docker) then STEP 28 (Cloud Run).
 
 ---
 
-# PHASE 1–2 — COMPLETED ✓
+# PHASES 1–2c — COMPLETED ✓
 
-All steps below are done. Kept for reference only — do not re-implement.
+All steps below are done and shipped. Kept as a one-line index for reference —
+do not re-implement. Full historical detail lived here previously; the code and
+CLAUDE.md are now the source of truth for how each works.
 
-- [x] STEP 1 — Monorepo scaffold
-- [x] STEP 2 — Core data models
-- [x] STEP 3 — Firestore service
-- [x] STEP 4 — FastAPI skeleton + API key auth
-- [x] STEP 5 — WebSocket echo + message protocol
-- [x] STEP 6 — IngredientAgent
-- [x] STEP 7 — WebSearchAgent (DuckDuckGo tool)
-- [x] STEP 8 — RecipeGenAgent
-- [x] STEP 9 — RefinementAgent
-- [x] STEP 10 — HITL Gate (asyncio.Queue suspend/resume)
-- [x] STEP 11 — SessionOrchestrator (legacy pipeline, kept for tests)
-- [x] STEP 12 — Full WebSocket integration
-- [x] STEP 15 — Firebase Auth (email/password, ID token verification)
+### Phase 1–2 — foundation
+- [x] STEP 1–12 — Monorepo scaffold, core models, Firestore service, FastAPI +
+      API-key auth, WebSocket + message protocol, the original agents
+      (Ingredient/WebSearch/RecipeGen/Refinement), HITL gate, SessionOrchestrator
+      (later deleted in STEP 31), full WebSocket integration.
+- [x] STEP 15 — Firebase Auth (email/password, ID-token verification)
 - [x] STEP 16 — Spiżarnia REST API (CRUD per user)
-- [x] STEP 17 — Spiżarnia toggle in chat (skip ingredient question, inject items)
-- [x] STEP 18 — React/Vite SPA (login, chat panel, spizarnia panel, shopping list,
-               resizable panels, calendar tab, NavBar)
-
-**Architecture change since original plan:**
-The rigid 5-question intake pipeline (IntakeAgent → IngredientAgent → WebSearchAgent)
-was replaced with a single guided **ChatAgent** that:
-- Collects the 5 intake fields conversationally via `update_onboarding` tool
-- Calls `find_recipe` (WebSearch → RecipeGen fallback) once complete
-- Supports free-chat after first recipe: add/remove calendar entries, shopping lists
-- Persists `OnboardingState` and `message_history` across turns (connection-scoped deps)
-
-See `GCP_ARCHITECTURE.md` for the current system diagram.
-
----
-
-# PHASE 2b — PRODUCT IMPROVEMENTS
-
----
-
-## STEP 21 ★ — Recipe detail modal in Calendar
-
-**Goal:** Clicking a recipe name in the calendar opens a full-screen modal with
-the complete recipe (ingredients, steps, tips, timing). Already partially
-implemented — verify and complete.
-
-### Current state
-`CalendarPage.tsx` has a `RecipeModal` component and `detailRecipe` state.
-`CalendarEntry` has an optional `recipe?: Recipe` field.
-The "Add to calendar" button in ChatPanel passes the full `Recipe` object.
-Agent-triggered `calendar_update` WS messages do **not** include full Recipe data.
-
-### Tasks
-
-- [x] Verify recipe modal opens when clicking a recipe name in CalendarPage
-- [x] For agent-added entries (via `calendar_update` WS message): store the
-      full recipe on the entry when `find_recipe` result is available in deps.
-      Update `add_to_calendar` tool in `chat.py` to accept optional `recipe` JSON.
-- [x] For manually added entries (recipe card "Dodaj do kalendarza" button):
-      already passes full `Recipe` — verify modal works
-
-### Verify
-
-```
-Manual: add a recipe via chat → go to calendar → click recipe name → modal opens
-Manual: add recipe via "Dodaj do kalendarza" button → calendar → click → modal opens
-```
-
-### ⏸ PAUSE 21
-
----
-
-## STEP 22 ★ — Shopping List Agent
-
-**Goal:** Replace the current naive ingredient aggregation with a dedicated
-`ShoppingListAgent` that deduplicates, sums quantities, and organises items
-by shop section (produce, dairy, meat, bakery, etc.).
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/agents/shopping_list.py`:
-  - `build_shopping_list_agent(config: TenantConfig) -> Agent[None, ShoppingList]`
-  - Input: raw list of ingredient strings from multiple recipes
-  - Output: `ShoppingList` with sections, deduplicated, quantities summed
-  - Sections: warzywa/owoce, nabiał, mięso/ryby, piekarnia, suche produkty, inne
-  - Sort within each section alphabetically
-
-- [x] `packages/cookbot-core/cookbot/models/shopping.py` — new models:
-  ```python
-  class ShoppingItem(BaseModel):
-      name: str
-      quantity: str   # summed, e.g. "400g" or "3 szt."
-      section: str    # "warzywa", "nabiał", etc.
-
-  class ShoppingList(BaseModel):
-      items: list[ShoppingItem]
-      sections: list[str]  # ordered section names present
-  ```
-
-- [x] Wire into `get_shopping_list` tool in `chat.py`:
-  collect raw ingredients, pass to `ShoppingListAgent`, return structured result
-
-- [x] Update frontend `ShoppingList.tsx` to group and display by section
-
-- [X] Tests: `test_shopping_list.py` — dedup, quantity sum, section assignment
-
-### Verify
-
-```
-Manual: add 2 recipes to calendar with overlapping ingredients
-→ ask "lista zakupów na ten tydzień"
-→ shopping list shows sections, no duplicates, quantities summed
-```
-
-### ⏸ PAUSE 22
-
----
-
-## STEP 23 ★ — Propose 4 Recipe Options
-
-**Goal:** Instead of returning one recipe, `find_recipe` proposes 4 candidates
-and the user picks one. Improves perceived quality and gives user agency.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/agents/recipe_options.py`:
-  - `build_recipe_options_agent(config: TenantConfig) -> Agent[None, list[RecipeSummary]]`
-  - Returns exactly 4 `RecipeSummary` objects (name, description, difficulty,
-    total_time_minutes, key_ingredients: list[str])
-  - Mix: at least one from web search, rest AI-generated variations
-
-- [x] `packages/cookbot-core/cookbot/models/recipe.py` — add:
-  ```python
-  class RecipeSummary(BaseModel):
-      name: str
-      description: str
-      difficulty: str
-      total_time_minutes: int
-      key_ingredients: list[str]
-      source: str  # "web_search" | "ai_generated"
-  ```
-
-- [x] Replace `find_recipe` tool with a two-step flow:
-  1. `propose_recipes` tool → streams 4 `RecipeSummary` cards to frontend
-  2. `get_recipe_details` tool → user picks one by name/number, returns full `Recipe`
-
-- [x] New WS message type: `recipe_options` — list of 4 summaries
-  Frontend renders 4 compact cards with "Wybieram" button on each
-
-- [x] Update `ws_messages.py`: add `WsOutRecipeOptions` model + `ws_send_recipe_options()`
-
-- [x] Update `ChatPanel.tsx`: handle `recipe_options` message type, render 4 cards,
-  send `{"type": "message", "content": "wybieram 2"}` on click
-
-### Verify
-
-```
-Manual: complete onboarding → 4 recipe cards appear → click one → full recipe shown
-```
-
-### ⏸ PAUSE 23
-
----
-
-## STEP 24 ★ — Recipe Sources Tab (Trusted Websites)
-
-**Goal:** User can configure which websites are used for recipe search.
-Options: use only saved sites, use sites + full internet, or full internet only.
-Default sites: kwestiasmaku.com, aniagotuje.pl.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/models/user.py` — add:
-  ```python
-  class RecipeSource(BaseModel):
-      url: str
-      name: str        # display name, e.g. "Kwestia Smaku"
-      enabled: bool = True
-
-  class UserSearchPrefs(BaseModel):
-      uid: str
-      sources: list[RecipeSource] = []
-      search_mode: str = "sites_and_internet"
-      # "sites_only" | "sites_and_internet" | "internet_only"
-  ```
-
-- [x] `packages/cookbot-core/cookbot/services/firestore.py` — add:
-  - `async get_search_prefs(uid: str) -> UserSearchPrefs`
-  - `async save_search_prefs(prefs: UserSearchPrefs) -> None`
-  - Default prefs created on first call with kwestiasmaku.com + aniagotuje.pl
-
-- [x] `clients/tastyhub/app/api/search_prefs.py` — new REST router `/v1/search-prefs`:
-  - `GET /v1/search-prefs` — returns user's preferences
-  - `PUT /v1/search-prefs` — update search_mode and sources list
-  - `POST /v1/search-prefs/sources` — add a site
-  - `DELETE /v1/search-prefs/sources/{url_encoded}` — remove a site
-
-- [x] Pass `UserSearchPrefs` into `find_recipe` / web search agent:
-  - In `web_search_prompt()`: if `sites_only` or `sites_and_internet`,
-    prefix search with `site:kwestiasmaku.com OR site:aniagotuje.pl`
-  - If `internet_only`: no site restriction
-
-- [x] Frontend — new **Źródła** tab (similar to Kalendarz tab layout):
-  - List of saved sites with toggle (enable/disable each)
-  - "Dodaj stronę" input field
-  - Search mode selector: radio/toggle — Tylko zapisane / Zapisane + internet / Cały internet
-  - NavBar: add "Źródła" tab between "Chat" and "Kalendarz"
-
-- [x] If a recipe was found via web search, include the source URL in the result:
-  - Add `source_url: str | None` to `Recipe` model
-  - `WebSearchAgent` extracts and returns the URL of the page the recipe came from
-  - Frontend recipe card shows a clickable "Źródło" link when `source_url` is set
-
-### Verify
-
-```
-Manual: go to Źródła tab → see kwestiasmaku.com + aniagotuje.pl pre-loaded
-→ add a custom site → set "Tylko zapisane"
-→ start chat → recipe search should be restricted to those sites
-```
-
-### ⏸ PAUSE 24
-
----
-
-## STEP 25 ★ — Chat input placeholder update
-
-**Goal:** Update the chat input placeholder text to better reflect current capabilities.
-
-### Tasks
-
-- [x] `frontend/src/components/ChatPanel.tsx` line 220 — change placeholder:
-  ```
-  From: "Napisz wiadomość… (np. 'zrób mi pastę na jutro', 'lista zakupów na ten tydzień')"
-  To:   "Napisz wiadomość… (np. 'zaproponuj mi danie na dziś', 'dodaj przepis do kalendarza na 30.05')"
-  ```
-
-### Verify
-
-```
-Manual: open chat, verify placeholder text is visible in the input field
-```
-
-### ⏸ PAUSE 25
-
----
-
-## STEP 26 ★ — Chat processing indicator in NavBar
-
-**Goal:** While the chat agent is processing (streaming a response), show a
-visible spinner or animated dot in the NavBar next to the "Chat" tab label so
-the user knows the bot is working even when viewing the Calendar or other pages.
-
-### Tasks
-
-- [x] Add `isProcessing` state to `ChatPanel` and lift it to `App.tsx` via a
-      new `onProcessingChange: (v: boolean) => void` prop
-- [x] Set `isProcessing = true` when a user message is sent; set to `false`
-      when the stream ends (token timer fires, `calendar_update`,
-      `shopping_list_update`, or `error` message received)
-- [x] Pass `isProcessing` down to `NavBar` and render a small animated
-      indicator (pulsing dot or spinner) next to the "Chat" label when true
-
-### Verify
-
-```
-Manual: send a message → switch to Calendar tab immediately →
-  NavBar "Chat" label shows a spinning/pulsing indicator while bot responds →
-  indicator disappears when response is complete
-```
-
-### ⏸ PAUSE 26
-
----
-
-## STEP 29 ★ — AI-generated recipes toggle in Źródła tab
-
-**Goal:** User can disable AI-generated recipe proposals. When disabled, only
-recipes actually found via web search are returned; AI fallback is suppressed.
-The returned recipe may be adjusted for servings but the source URL always
-points to the original page.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/models/user.py` — add `allow_ai_generated: bool = True`
-      field to `UserSearchPrefs`
-- [x] `clients/tastyhub/app/api/search_prefs.py` — `PUT /v1/search-prefs` already handles
-      the field via the existing model; no route changes needed
-- [x] `clients/tastyhub/app/api/websocket.py` — pass `allow_ai_generated` flag from loaded
-      prefs into `ChatAgentDeps`
-- [x] `packages/cookbot-core/cookbot/agents/chat.py` — add `allow_ai_generated: bool = True`
-      to `ChatAgentDeps`; in `get_recipe_details`, skip `RecipeGenAgent` fallback when flag is False
-      and return a clear "not found" result instead
-- [x] `packages/cookbot-core/cookbot/agents/recipe_options.py` — when `allow_ai_generated=False`
-      in the prompt, instruct agent to only include proposals it found via web search
-      (pad to 4 with additional web-searched variants if possible, otherwise return fewer)
-- [x] `frontend/src/components/SourcesPage.tsx` — add toggle switch "Przepisy generowane przez AI"
-      below the search mode selector; calls `PUT /v1/search-prefs`
-
-### Verify
-
-```
-Manual: Źródła → disable AI → chat → propose recipes → all 4 cards should be web_search
-→ pick one → full recipe extracted from page, source_url set
-```
-
-### ⏸ PAUSE 29
-
----
-
-## STEP 30 ★ — Dish images in recipe proposal cards
-
-> ⚠️ **Superseded / partially reverted (2026-06-07).** The `search_images` DDG
-> tool referenced below was later removed — the installed PydanticAI exposes only
-> text search, so `recipe_options.py` now leaves `image_url=null` and proposal
-> images do NOT populate. Final-recipe cards still show og:image. The real,
-> current status and the path forward live in **STEP 38** (proposal images +
-> source link). The checkboxes below reflect the original intent, not the code.
-
-**Goal:** Recipe proposal cards show a relevant dish photo so users can visually
-compare options at a glance.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/models/recipe.py` — add `image_url: str | None = None`
-      to `RecipeSummary` and `Recipe`
-- [x] `packages/cookbot-core/cookbot/agents/recipe_options.py` — added `search_images` DDG
-      image tool; agent calls it per proposal to populate `image_url`
-- [x] `packages/cookbot-core/cookbot/agents/web_search.py` — instruct agent to extract
-      og:image from fetched page and set `image_url` on the returned `Recipe`
-- [x] `frontend/src/types.ts` — add `image_url?: string | null` to `RecipeSummary` and `Recipe`
-- [x] `frontend/src/components/ChatPanel.tsx` — proposal cards show 110px cover image
-      (grey placeholder when absent); full recipe card shows 180px cover image
-- [x] `frontend/src/components/CalendarPage.tsx` — recipe modal shows 200px cover image
-
-### Verify
-
-```
-Manual: complete onboarding → 4 proposal cards appear → at least some show a dish photo
-→ cards without image show a neutral grey placeholder
-```
-
-### ⏸ PAUSE 30
-
----
-
-# PHASE 2c — AGENT ARCHITECTURE HARDENING
-
-> Outcome of an architecture review (2026-06-07). The macro design
-> (orchestrator ChatAgent → stateless tool sub-agents built by config factories)
-> is already the live architecture and matches the "Agentic Architecture" section
-> in CLAUDE.md — these steps don't change the shape, they remove the dead pipeline
-> that contradicts it and tighten two loose spots (deps lifetime, side-effect
-> ordering). STEP 31 (delete dead code) is a prerequisite for the rest.
-> Ordered by risk after that: STEP 32 has actual bug potential, the rest is
-> maintainability. Each step is self-contained — do them in order, PAUSE after each.
-> No behaviour change to the *live* app is intended: chat/websocket tests stay green.
-
----
-
-## STEP 31 ★ — Delete the dead legacy pipeline (prerequisite)
-
-**Goal:** The pre-ChatAgent pipeline is dead code reachable only from tests and
-itself. It contradicts the CLAUDE.md architecture ("wire as ChatAgent tool, not
-SessionOrchestrator") and adds noise to every later step. Remove it before
-refactoring so the remaining steps reason about one pipeline only.
-
-### Verified dead (traced 2026-06-07 — no production importer)
-- `packages/cookbot-core/cookbot/agents/intake.py` (`build_intake_agent`)
-- `packages/cookbot-core/cookbot/agents/ingredient.py` (`build_ingredient_agent`, `intent_to_prompt`)
-- `packages/cookbot-core/cookbot/agents/refinement.py` (`build_refinement_agent`) — used only by the orchestrator
-- `packages/cookbot-core/cookbot/orchestrator/session.py` (`SessionOrchestrator`) — used only by its own test
-
-### Must STAY (shared with the live ChatAgent — do NOT delete)
-- `agents/web_search.py`, `agents/recipe_gen.py` — imported by `chat.py`
-- `hitl/persistence.py` (`restore_checkpoint`) — still called in `websocket.py:98`
-  > Note: `hitl/gate.py` (`HITLGate.suspend`) is used ONLY by the orchestrator.
-  > After deleting the orchestrator, confirm nothing else imports `HITLGate`; if
-  > not, `gate.py` may also be removed — but keep `persistence.py` and `models.py`.
-
-### Tasks
-
-- [x] Delete `agents/intake.py`, `agents/ingredient.py`, `agents/refinement.py`,
-      `orchestrator/session.py` + `orchestrator/__init__.py` (whole dir removed).
-- [x] Delete their tests: `tests/test_agents/test_intake.py`,
-      `tests/test_agents/test_ingredient.py`, `tests/test_agents/test_refinement.py`,
-      `tests/test_orchestrator/` (whole dir removed).
-- [x] `agents/__init__.py` — removed the `intake` / `ingredient` / `refinement`
-      imports and `__all__` entries. Kept `chat`, `web_search`, `recipe_gen` exports.
-- [x] Confirmed `HITLGate` had no production importer (only orchestrator + its
-      tests) → removed `hitl/gate.py` + `tests/test_hitl/test_gate.py`.
-      Kept `hitl/persistence.py` (`restore_checkpoint`, used in websocket.py) + `models.py`.
-- [x] Updated docs referencing deleted code:
-      - `CLAUDE.md` repo-layout tree (dropped `orchestrator/` line; refined `hitl/` note)
-      - `CLAUDE.md` "Adding a New Agent" + "Agentic Architecture" notes (no orchestrator class)
-      - `GCP_ARCHITECTURE.md` diagram (HITLGate/RefinementAgent → checkpoint persistence)
-        + monorepo tree (`orchestrator/session.py` line removed)
-- [x] Verified: dead-reference grep clean; both packages import cleanly.
-
-### Verify
-```
-uv run pytest -v   (both packages green — no import errors from deleted modules)
-uv run ruff check . ; uv run pyright   (clean)
-grep -ri "SessionOrchestrator\|build_intake\|build_ingredient\|build_refinement" \
-  --include=*.py .   → no hits outside this step's deletions
-```
-
-### ⏸ PAUSE 31
-
----
-
-## STEP 32 ★ — Make the per-turn reset contract structural
-
-**Goal:** `ChatAgentDeps` currently mixes three lifetimes (connection-durable,
-per-turn inputs, per-turn output collectors). The "reset these fields each turn"
-rule lives only as hand-written lines in the WS handler — add a field and forget
-a line and you get silent cross-turn state bleed. Make the contract live next to
-the fields so it cannot drift.
-
-### Current state
-`clients/tastyhub/app/api/websocket.py:138-143` manually resets 5 fields each turn.
-`packages/cookbot-core/cookbot/agents/chat.py:115-141` declares all lifetimes in
-one flat `ChatAgentDeps`.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/agents/chat.py` — added `reset_turn()` to
-      `ChatAgentDeps` (clears recipe_ready_this_turn, calendar_adds, calendar_removes,
-      shopping_list_items, recipe_options).
-- [x] Regrouped `ChatAgentDeps` fields into three labelled lifetime sections
-      (connection-durable · per-turn input · per-turn output) with a docstring
-      stating the reset contract lives in `reset_turn()`.
-- [x] `clients/tastyhub/app/api/websocket.py` — replaced the 5 manual reset lines
-      with `deps.reset_turn()`; kept `deps.calendar = msg.calendar or CalendarState()`
-      separate as a per-turn input.
-- [x] Test `test_reset_turn_clears_collectors_and_preserves_durable` — asserts all
-      collectors cleared and durable (onboarding/last_recipe/last_proposals) +
-      per-turn-input (search_site_filter/allow_ai_generated) fields survive.
-
-### Verify
-```
-uv run pytest packages/cookbot-core/tests/test_agents/test_chat.py -v
-Manual: two recipe requests in one connection → second turn shows no leftover
-  proposals/calendar adds from the first.
-```
-
-### ⏸ PAUSE 32
-
----
-
-## STEP 33 ★ — Extract recipe-resolution logic out of the god-tool
-
-**Goal:** `get_recipe_details` is a ~100-line tool closure containing the entire
-fetch-vs-search-vs-generate-vs-fallback decision tree, testable only through the
-agent. Extract it to a plain async function so the decision tree is unit-testable
-directly and the tool becomes a thin wrapper.
-
-### Current state
-`packages/cookbot-core/cookbot/agents/chat.py:348-455` — all branches inline.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/agents/chat.py` — added module-level
-      `resolve_recipe(selected, choice, ob, *, config, site_filter, allow_ai_generated)`
-      with the decision tree moved verbatim (no behaviour change), plus a pure
-      `_select_proposal(proposals, choice)` helper.
-- [x] Reduced `get_recipe_details` to ~13 lines: `_select_proposal` →
-      `resolve_recipe(...)` → set `last_recipe`/`recipe_ready_this_turn`, clear
-      `last_proposals`, return.
-- [x] Tests in `test_chat.py`: 4 `_select_proposal` cases + 5 `resolve_recipe`
-      cases (known-URL fetch, search-by-name, gen fallback, AI-disabled→not_found,
-      ai_generated proposal) using patched stub sub-agent factories.
-
-### Verify
-```
-uv run pytest packages/cookbot-core/tests/test_agents/test_chat.py -v
-Manual: pick a web_search option → full recipe extracted, source_url preserved.
-Manual: disable AI in Źródła → pick when web search yields nothing → not_found message.
-```
-
-### ⏸ PAUSE 33
-
----
-
-## STEP 34 — Unify side-effect emission into an ordered event list
-
-**Goal:** The WS handler hand-orders side-effects (recipe card before options,
-dedup calendar adds, flatten shopping list) in `websocket.py:169-189`. Every new
-side-effect means editing both a tool and that block. Replace the scattered
-collectors with a single ordered list of typed outbound events the handler drains
-in order.
-
-### Tasks
-
-- [x] `packages/cookbot-core/cookbot/agents/chat.py` — defined the typed union
-      `TurnEvent = FinalRecipeEvent | RecipeOptionsEvent | CalendarAddEvent
-      | CalendarRemoveEvent | ShoppingListEvent` (each a Pydantic model with a
-      `kind` Literal discriminator).
-- [x] Replaced the per-turn collector fields with `events: list[TurnEvent] = []`;
-      tools append in call order; `reset_turn()` clears it. Durable `last_recipe`
-      / `last_proposals` kept (they're read across tools/turns, not emission).
-- [x] `clients/tastyhub/app/api/websocket.py` — replaced the emission block with
-      `for ev in deps.events: await _emit_event(websocket, ev)`; `_emit_event`
-      uses `match` on event type. Recipe-before-options ordering now follows tool
-      call order. final_recipe emission gated in the tool (skipped for not_found).
-- [x] Calendar-add dedup moved into `add_to_calendar` (guards duplicate entry ids).
-- [x] Tests: event presence/shape per tool + 3 ordering/gating tests
-      (final_recipe appended, not_found emits none, call-order preserved).
-
-### Verify
-```
-uv run pytest -v   (both packages)
-Manual: full flow — propose → pick → add to calendar → shopping list — all
-  side-effects appear in the correct order in the UI.
-```
-
-### ⏸ PAUSE 34
-
----
-
-## STEP 35 — Reduce prompt-coercion in onboarding flow — SKIPPED (2026-06-07)
-
-**Decision:** Skipped. The onboarding flow was validated end-to-end by the live
-e2e (test_chat_e2e_live.py turns 1–5) with the current coercive prompt and works
-reliably. Loosening it is a robustness-only refactor with real regression risk
-and is hard to verify without live LLM runs — "if it works, don't touch it".
-Revisit only if onboarding misbehaves on a future model. Original goal kept below
-for reference.
-
-**Goal (not implemented):** The dynamic system prompt uses all-caps
-`MANDATORY`/`MUST` pressure to force deterministic flow that
-`next_missing_field()` already computes in code. Keep the *data* in the prompt,
-drop the imperative coercion, and let tool return values gate the flow.
-
-### Tasks
-
-- [ ] `packages/cookbot-core/cookbot/agents/chat.py` — rewrite `_onboarding_status`
-      to present collected/next-field as plain context, not commands. Remove the
-      "MANDATORY STEPS FOR THIS TURN" / "MUST" scaffolding.
-- [ ] Verify `update_onboarding`'s return value (`complete`, `next_missing_field`)
-      is sufficient signal for the model to ask the next question or call
-      `propose_recipes` — strengthen the tool docstring if needed.
-- [ ] Tests: `test_chat.py` — drive onboarding to completion with `TestModel`,
-      assert no field is re-asked and `propose_recipes` fires when complete.
-
-### Verify
-```
-uv run pytest packages/cookbot-core/tests/test_agents/test_chat.py -v
-Manual: run full onboarding → no question repeated → 4 options after last answer.
-Manual: skip-ahead ("zrób mi pastę dla 2 na 30 min") → fills multiple fields,
-  asks only what's missing.
-```
-
-### ⏸ PAUSE 35
-
----
-
-## STEP 36 — Hygiene cleanup
-
-**Goal:** Remove the small footguns and dead-pipeline traps the review flagged.
-
-### Tasks
-
-- [x] Mutable default args → `None` + coalesce: `propose_recipes` now uses
-      `dietary_hints: list[str] | None = None` (coalesced to `[]` in body). The
-      remaining `= []` defaults are Pydantic model fields (safe, not the footgun).
-- [x] `websocket.py` Bearer-verify `except` now `log.warning("ws_token_verify_failed", ...)`
-      instead of silent `pass`.
-- [x] Reconciled STEP 30: added a "superseded" banner pointing to STEP 38 for the
-      real image status (the `search_images` tool was removed; images don't populate).
-
-### Verify
-```
-uv run ruff check . ; uv run pyright   (both clean)
-uv run pytest -v   (both packages green)
-```
-
-### ⏸ PAUSE 36
-
----
-
-## STEP 37 — Separate unit vs integration tests
-
-**Goal:** Today `cookbot-core/tests/test_firestore.py` (the only suite needing an
-external connection — the Firestore emulator) sits alongside pure unit tests and
-silently `skipif`s when the emulator is down. Make the split explicit so
-`pytest -m "not integration"` runs a fast, hermetic unit suite and integration
-tests run deliberately against the emulator.
-
-### Current state (audited 2026-06-07)
-- **Unit (no external connection):** all `cookbot-core/tests/test_agents/*`,
-  `test_models.py`; all `clients/tastyhub/tests/*` (TestClient + mocked firestore).
-- **Integration (needs `FIRESTORE_EMULATOR_HOST`):** `cookbot-core/tests/test_firestore.py`
-  (8 tests, already self-skipping).
-
-### Tasks
-
-- [x] `integration` marker registered in `pyproject.toml` (done in STEP 34).
-- [x] `test_firestore.py` marked `pytestmark = pytest.mark.integration` (skipif kept).
-      `tests/integration/` (live LLM e2e) also carries the marker.
-- [x] Documented both run modes in CLAUDE.md "Running Tests" (unit / firestore /
-      live-LLM e2e), including the gpt-4o-mini + auto-skip notes.
-- [x] Confirmed `pytest -m "not integration"` → 87 passed, 10 deselected,
-      **0 skipped** (was 8 skipped — firestore tests are now cleanly excluded).
-
-### Verify
-```
-docker-compose up -d firestore-emulator
-export FIRESTORE_EMULATOR_HOST=localhost:8080
-cd packages/cookbot-core && uv run pytest -m integration -v   (8 pass against emulator)
-unset FIRESTORE_EMULATOR_HOST
-uv run pytest -m "not integration" -q                         (fast, all green, 0 skipped)
-```
-
-### ⏸ PAUSE 37
-
----
-
-## STEP 38 — Proposal card images + source link
-
-**Goal:** Recipe proposal cards should (a) show a dish image and (b) for web
-proposals, show a clickable link to the source page — like the final recipe card
-already does. Surfaced during the STEP 34 smoke-test (2026-06-07): proposal
-images never appear and proposals carry no visible source link.
-
-### Background / why deferred
-- `recipe_options.py` currently instructs the agent to leave `image_url=null`
-  and not call image search. The PydanticAI version in use exposes only
-  `duckduckgo_search_tool` (text) — there is **no image-search tool** — so the
-  original STEP 30 `search_images` approach is unavailable. TASK STEP 30's
-  "images" checkboxes are therefore stale vs. the code.
-- The final recipe card already renders `image_url` (og:image from the fetched
-  page) and a `source_url` "Źródło ↗" link; proposal cards render neither
-  consistently (image only if present; no source link at all).
-
-### Tasks
-
-- [x] **Proposal source link:** `ChatPanel.tsx` proposal card renders a clickable
-      "Źródło ↗" link when `p.source === 'web_search' && p.source_url`. AI shows none.
-- [x] **Proposal images — Option A (concurrent og:image fetch):**
-      `recipe_options.populate_proposal_images()` fetches each web proposal's
-      og:image via httpx concurrently (`asyncio.gather`), best-effort (6s timeout,
-      60k-byte cap, failures leave `image_url=None` → placeholder). Called from
-      `propose_recipes` after the options agent returns. Verified live (aniagotuje
-      og:image populated). httpx added as a cookbot-core dependency.
-- [x] `recipe_options.py` instructions clarified: agent always leaves image_url
-      null; images populated downstream from og:image.
-- [x] STEP 30 reconciled in STEP 36 (superseded banner added).
-- [x] Tests: `test_recipe_options.py` — og:image helper stubbed (fills web only,
-      tolerates failure, no-op without targets); source-link verified via tsc/types.
-
-### Verify
-```
-Manual: complete onboarding → proposal cards show images for at least web
-  proposals, and a clickable Źródło link on web proposals → click opens the page.
-```
-
-### ⏸ PAUSE 38
-
----
-
-## STEP 39 — Web recipe extraction reliability
-
-**Goal:** When the user picks a web proposal, the page should actually be
-extracted into a full recipe. Surfaced in the STEP 34 smoke-test (2026-06-07):
-picking a real ofeminin.pl page logged `fetch_known_url` → `fetch_failed` →
-web-search fallback also `found=False` → silently AI-generated a (link-less)
-recipe. The fallback chain works, but it shouldn't be needed this often — real
-recipe pages are failing extraction.
-
-### Evidence
-```
-get_recipe_details_fetch_known_url url=https://www.ofeminin.pl/.../rbynp27
-get_recipe_details_fetch_failed_searching url=https://www.ofeminin.pl/.../rbynp27
-get_recipe_details_result found=False source_url=None
-→ events=['final_recipe']   # AI-generated, no source link (correct, but not what the user picked)
-```
-
-### Likely causes to investigate
-- `web_fetch` returns markdown the extractor can't parse (JS-rendered content,
-  consent walls, or recipe data only in JSON-LD `<script type="application/ld+json">`
-  that the markdown conversion drops).
-- `_MAX_PAGE_CONTENT` (24k) truncates before the recipe on very long pages.
-- The extraction prompt bails to `null` on cluttered pages despite the softened
-  instruction.
-
-### Tasks
-- [x] Reproduced via `scripts/diag_fetch.py` + a live fetch-agent run. **Finding:
-      extraction is NOT broken** — aniagotuje.pl extracts cleanly (7 ingredients,
-      6 steps, correct source_url); markdown keeps the recipe text and fits under
-      24k. The earlier failure was a **bad URL pick**: the ofeminin.pl URL was a
-      `NewsMediaOrganization` *article*, not a recipe (no `recipeIngredient` at all).
-- [x] JSON-LD/microdata parsing investigated and **rejected as not worth it**:
-      kwestiasmaku has no structured ingredients, aniagotuje uses microdata (not
-      JSON-LD), and the LLM-markdown path already extracts both. No single
-      deterministic schema across sites; the LLM path works.
-- [x] Tightened URL selection in `recipe_options.py`: prefer single-recipe pages
-      (`/przepis/` etc.), explicitly avoid news/magazine articles, round-ups, and
-      lifestyle portals (ofeminin) even when the title mentions the dish.
-- [x] Fallback transparency: `FoundRecipe.web_pick_fell_back` flag; when a web
-      pick can't be read and we AI-generate, the agent tells the user honestly.
-- [x] Integration test `test_extraction_live.py` — known-good aniagotuje URL
-      yields a web_search recipe with ingredients/steps/source_url (passed live).
-
-### ⏸ PAUSE 39
-
----
-
-## STEP 40 — Migrate recipe agents off the gpt-4o family (to GPT-5)
-
-**Goal:** The recipe agents (`model_web_search`, `model_recipe_gen`,
-`model_recipe_options`) currently run on `gpt-4o-mini`. The gpt-4o family is slated
-for retirement (~June 2026), so this migration is time-bound. It is **deferred,
-not blocking** — gpt-4o-mini works reliably today.
-
-### Why it's not a trivial model-string swap (investigated 2026-06-08)
-- **`gpt-4o` (no -mini) is unusable here:** large recipe pages (~24k chars) exceed
-  this org's 30k TPM limit on gpt-4o → the extraction call fails fast and returns
-  empty. This was the original "recipe not fetched" bug. `gpt-4o-mini` has the
-  headroom and extracts reliably one-shot.
-- **GPT-5 mini needs the Responses API for tools:** `gpt-5.4-mini` with
-  `reasoning_effort` + function tools 400s on Chat Completions
-  (`"Function tools with reasoning_effort are not supported … use /v1/responses"`).
-  PydanticAI: use the `openai-responses:` model-id prefix +
-  `OpenAIResponsesModelSettings(openai_reasoning_effort=..., max_tokens=...)`.
-  (Note: PydanticAI v2 will make bare `openai:` resolve to Responses anyway.)
-- **Even via Responses API, GPT-5 mini tool-loops on extraction:** observed it
-  re-calling `web_fetch` 3× on the same URL instead of committing to the structured
-  `Recipe` output, then returning `None` ~3/4 of runs (non-deterministic). Reasoning
-  tokens also count against the output budget (OpenAI: reserve ≥25k). So a naive
-  swap regresses reliability.
-
-### Tasks
-- [ ] Decide the GPT-5 approach. Most promising (from STEP 39 findings): **split
-      fetch from extraction** — do the page fetch with plain `httpx` (already proven
-      in `scripts/diag_fetch.py`), then feed the markdown to a **tool-less**
-      extraction agent. No tools → no tool-loop → GPT-5 (and any model) extracts
-      reliably. This also decouples extraction quality from agentic tool behavior.
-- [ ] If keeping tools: use `openai-responses:<model>` + `OpenAIResponsesModelSettings`
-      (reasoning_effort low/minimal, generous `max_tokens`), and add a strong
-      "call web_fetch once, then output the Recipe" instruction; measure reliability
-      over several live runs before committing.
-- [ ] Thread per-agent model settings through the `build_*_agent` factories.
-- [ ] Re-point `model_web_search`/`model_recipe_gen`/`model_recipe_options` to the
-      chosen GPT-5 model in `settings.py` + `.env.example`.
-- [ ] Extend the live integration tests to assert reliability (run the extraction
-      test N times; require consistent non-None web extraction).
-
-### ⏸ PAUSE 40
-
----
-
-## STEP 41 — "Znajdź w Frisco": delivery-shop product matching
-
-**Goal:** Add a **"Znajdź w Frisco"** button on the shopping list that matches each
-list item to a real Frisco grocery product and shows a review panel (product name,
-price, image, grammage, a per-item "otwórz w Frisco" deep link) plus a
-"nie znaleziono" bucket. Frisco is a *delivery shop (provider)*, not a client — the
-capability is reusable across clients, and one client may enable several shops.
-
-### Architecture (decided 2026-07-04)
-- **New standalone package `packages/delivery-shops/`** (sibling to `cookbot-core`,
-  own `pyproject.toml`, cookbot-independent): generic `ProductMatcher` (keyword
-  inverted-index — no vector DB), models (`Product`, `ProductMatch`,
-  `GroceryMatchResult`), `DeliveryShop` Protocol + `get_shop` registry, and
-  `shops/frisco.py` `FriscoShop` (the only Frisco-aware code) + `SHOPS` registry.
-- **Client contributes config only:** `TenantConfig.delivery_shops = ["frisco"]`
-  + a thin route `POST /v1/grocery/{shop}/match`. No shop code in the client.
-- Runs **in-process** in the existing tastyhub Cloud Run service — **no new Docker
-  service**. delivery-shops is a library, imported like cookbot-core.
-
-### Feed facts (verified against the live feed 2026-07-04)
-- `https://commerce.frisco.pl/api/v1/integration/feeds/public?language=pl` — ~50 MB
-  JSON, `{ generatedAt, categories[9953], products[14663] }`.
-- Match on `name.pl` + `keywords.pl`; `price.price` may be **absent** (guard it);
-  filter to `isAvailable`; deep link = `productUrl`; thumbnail = `imageUrl`.
-
-### Tasks
-- [ ] Scaffold `packages/delivery-shops/` (pyproject, `delivery_shops/` with
-      `models.py`, `matcher.py`, `base.py`, `shops/frisco.py`, `shops/__init__.py`).
-- [x] `ProductMatcher`: NFKD ascii-fold + lowercase + stopword strip, inverted
-      `token → idx` index over name/category/keywords; score weights *where* a query
-      word lands (name ≫ category ≫ keywords) + name-substring/prefix boosts +
-      name-coverage + extra-token penalty + availability; `match` /
-      `match_candidates` / `match_all`. Price/grammage/category optional.
-- [x] `FriscoShop.load()`: async `httpx` fetch, in-memory TTL cache (default 12 h)
-      behind an `asyncio.Lock`, map Frisco schema → `Product` (incl. `category` from
-      `primaryCategory.name.pl`), available-only.
-- [x] `TenantConfig.delivery_shops: list[str]` field; tastyhub `["frisco"]`.
-- [x] `clients/tastyhub/pyproject.toml` depend on delivery-shops; `app/api/grocery.py`
-      route (404 for a shop not in `delivery_shops`; empty ingredients → empty result;
-      matcher cached on `app.state`); mounted in `main.py`.
-- [x] Frontend: `frisco_*` ui strings; "Znajdź w Frisco" button in `ShoppingList.tsx`;
-      new `FriscoPanel.tsx` (matched rows + "otwórz w Frisco" links + "nie znaleziono"
-      bucket + `generated_at` footer); types in `types.ts`.
-- [x] **LLM re-rank of the lexical shortlist.** delivery-shops exposes a `ReRanker`
-      callable seam (stays LLM-agnostic); cookbot-core adds `build_product_rerank_agent`
-      + `model_product_rerank`; the route re-ranks ambiguous shortlists (>1 candidate)
-      concurrently, falling back to the lexical #1 on decline/error. Fixes the
-      "plain vs flavoured" ties (cukier→plain not vanilla, sól→table not herbal,
-      pomidory→chopped not sun-dried-chili, pierś z kurczaka→fillet not wieners).
-- [x] Tests: package unit (`test_matcher.py`, `test_matching_quality.py` incl.
-      `price=None`, category, stopword and reranker-seam cases); package integration
-      (`test_frisco_live.py` — matching quality by category on the live feed); client
-      route test (unknown shop → 404, re-rank path via `TestModel`); rerank-agent unit
-      test in cookbot-core.
-
-### Deferred within this feature (do NOT forget — see "later" below)
-- [ ] **GCS blob cache for the feed/index.** Today each Cloud Run instance
-      re-downloads the ~50 MB feed and rebuilds its index on cold start, and holds
-      it in per-instance RAM. **Later**, move the parsed feed / built index to a
-      **GCS blob** (a scheduled job refreshes it daily from `generatedAt`; instances
-      load the pre-built blob instead of downloading + parsing 50 MB each). This is
-      the scaling fix and the shared-cache path if multiple clients enable Frisco —
-      still the same package, still in-process, **not** a separate microservice.
-
-### Verify
-```
-cd packages/delivery-shops && uv sync && uv run pytest -m "not integration" -q
-cd packages/delivery-shops && uv run pytest -m integration -v   (live feed)
-cd clients/tastyhub && uv sync && uv run pytest -q
-Manual: build a shopping list → click "Znajdź w Frisco" → panel shows matched
-  products with working "otwórz w Frisco" links + unmatched items in the bucket.
-curl -s -X POST localhost:8000/v1/grocery/frisco/match \
-  -H 'content-type: application/json' -d '{"ingredients":["cebula","mąka pszenna"]}' | jq
-```
-
-### ⏸ PAUSE 41
+- [x] STEP 17 — Spiżarnia toggle in chat (inject pantry items)
+- [x] STEP 18 — React/Vite SPA (login, chat, spizarnia, shopping list, calendar, NavBar)
+
+**Architecture change since the original plan:** the rigid 5-question intake
+pipeline was replaced with a single guided **ChatAgent** (orchestrator) that
+collects intake conversationally, proposes options, resolves full recipes, and
+supports free-chat (calendar, shopping lists) — see CLAUDE.md "Agentic
+Architecture" and `GCP_ARCHITECTURE.md`.
+
+### Phase 2b — product improvements
+- [x] STEP 21 — Recipe detail modal in Calendar (full recipe stored on entries)
+- [x] STEP 22 — ShoppingListAgent (dedup, sum quantities, group by shop section)
+- [x] STEP 23 — Propose 4 recipe options → user picks one (propose_recipes /
+      get_recipe_details two-step flow + `recipe_options` WS message)
+- [x] STEP 24 — Recipe Sources tab (trusted sites, search modes, `source_url`)
+- [x] STEP 25 — Chat input placeholder update
+- [x] STEP 26 — Chat processing indicator in NavBar
+- [x] STEP 29 — AI-generated-recipes toggle (`allow_ai_generated` gate)
+- [x] STEP 30 — Dish images in proposal cards (superseded by STEP 38 — the DDG
+      image tool was removed; images now come from og:image downstream)
+
+### Phase 2c — agent architecture hardening
+- [x] STEP 31 — Deleted the dead legacy pipeline (intake/ingredient/refinement
+      agents, SessionOrchestrator, HITLGate); kept web_search/recipe_gen +
+      hitl/persistence. Docs reconciled.
+- [x] STEP 32 — Made the per-turn reset contract structural (`reset_turn()` +
+      three labelled lifetime sections on `ChatAgentDeps`)
+- [x] STEP 33 — Extracted recipe resolution into a unit-testable `resolve_recipe`
+      + `_select_proposal`; `get_recipe_details` is now a thin wrapper
+- [x] STEP 34 — Unified side-effects into an ordered `events: list[TurnEvent]`
+      drained by the WS handler (`_emit_event` match)
+- [~] STEP 35 — Reduce onboarding prompt-coercion — **SKIPPED** (2026-06-07):
+      works reliably on the current model; robustness-only refactor with real
+      regression risk and hard to verify without live runs. Revisit only if
+      onboarding misbehaves on a future model.
+- [x] STEP 36 — Hygiene cleanup (mutable-default args, WS token-verify logging)
+- [x] STEP 37 — Split unit vs integration tests (`integration` marker; unit run
+      is hermetic, 0 skipped)
+- [x] STEP 38 — Proposal card images (concurrent og:image fetch) + source link
+- [x] STEP 39 — Web recipe extraction reliability — root cause was **bad URL
+      picks** (news/article pages), not broken extraction; tightened URL
+      selection to prefer single-recipe pages + honest fallback message
+- [x] STEP 41 — "Znajdź w Frisco" delivery-shop product matching: standalone
+      `packages/delivery-shops/` (generic `ProductMatcher` + `FriscoShop`), thin
+      `POST /v1/grocery/{shop}/match` client route, `FriscoPanel.tsx`, LLM re-rank
+      of the lexical shortlist. **Deferred within this feature:** GCS blob cache
+      for the ~50 MB feed/index (each Cloud Run instance re-downloads + rebuilds
+      on cold start today — moved to Phase 4 "deferred").
+
+> **Note on models:** the recipe agents run on `gpt-4o-mini`, which works
+> reliably and is not deprecated. The former STEP 40 (forced migration off the
+> gpt-4o family before a retirement deadline) was **removed** — there is no
+> deadline. Model choice is a per-agent `TenantConfig.model_*` field; swap it if
+> and when a better/cheaper model warrants it, not on a schedule.
 
 ---
 
 # PHASE 3 — PACKAGING & DEPLOYMENT
+
+> **Ordering:** STEP 42 (user management + token quotas) must land **before**
+> STEP 27/28 deployment — the app should not go live without per-user usage
+> limits in place, otherwise a single user (or a runaway loop) can burn the
+> OpenAI budget uncapped. Do 42 first, then package (27) and deploy (28).
+
+---
+
+## STEP 42 ★ — User management + per-user token quotas
+
+**Goal:** An admin can manage users and assign a **daily** and **monthly** token
+budget per user (admins included). Every chat turn's token spend is metered
+against the user's remaining budget; when a budget is exhausted the chat is
+refused with a clear message until it resets. This is the pre-deployment cost
+guardrail — today the only limit is per-turn (`UsageLimits` from
+`TenantConfig.usage_request_limit` / `usage_total_tokens_limit`), which caps one
+turn but nothing stops unlimited turns.
+
+### Current state (audited 2026-07-07)
+- Per-turn usage is already computed and logged as `chat_turn_usage` in
+  `packages/cookbot-core/cookbot/agents/chat.py` (input/output tokens, requests).
+  Nothing persists or accumulates it per user.
+- User identity is a Firebase `uid` resolved in
+  `clients/tastyhub/app/middleware/auth.py` (Bearer ID token, or the `x-dev-uid`
+  dev bypass gated by `DEV_UID`). There is **no role/admin concept** and no
+  user-record collection — users exist only implicitly via their `uid`.
+- Per-user documents already live under `users/{uid}/…` (spizarnia, prefs) — the
+  quota + role records fit the same pattern.
+
+### Design decisions (settled during build 2026-07-07)
+- **Metering unit:** total tokens (input + output) per turn, taken from the
+  turn's `result.usage.total_tokens` (same figure logged as `chat_turn_usage`),
+  surfaced on `ChatAgentDeps.last_turn_total_tokens`.
+- **`0 = unlimited`** (documented on `TokenQuota`): an admin sets a positive
+  number to restrict a user; the default (0/0) means no cap.
+- **Reset windows:** daily resets at local 00:00, monthly on the 1st, in
+  `TenantConfig.quota_timezone` (Europe/Warsaw). Counters are keyed by period
+  (`users/{uid}/usage/{2026-07-07}` and `/{2026-07}`); a new key is simply a new
+  doc, so `add_usage`'s `Increment` starts from 0 — lazy reset by construction,
+  no cron. Reads apply `counter_for()` to zero a stale-key counter defensively.
+- **Enforcement point:** `_check_quota` runs **before** the turn (refuse the next
+  turn once over budget, or if `disabled`); `_record_usage` runs **after** the
+  stream completes. A turn in flight still finishes under per-turn `UsageLimits`.
+  Refusal is a typed `quota_exceeded` WS message (window + localized text +
+  `resets_at`), not a crash.
+- **Admin auth:** `role=="admin"` on the user record; `require_admin` gates the
+  admin API on the caller's own record. First admin bootstrapped via `ADMIN_UIDS`.
+
+### Tasks
+
+- [x] **Core models** — `models/user.py`: `TokenQuota` (0 ⇒ unlimited),
+  `UserRecord` (uid/email/role/quota/disabled + `is_admin`), `UsageCounter`.
+- [x] **Pure quota math** — new `models/quota.py`: `day_key`/`month_key`,
+  `next_reset`, `counter_for` (lazy reset), `check_budget` → `BudgetStatus`
+  (daily reason wins when both exceeded). Kept I/O-free so it's unit-testable.
+- [x] **Firestore service** — `services/firestore.py`: `get_user_record`
+  (create-default + `ADMIN_UIDS` seed), `save_user_record`, `list_user_records`,
+  `get_usage_counter`, `add_usage` (atomic `Increment` per period key).
+  **Deviation from the original sketch:** the record is stored ON the parent
+  `users/{uid}` doc (under a `record` map), not `users/{uid}/meta/record` — a
+  subcollection-only write leaves the parent non-existent and it would be skipped
+  by the `list_user_records` collection stream. Budget-checking is the pure
+  `check_budget`, not a service method.
+- [x] **TenantConfig defaults** — `models/tenant.py`: `default_daily_token_limit`
+  / `default_monthly_token_limit` / `quota_timezone` / `admin_uids` +
+  `default_quota()`. Wired from settings in `clients/tastyhub/app/config/tenant.py`.
+- [x] **Enforcement in the WS turn** — `app/api/websocket.py`: `_check_quota`
+  (disabled → `error`; over-budget → `quota_exceeded`, skip turn) before the
+  stream; `_record_usage(deps.last_turn_total_tokens)` after it (best-effort).
+  `stream_chat_response` now sets `last_turn_total_tokens`; `reset_turn` clears it.
+- [x] **Admin REST API** — `app/api/admin.py`, `/v1/admin/*` behind `require_admin`
+  + `/v1/me` self-view; `GET /admin/users` (records + current-period usage),
+  `PUT .../quota|role|disabled`. Mounted in `main.py`.
+- [x] **Env / config** — `ADMIN_UIDS`, `DEFAULT_DAILY_TOKEN_LIMIT`,
+  `DEFAULT_MONTHLY_TOKEN_LIMIT`, `QUOTA_TIMEZONE` in `settings.py` + `.env.example`;
+  documented in CLAUDE.md "Environment Variables". (Also removed the stale STEP 40
+  note from settings.py — gpt-4o-mini is not deprecated.)
+- [x] **Frontend admin view** — `AdminPage.tsx` (user table: role, daily/monthly
+  limit inline-editable, used today/this month, admin toggle, disable/enable),
+  `Admin` NavBar tab shown only when `/v1/me` reports `is_admin`; `quota_exceeded`
+  handled in `ChatPanel.tsx` (shows the server's localized message, keeps input
+  enabled). Localized quota strings added to `ui_strings.py`.
+- [x] **Tests:**
+  - Core unit `test_quota.py` (14): period keys, lazy reset, budget math,
+    reset-time, default-quota inheritance.
+  - Core integration `test_firestore.py` (4 new): default-record creation,
+    `ADMIN_UIDS` seeding, usage increment + lazy reset, `list_user_records` —
+    against the **emulator** (per STEP 37 split).
+  - Client unit `test_admin.py` (8): `require_admin` 403, admin list, `/me`,
+    quota/role/disabled updates, auth required. `test_websocket.py` (2 new):
+    over-budget refusal (no usage recorded) + usage recorded after a normal turn.
+
+### Verify — DONE (2026-07-07)
+```
+core unit:      171 passed, 22 deselected      (incl. 14 quota unit tests)
+client unit:    49 passed                      (incl. 8 admin + 2 WS-quota tests)
+firestore int:  12 passed vs emulator          (incl. 4 quota/usage tests)
+ruff: clean (both)   pyright: clean on all changed files
+                     (pre-existing Settings() false-positive unrelated)
+E2E vs emulator: drove _check_quota/_record_usage through the full lifecycle —
+  under-budget allowed → over-budget refused (window=daily) → admin raises limit
+  → allowed → admin disables → refused via disabled path. All correct.
+```
+
+### ⏸ PAUSE 42 — COMPLETE
 
 ---
 

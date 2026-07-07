@@ -221,6 +221,15 @@ export default function ChatPanel({ sessionId, useSpizarnia, ui, shopItems, onSh
         setInputEnabled(true)
         setStatus('Połączono')
         break
+      case 'quota_exceeded':
+        // Budget exhausted — show the server's localized message and keep the
+        // input enabled so the user can try again after the window resets.
+        streamingRef.current = false
+        setIsTyping(false)
+        onProcessingChangeRef.current(false)
+        addMsg({ kind: 'error', text: msg.message })
+        setInputEnabled(true)
+        break
       case 'error':
         streamingRef.current = false
         setIsTyping(false)

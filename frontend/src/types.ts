@@ -1,4 +1,30 @@
-export type Page = 'chat' | 'calendar' | 'sources'
+export type Page = 'chat' | 'calendar' | 'sources' | 'admin'
+
+export interface TokenQuota {
+  daily_limit: number    // 0 ⇒ unlimited
+  monthly_limit: number  // 0 ⇒ unlimited
+}
+
+export interface UserRecord {
+  uid: string
+  email?: string | null
+  role: string
+  quota: TokenQuota
+  disabled: boolean
+}
+
+export interface UserUsageView {
+  record: UserRecord
+  daily_used: number
+  monthly_used: number
+}
+
+export interface MeView {
+  uid: string
+  email?: string | null
+  role: string
+  is_admin: boolean
+}
 
 export interface SpizarniaItem {
   name: string
@@ -133,6 +159,7 @@ export type WsOutMessage =
   | { type: 'spizarnia_offer'; missing_ingredients: string[]; used_from_spizarnia: string[] }
   | { type: 'calendar_update'; action: 'add' | 'remove'; entry?: CalendarEntry; entry_id?: string }
   | { type: 'shopping_list_update'; items: string[]; replace: boolean; structured?: { items: { name: string; quantity: string; section: string }[]; sections: string[] } }
+  | { type: 'quota_exceeded'; window: 'daily' | 'monthly'; message: string; resets_at: string }
   | { type: 'error'; message: string }
 
 export interface CalendarDay {

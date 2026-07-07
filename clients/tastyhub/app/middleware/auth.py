@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 import firebase_admin
 import firebase_admin.auth
 from cookbot.models.tenant import TenantConfig
-from cookbot.models.user import UserProfile
-from fastapi import Header, HTTPException, status
+from cookbot.models.user import UserProfile, UserRecord
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.config.settings import get_settings
 from app.config.tenant import TASTYHUB_CONFIG
@@ -69,3 +69,29 @@ async def get_current_user(
         email=decoded.get("email", ""),
         created_at=datetime.now(UTC),
     )
+
+
+async def get_user_record(
+    request: Request,
+    user: UserProfile = Depends(get_current_user),
+) -> UserRecord:
+    """The caller's persisted account record (role + quota), creating a default
+    on first sight and seeding admin from ADMIN_UIDS."""
+    return await request.app.state.firestore.get_user_record(
+        user.uid,
+        default_quota=TASTYHUB_CONFIG.default_quota(),
+        admin_uids=frozenset(TASTYHUB_CONFIG.admin_uids),
+        email=user.email or None,
+    )
+
+
+async def require_admin(
+    record: UserRecord = Depends(get_user_record),
+) -> UserRecord:
+    """Gate admin-only routes: the caller's own record must have role=='admin'."""
+    if not record.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return record

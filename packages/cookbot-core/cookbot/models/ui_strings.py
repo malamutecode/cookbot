@@ -54,6 +54,10 @@ class UiStrings:
     login_password: str = "Hasło"
     login_button: str = "Zaloguj się"
     logout_button: str = "Wyloguj"
+    # Quota — {resets} is a human date/time of when the window resets.
+    quota_daily_reached: str = "Wykorzystałeś dzienny limit tokenów. Odnowi się {resets}."
+    quota_monthly_reached: str = "Wykorzystałeś miesięczny limit tokenów. Odnowi się {resets}."
+    quota_disabled: str = "Twoje konto zostało wyłączone. Skontaktuj się z administratorem."
 
 
 _PL = UiStrings(
@@ -146,6 +150,9 @@ _EN = UiStrings(
     login_password="Password",
     login_button="Sign in",
     logout_button="Sign out",
+    quota_daily_reached="You've used your daily token limit. It resets {resets}.",
+    quota_monthly_reached="You've used your monthly token limit. It resets {resets}.",
+    quota_disabled="Your account has been disabled. Please contact an administrator.",
 )
 
 _STRINGS: dict[str, UiStrings] = {"pl": _PL, "en": _EN}

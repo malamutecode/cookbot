@@ -16,8 +16,17 @@ from cookbot.agents.chat import (
 )
 from cookbot.hitl.persistence import restore_checkpoint
 from cookbot.models.calendar import CalendarState
+from cookbot.models.quota import (
+    BudgetStatus,
+    check_budget,
+    counter_for,
+    day_key,
+    month_key,
+    next_reset,
+)
 from cookbot.models.recipe import RecipeSource
 from cookbot.models.spizarnia import SpizarniaItem
+from cookbot.models.tenant import TenantConfig
 from cookbot.models.user import DEFAULT_SOURCES, UserSearchPrefs
 from cookbot.protocols.ws_messages import (
     WsInbound,
@@ -27,6 +36,7 @@ from cookbot.protocols.ws_messages import (
     ws_send_error,
     ws_send_final_recipe,
     ws_send_hitl_checkpoint,
+    ws_send_quota_exceeded,
     ws_send_recipe_options,
     ws_send_shopping_list_update,
     ws_send_token,
@@ -61,6 +71,34 @@ async def _emit_event(websocket: WebSocket, ev: TurnEvent) -> None:
             await ws_send_shopping_list_update(
                 websocket, flat, replace=True, structured=ev.shopping_list
             )
+
+
+async def _check_quota(firestore, uid: str, config: TenantConfig) -> tuple[bool, BudgetStatus | None, bool]:
+    """Load the user's record + current-window counters and decide if the next
+    turn is allowed. Returns (allowed, status, disabled). A disabled account is
+    always refused. Called before running a turn (never mid-stream)."""
+    now = datetime.now(UTC)
+    tz = config.quota_timezone
+    dk, mk = day_key(now, tz), month_key(now, tz)
+    rec = await firestore.get_user_record(
+        uid,
+        default_quota=config.default_quota(),
+        admin_uids=frozenset(config.admin_uids),
+    )
+    if rec.disabled:
+        return False, None, True
+    daily = counter_for(await firestore.get_usage_counter(uid, dk), dk)
+    monthly = counter_for(await firestore.get_usage_counter(uid, mk), mk)
+    return (status := check_budget(rec.quota, daily, monthly)).allowed, status, False
+
+
+async def _record_usage(firestore, uid: str, config: TenantConfig, tokens: int) -> None:
+    """Add this turn's token spend to the user's day + month counters."""
+    if tokens <= 0:
+        return
+    now = datetime.now(UTC)
+    tz = config.quota_timezone
+    await firestore.add_usage(uid, [day_key(now, tz), month_key(now, tz)], tokens)
 
 
 def _is_user_turn(msg: object) -> bool:
@@ -214,6 +252,33 @@ async def websocket_endpoint(
             # Clear per-turn output collectors (contract lives in reset_turn)
             deps.reset_turn()
 
+            # Per-user token quota (STEP 42). Refuse the next turn once a budget
+            # is exhausted; a turn already in flight is not interrupted. Only
+            # meter authenticated users — an unauthenticated fallback session has
+            # no record to meter against.
+            if uid is not None:
+                allowed, status, disabled = await _check_quota(firestore, uid, config)
+                if disabled:
+                    await ws_send_error(websocket, message=ui.quota_disabled)
+                    continue
+                if not allowed and status is not None:
+                    window = status.exceeded_window or "daily"
+                    resets = next_reset(datetime.now(UTC), config.quota_timezone, window)
+                    template = (
+                        ui.quota_monthly_reached if window == "monthly"
+                        else ui.quota_daily_reached
+                    )
+                    resets_local = resets.strftime("%Y-%m-%d %H:%M")
+                    await ws_send_quota_exceeded(
+                        websocket,
+                        window=window,
+                        message=template.format(resets=resets_local),
+                        resets_at=resets.isoformat(),
+                    )
+                    log.info("ws_quota_exceeded", session_id=session_id, uid=uid,
+                             window=window)
+                    continue
+
             # Keep history bounded — drop oldest messages but only ever cut at a
             # real user turn, never mid-tool-call. A tool-return is also a
             # ModelRequest, so we must look for a UserPromptPart, not just kind.
@@ -237,6 +302,15 @@ async def websocket_endpoint(
                 log.exception("ws_turn_error", session_id=session_id, error=str(exc))
                 await ws_send_error(websocket, message="Something went wrong. Please try again.")
                 continue
+
+            # Meter this turn's token spend against the user's quota (best-effort
+            # — a Firestore hiccup must not break the live chat; the per-turn
+            # UsageLimits already capped the turn itself).
+            if uid is not None and deps.last_turn_total_tokens > 0:
+                try:
+                    await _record_usage(firestore, uid, config, deps.last_turn_total_tokens)
+                except Exception as exc:
+                    log.warning("ws_usage_record_failed", session_id=session_id, error=str(exc))
 
             # Drain the ordered side-effect events the tools appended this turn.
             log.info("ws_turn_end", event_count=len(deps.events),

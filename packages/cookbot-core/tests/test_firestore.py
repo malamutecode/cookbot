@@ -153,3 +153,65 @@ async def test_get_hitl_checkpoint_returns_none_when_absent() -> None:
     svc = _make_service()
     result = await svc.get_hitl_checkpoint("fresh-session-no-hitl")
     assert result is None
+
+
+# ── User records + token quotas (STEP 42) ────────────────────────────────────
+
+@emulator_available
+async def test_get_user_record_creates_default() -> None:
+    from cookbot.models.user import TokenQuota
+
+    svc = _make_service()
+    rec = await svc.get_user_record(
+        "quota-user-default",
+        default_quota=TokenQuota(daily_limit=500, monthly_limit=9000),
+    )
+    assert rec.role == "user"
+    assert rec.quota.daily_limit == 500
+    assert rec.disabled is False
+
+
+@emulator_available
+async def test_get_user_record_seeds_admin_from_admin_uids() -> None:
+    svc = _make_service()
+    rec = await svc.get_user_record(
+        "quota-admin-seed",
+        admin_uids=frozenset({"quota-admin-seed"}),
+    )
+    assert rec.is_admin
+
+
+@emulator_available
+async def test_add_usage_increments_and_lazy_resets() -> None:
+    import uuid
+
+    svc = _make_service()
+    # Unique uid so reruns against the persistent emulator stay isolated.
+    uid = f"quota-usage-{uuid.uuid4().hex[:8]}"
+
+    # Two adds to the same day/month keys accumulate.
+    await svc.add_usage(uid, ["2026-07-07", "2026-07"], 100)
+    await svc.add_usage(uid, ["2026-07-07", "2026-07"], 250)
+    day = await svc.get_usage_counter(uid, "2026-07-07")
+    month = await svc.get_usage_counter(uid, "2026-07")
+    assert day.tokens_used == 350
+    assert month.tokens_used == 350
+
+    # A new day key starts fresh (lazy reset by construction — different doc).
+    await svc.add_usage(uid, ["2026-07-08", "2026-07"], 40)
+    new_day = await svc.get_usage_counter(uid, "2026-07-08")
+    same_month = await svc.get_usage_counter(uid, "2026-07")
+    assert new_day.tokens_used == 40
+    assert same_month.tokens_used == 390  # month kept accumulating
+
+
+@emulator_available
+async def test_list_user_records_returns_saved() -> None:
+    from cookbot.models.user import TokenQuota, UserRecord
+
+    svc = _make_service()
+    await svc.save_user_record(
+        UserRecord(uid="quota-list-a", quota=TokenQuota(daily_limit=1)),
+    )
+    records = await svc.list_user_records()
+    assert any(r.uid == "quota-list-a" for r in records)

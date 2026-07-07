@@ -7,9 +7,10 @@ interface Props {
   onLogout: () => void
   ui: UiStrings
   chatProcessing?: boolean
+  isAdmin?: boolean
 }
 
-export default function NavBar({ page, onNavigate, onLogout, ui, chatProcessing }: Props) {
+export default function NavBar({ page, onNavigate, onLogout, ui, chatProcessing, isAdmin }: Props) {
   return (
     <header style={styles.header}>
       <style>{`
@@ -44,6 +45,14 @@ export default function NavBar({ page, onNavigate, onLogout, ui, chatProcessing 
         >
           Kalendarz
         </button>
+        {isAdmin && (
+          <button
+            style={{ ...styles.navBtn, ...(page === 'admin' ? styles.navBtnActive : {}) }}
+            onClick={() => onNavigate('admin')}
+          >
+            Admin
+          </button>
+        )}
       </nav>
       <button style={styles.logoutBtn} onClick={onLogout}>
         {ui.logout_button ?? 'Wyloguj'}

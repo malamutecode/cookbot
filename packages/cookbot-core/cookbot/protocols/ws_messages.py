@@ -25,6 +25,7 @@ class WsMessageType(StrEnum):
     SPIZARNIA_RESPONSE = "spizarnia_response"
     CALENDAR_UPDATE = "calendar_update"
     SHOPPING_LIST_UPDATE = "shopping_list_update"
+    QUOTA_EXCEEDED = "quota_exceeded"
     ERROR = "error"
 
 
@@ -97,6 +98,13 @@ class WsOutShoppingListUpdate(BaseModel):
     items: list[str]                  # flat names — always present for backward compat
     replace: bool = False             # if True, replace all; if False, merge
     structured: ShoppingList | None = None  # structured sections when available
+
+
+class WsOutQuotaExceeded(BaseModel):
+    type: WsMessageType = WsMessageType.QUOTA_EXCEEDED
+    window: str          # "daily" | "monthly"
+    message: str         # user-facing, localized
+    resets_at: str       # ISO datetime when the exhausted window resets
 
 
 class WsOutError(BaseModel):
@@ -177,6 +185,14 @@ async def ws_send_shopping_list_update(
 
 async def ws_send_recipe_options(websocket: "WebSocket", proposals: list[RecipeSummary]) -> None:
     await websocket.send_text(WsOutRecipeOptions(proposals=proposals).model_dump_json())
+
+
+async def ws_send_quota_exceeded(
+    websocket: "WebSocket", window: str, message: str, resets_at: str
+) -> None:
+    await websocket.send_text(
+        WsOutQuotaExceeded(window=window, message=message, resets_at=resets_at).model_dump_json()
+    )
 
 
 async def ws_send_error(websocket: "WebSocket", message: str) -> None:

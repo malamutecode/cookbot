@@ -10,6 +10,40 @@ class UserProfile(BaseModel):
     created_at: datetime
 
 
+class TokenQuota(BaseModel):
+    """Per-user token budget. A limit of 0 means UNLIMITED (no cap) — an admin
+    sets a positive number to restrict a user. Metering counts total tokens
+    (input + output) summed per chat turn."""
+
+    daily_limit: int = 0    # tokens/day; 0 ⇒ unlimited
+    monthly_limit: int = 0  # tokens/month; 0 ⇒ unlimited
+
+
+class UserRecord(BaseModel):
+    """The admin-managed account record for a user, keyed by Firebase uid.
+    Distinct from UserProfile (transient identity from the ID token) — this is
+    persisted and carries role + quota."""
+
+    uid: str
+    email: str | None = None
+    role: str = "user"          # "user" | "admin"
+    quota: TokenQuota = TokenQuota()
+    disabled: bool = False
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+
+class UsageCounter(BaseModel):
+    """Accumulated token usage for one reset window. `period_key` identifies the
+    window ("2026-07-07" for a day, "2026-07" for a month); when the stored key
+    no longer matches the current period the counter is lazily reset to 0."""
+
+    period_key: str
+    tokens_used: int = 0
+
+
 class RecipeSource(BaseModel):
     url: str
     name: str         # display name, e.g. "Kwestia Smaku"

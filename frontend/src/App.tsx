@@ -7,8 +7,9 @@ import ShoppingList from './components/ShoppingList'
 import ChatPanel from './components/ChatPanel'
 import CalendarPage from './components/CalendarPage'
 import SourcesPage from './components/SourcesPage'
+import AdminPage from './components/AdminPage'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
-import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry } from './types'
+import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView } from './types'
 import { API_BASE, TEST_USER } from './config'
 import { t } from './theme'
 
@@ -39,6 +40,7 @@ export default function App() {
   const [shopItems, setShopItems] = useState<ShopItem[]>(loadShopItems)
   const [calDays, setCalDays]     = useState<CalendarDay[]>(loadCalendar)
   const [chatProcessing, setChatProcessing] = useState(false)
+  const [isAdmin, setIsAdmin]     = useState(false)
 
   const { items: spizItems, load: loadSpiz, add: addSpiz, remove: removeSpiz } = useSpizarnia(idToken)
 
@@ -64,6 +66,11 @@ export default function App() {
     setIdToken(token)
     await createSession(token)
     await loadSpiz()
+    // Resolve whether this user is an admin so the Admin tab can be shown.
+    try {
+      const me: MeView = await fetch(`${API_BASE}/v1/me`, { headers: authHeaders(token) }).then(r => r.json())
+      setIsAdmin(!!me.is_admin)
+    } catch { setIsAdmin(false) }
     setLoggedIn(true)
   }
 
@@ -80,6 +87,7 @@ export default function App() {
     setLoggedIn(false)
     setIdToken(null)
     setSessionId('')
+    setIsAdmin(false)
     setPage('chat')
   }
 
@@ -147,7 +155,7 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: t.font.sans, background: t.color.bg }}>
-      <NavBar page={page} onNavigate={setPage} onLogout={handleLogout} ui={ui} chatProcessing={chatProcessing} />
+      <NavBar page={page} onNavigate={setPage} onLogout={handleLogout} ui={ui} chatProcessing={chatProcessing} isAdmin={isAdmin} />
 
       {/* Chat page — always mounted to preserve WebSocket + message history */}
       <div style={{ flex: 1, overflow: 'hidden', display: page === 'chat' ? 'flex' : 'none' }}>
@@ -204,6 +212,13 @@ export default function App() {
           onExportToShoppingList={handleExportToShoppingList}
         />
       </div>
+
+      {/* Admin page — only rendered for admins */}
+      {isAdmin && (
+        <div style={{ flex: 1, overflow: 'hidden', display: page === 'admin' ? 'flex' : 'none', flexDirection: 'column' }}>
+          <AdminPage idToken={idToken} />
+        </div>
+      )}
     </div>
   )
 }

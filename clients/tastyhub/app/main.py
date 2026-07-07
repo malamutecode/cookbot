@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import grocery, search_prefs, sessions, shopping_list, spizarnia, ui, websocket
+from app.api import admin, grocery, search_prefs, sessions, shopping_list, spizarnia, ui, websocket
 from app.config.settings import Settings, get_settings
 from app.config.tenant import TASTYHUB_CONFIG
 
@@ -51,6 +51,7 @@ app.add_middleware(
 )
 
 app.include_router(sessions.router, prefix="/v1")
+app.include_router(admin.router, prefix="/v1")
 app.include_router(spizarnia.router, prefix="/v1")
 app.include_router(search_prefs.router, prefix="/v1")
 app.include_router(shopping_list.router, prefix="/v1")
