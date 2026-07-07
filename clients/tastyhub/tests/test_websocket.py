@@ -351,6 +351,51 @@ def test_ws_refuses_turn_over_daily_budget(
     fs.add_usage.assert_not_awaited()
 
 
+def test_ws_refuses_non_allowlisted_email(
+    client_quota_session: TestClient, valid_session_id: str
+) -> None:
+    """A valid token whose email is not on the whitelist is closed (code 4008),
+    before the chat greeting is sent."""
+    from starlette.websockets import WebSocketDisconnect as StarletteWSDisconnect
+
+    from app.config.settings import get_settings
+
+    # Token verifies with an email that is NOT on the whitelist.
+    with (
+        patch.object(get_settings(), "allowed_emails", ["allowed@example.com"]),
+        patch("firebase_admin.auth.verify_id_token",
+              return_value={"uid": _QUOTA_UID, "email": "intruder@evil.com"}),
+    ):
+        headers = {"authorization": f"Bearer token-for-{_QUOTA_UID}"}
+        with pytest.raises(StarletteWSDisconnect) as exc:
+            with client_quota_session.websocket_connect(
+                f"/v1/ws/{valid_session_id}", headers=headers
+            ) as ws:
+                ws.receive_json()  # should never arrive — connection refused
+        assert exc.value.code == 4008
+
+
+def test_ws_allows_allowlisted_email(
+    client_quota_session: TestClient, valid_session_id: str
+) -> None:
+    """A valid token whose email IS on the whitelist connects normally."""
+    from app.config.settings import get_settings
+
+    p1, p2 = _patch_chat_agent()
+    with (
+        patch.object(get_settings(), "allowed_emails", ["ok@example.com"]),
+        patch("firebase_admin.auth.verify_id_token",
+              return_value={"uid": _QUOTA_UID, "email": "ok@example.com"}),
+        p1, p2,
+    ):
+        headers = {"authorization": f"Bearer token-for-{_QUOTA_UID}"}
+        with client_quota_session.websocket_connect(
+            f"/v1/ws/{valid_session_id}", headers=headers
+        ) as ws:
+            greeting = ws.receive_json()
+            assert greeting["type"] == WsMessageType.TOKEN
+
+
 def test_ws_records_usage_after_turn(
     client_quota_session: TestClient, valid_session_id: str
 ) -> None:

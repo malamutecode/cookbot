@@ -72,10 +72,17 @@ class Settings(BaseSettings):
     default_monthly_token_limit: int = 0     # 0 ⇒ unlimited
     quota_timezone: str = "Europe/Warsaw"    # day/month boundaries for resets
 
+    # Access whitelist: only these may authenticate. Entries are either an exact
+    # email ("a@x.com") or a whole domain ("@example.com"). EMPTY = allow anyone
+    # who has a valid Firebase token (open sign-in). This is the real access gate
+    # (CORS only stops other browsers, not scripts) — see DEPLOY.md.
+    allowed_emails: Annotated[list[str], NoDecode] = []
+
     # Accept comma-separated env strings for list fields (Cloud Run --set-env-vars
     # passes plain strings, not JSON). See _split_csv.
     _split_origins = field_validator("allowed_origins", mode="before")(_split_csv)
     _split_admins = field_validator("admin_uids", mode="before")(_split_csv)
+    _split_emails = field_validator("allowed_emails", mode="before")(_split_csv)
 
 
 @lru_cache

@@ -44,6 +44,7 @@ from cookbot.protocols.ws_messages import (
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
+from app.auth_policy import email_allowed
 from app.config.settings import get_settings
 
 log = structlog.get_logger()
@@ -157,6 +158,7 @@ async def websocket_endpoint(
         uid = x_dev_uid
     elif auth_header.startswith("Bearer "):
         token = auth_header.removeprefix("Bearer ").strip()
+        email: str = ""
         try:
             import firebase_admin.auth
 
@@ -164,10 +166,18 @@ async def websocket_endpoint(
             _get_firebase_app()
             decoded = firebase_admin.auth.verify_id_token(token)
             uid = decoded["uid"]
+            email = decoded.get("email", "")
         except Exception as exc:
             # Invalid/expired token → stay unauthenticated (uid=None), but don't
             # swallow silently: log so auth failures are diagnosable.
             log.warning("ws_token_verify_failed", error=str(exc))
+        # Access whitelist (empty ⇒ open) — a valid token for a non-allowed email
+        # is refused before the connection is accepted. Only enforced when the
+        # token verified (uid is set); a failed verify already left uid=None.
+        if uid is not None and not email_allowed(email, settings.allowed_emails):
+            log.warning("ws_email_not_allowed", uid=uid)
+            await websocket.close(code=4008)
+            return
 
     if session.uid is not None and uid != session.uid:
         await websocket.close(code=4001)

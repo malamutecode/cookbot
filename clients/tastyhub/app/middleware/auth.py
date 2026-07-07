@@ -7,6 +7,7 @@ from cookbot.models.tenant import TenantConfig
 from cookbot.models.user import UserProfile, UserRecord
 from fastapi import Depends, Header, HTTPException, Request, status
 
+from app.auth_policy import email_allowed
 from app.config.settings import get_settings
 from app.config.tenant import TASTYHUB_CONFIG
 
@@ -63,10 +64,20 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+
+    email = decoded.get("email", "")
+    # Access whitelist (empty ⇒ open). A valid token for a non-allowed email is
+    # authenticated but not authorized — 403, not 401.
+    if not email_allowed(email, settings.allowed_emails):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not allowed to access the app.",
+        )
+
     return UserProfile(
         uid=decoded["uid"],
         display_name=decoded.get("name", ""),
-        email=decoded.get("email", ""),
+        email=email,
         created_at=datetime.now(UTC),
     )
 

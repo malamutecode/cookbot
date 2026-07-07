@@ -174,6 +174,7 @@ Run from the **repo root** (the build context must be the root — the client's
 gcloud builds submit --config clients/tastyhub/cloudbuild.yaml \
   --substitutions=_REGION=$REGION,_AR_REPO=$AR_REPO,_SERVICE=$SERVICE,\
 _ALLOWED_ORIGINS="https://feedek.web.app,https://feedek.firebaseapp.com",\
+_ALLOWED_EMAILS="pawe213@gmail.com",\
 _ADMIN_UIDS="$ADMIN_UID",\
 _DEFAULT_DAILY_TOKEN_LIMIT="1000000",\
 _DEFAULT_MONTHLY_TOKEN_LIMIT="10000000"
@@ -181,6 +182,12 @@ _DEFAULT_MONTHLY_TOKEN_LIMIT="10000000"
 
 - `_ADMIN_UIDS` — the uid from step 5b (`$ADMIN_UID`), so your first login becomes
   an admin. You can seed several, comma-separated.
+- `_ALLOWED_EMAILS` — **the access whitelist.** Only these may log in and use the
+  app (checked after Firebase token verification, on REST *and* WebSocket). Each
+  entry is an exact email (`a@x.com`) or a whole domain (`@yourco.com`), comma-
+  separated. **Empty = open sign-in** (anyone with a valid Firebase account). This
+  is the real access gate — CORS/`_ALLOWED_ORIGINS` only stops other *browsers*,
+  not scripts. Start with just your email; add more or a domain later + redeploy.
 - `_ALLOWED_ORIGINS` — the Firebase Hosting domains (adjust to your real hosting
   site id). Before the frontend exists you can smoke-test with `"*"`.
 
@@ -198,11 +205,15 @@ docker build -f clients/tastyhub/Dockerfile -t "$IMAGE" .
 docker push "$IMAGE"
 gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" \
   --allow-unauthenticated --port=8080 --cpu=1 --memory=1Gi \
-  --min-instances=0 --max-instances=4 --timeout=3600 --concurrency=40 \
+  --min-instances=0 --max-instances=1 --timeout=3600 --concurrency=40 \
   --labels=client_id=tastyhub,app=cookbot \
   --set-secrets=OPENAI_API_KEY=openai-key:latest,API_KEY=api-key:latest \
-  --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,FIRESTORE_DATABASE='(default)',TENANT_ID=tastyhub,ALLOWED_ORIGINS='*',ADMIN_UIDS='',DEFAULT_DAILY_TOKEN_LIMIT=1000000,DEFAULT_MONTHLY_TOKEN_LIMIT=10000000,QUOTA_TIMEZONE=Europe/Warsaw,LOG_LEVEL=INFO
+  --set-env-vars="^;^GOOGLE_CLOUD_PROJECT=$PROJECT_ID;FIRESTORE_DATABASE=(default);TENANT_ID=tastyhub;ALLOWED_ORIGINS=*;ALLOWED_EMAILS=pawe213@gmail.com;ADMIN_UIDS=$ADMIN_UID;DEFAULT_DAILY_TOKEN_LIMIT=1000000;DEFAULT_MONTHLY_TOKEN_LIMIT=10000000;QUOTA_TIMEZONE=Europe/Warsaw;LOG_LEVEL=INFO"
 ```
+> The `^;^` prefix makes `;` the KEY=VALUE delimiter, so commas inside list values
+> (ALLOWED_ORIGINS, ALLOWED_EMAILS, ADMIN_UIDS) stay intact. Do **not** use `@` as
+> the delimiter — emails contain `@`. Multiple whitelisted emails go comma-separated
+> inside the value: `ALLOWED_EMAILS=a@x.com,b@y.com`.
 
 ---
 

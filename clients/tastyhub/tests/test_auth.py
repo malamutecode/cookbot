@@ -91,6 +91,65 @@ async def test_get_current_user_missing_bearer_scheme():
 
 
 # ---------------------------------------------------------------------------
+# Access whitelist (allowed_emails) — enforced in get_current_user
+# ---------------------------------------------------------------------------
+
+def _patch_allowed_emails(emails: list[str]):
+    """Patch the cached Settings.allowed_emails used by get_current_user."""
+    from app.config.settings import get_settings
+
+    return patch.object(get_settings(), "allowed_emails", emails)
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_email_not_allowed_is_403():
+    from fastapi import HTTPException
+
+    from app.middleware.auth import get_current_user
+
+    decoded = _make_decoded()  # email test@example.com
+    with (
+        _patch_allowed_emails(["allowed@example.com"]),
+        patch("app.middleware.auth._get_firebase_app"),
+        patch("firebase_admin.auth.verify_id_token", return_value=decoded),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await get_current_user(authorization="Bearer valid.token")
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_email_allowed_passes():
+    from app.middleware.auth import get_current_user
+
+    decoded = _make_decoded()  # email test@example.com
+    with (
+        _patch_allowed_emails(["test@example.com"]),
+        patch("app.middleware.auth._get_firebase_app"),
+        patch("firebase_admin.auth.verify_id_token", return_value=decoded),
+    ):
+        profile = await get_current_user(authorization="Bearer valid.token")
+
+    assert profile.email == "test@example.com"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_empty_whitelist_allows_all():
+    from app.middleware.auth import get_current_user
+
+    decoded = _make_decoded()
+    with (
+        _patch_allowed_emails([]),  # open
+        patch("app.middleware.auth._get_firebase_app"),
+        patch("firebase_admin.auth.verify_id_token", return_value=decoded),
+    ):
+        profile = await get_current_user(authorization="Bearer valid.token")
+
+    assert profile.uid == "user-123"
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/sessions — dual-auth tests
 # ---------------------------------------------------------------------------
 

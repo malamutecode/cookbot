@@ -258,6 +258,10 @@ DEFAULT_DAILY_TOKEN_LIMIT=0          # per-user daily token budget a new user in
 DEFAULT_MONTHLY_TOKEN_LIMIT=0        # per-user monthly token budget; 0 = unlimited
 QUOTA_TIMEZONE=Europe/Warsaw         # day/month boundaries for quota resets
 
+# Access whitelist + CORS
+ALLOWED_EMAILS=                      # who may log in: exact emails or @domains, comma-sep; EMPTY = open. Checked after token verify (REST + WS)
+ALLOWED_ORIGINS=*                    # browser origins for CORS/WebSocket; comma-sep; set to the Firebase Hosting domain(s) in prod
+
 # Per-agent model selection (see .env.example for the rationale per agent)
 MODEL_CHAT=gpt-4o-mini
 MODEL_SHOPPING_LIST=gpt-4o-mini

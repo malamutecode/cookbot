@@ -21,6 +21,9 @@ substitutions:
   _ALLOWED_ORIGINS: "*"
   # Firebase uids seeded as admins (comma-separated). Set to YOUR uid.
   _ADMIN_UIDS: ""
+  # Access whitelist (comma-separated). Each entry is an exact email or a whole
+  # domain (@example.com). EMPTY = open sign-in. Set to your email to lock access.
+  _ALLOWED_EMAILS: ""
   _DEFAULT_DAILY_TOKEN_LIMIT: "1000000"
   _DEFAULT_MONTHLY_TOKEN_LIMIT: "10000000"
 
@@ -82,7 +85,10 @@ steps:
       - --concurrency=40
       - --labels=client_id=tastyhub,app=cookbot
       - --set-secrets=OPENAI_API_KEY=openai-key:latest,API_KEY=api-key:latest
+      # `^;^` sets ; as the var delimiter so commas INSIDE values (ALLOWED_ORIGINS,
+      # ALLOWED_EMAILS, ADMIN_UIDS are comma-separated lists) aren't split by gcloud.
+      # NB: do NOT use @ as the delimiter — emails contain @ and would be mangled.
       - >-
-        --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},FIRESTORE_DATABASE=(default),TENANT_ID=tastyhub,ALLOWED_ORIGINS=${_ALLOWED_ORIGINS},ADMIN_UIDS=${_ADMIN_UIDS},DEFAULT_DAILY_TOKEN_LIMIT=${_DEFAULT_DAILY_TOKEN_LIMIT},DEFAULT_MONTHLY_TOKEN_LIMIT=${_DEFAULT_MONTHLY_TOKEN_LIMIT},QUOTA_TIMEZONE=Europe/Warsaw,LOG_LEVEL=INFO
+        --set-env-vars=^;^GOOGLE_CLOUD_PROJECT=${PROJECT_ID};FIRESTORE_DATABASE=(default);TENANT_ID=tastyhub;ALLOWED_ORIGINS=${_ALLOWED_ORIGINS};ALLOWED_EMAILS=${_ALLOWED_EMAILS};ADMIN_UIDS=${_ADMIN_UIDS};DEFAULT_DAILY_TOKEN_LIMIT=${_DEFAULT_DAILY_TOKEN_LIMIT};DEFAULT_MONTHLY_TOKEN_LIMIT=${_DEFAULT_MONTHLY_TOKEN_LIMIT};QUOTA_TIMEZONE=Europe/Warsaw;LOG_LEVEL=INFO
 
 timeout: 1200s
