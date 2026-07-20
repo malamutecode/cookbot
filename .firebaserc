@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "REPLACE_WITH_YOUR_FIREBASE_PROJECT_ID"
-  }
+    "default": "feedek",
+    "dev": "feedek"
+  },
+  "targets": {},
+  "etags": {}
 }

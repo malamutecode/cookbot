@@ -19,7 +19,7 @@ project — decide whether prod reuses it or is a new project).
 export PROJECT_ID=<YOUR_PROJECT_ID>          # e.g. feedek-prod
 export REGION=europe-west1
 export AR_REPO=feedek                         # Artifact Registry repo name
-export SERVICE=cookbot-tastyhub               # Cloud Run service name
+export SERVICE=cookbot              # Cloud Run service name
 
 gcloud config set project "$PROJECT_ID"
 gcloud auth login          # if not already authenticated
@@ -172,13 +172,13 @@ Run from the **repo root** (the build context must be the root — the client's
 
 ```bash
 gcloud builds submit --config clients/tastyhub/cloudbuild.yaml \
-  --substitutions=_REGION=$REGION,_AR_REPO=$AR_REPO,_SERVICE=$SERVICE,\
-_ALLOWED_ORIGINS="https://feedek.web.app,https://feedek.firebaseapp.com",\
-_ALLOWED_EMAILS="pawe213@gmail.com",\
-_ADMIN_UIDS="$ADMIN_UID",\
-_DEFAULT_DAILY_TOKEN_LIMIT="1000000",\
-_DEFAULT_MONTHLY_TOKEN_LIMIT="10000000"
+  --substitutions="^;^_REGION=$REGION;_AR_REPO=$AR_REPO;_SERVICE=$SERVICE;_ALLOWED_ORIGINS=https://feedek.web.app,https://feedek.firebaseapp.com;_ALLOWED_EMAILS=pawe213@gmail.com;_ADMIN_UIDS=$ADMIN_UID;_DEFAULT_DAILY_TOKEN_LIMIT=1000000;_DEFAULT_MONTHLY_TOKEN_LIMIT=10000000"
 ```
+> `--substitutions` always splits on `,`, so a value containing a literal comma
+> (like `_ALLOWED_ORIGINS`'s two URLs) breaks the default parser no matter how
+> you quote it. The `^;^` prefix switches the KEY=VALUE delimiter to `;` instead,
+> so commas inside values stay intact. Keep this on one line — a backslash-comma
+> line continuation (as in earlier revisions of this doc) reintroduces the bug.
 
 - `_ADMIN_UIDS` — the uid from step 5b (`$ADMIN_UID`), so your first login becomes
   an admin. You can seed several, comma-separated.
