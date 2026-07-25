@@ -23,6 +23,7 @@ Sub-agents (stateless, one LLM call each)
 """
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -222,6 +223,11 @@ class ChatAgentDeps:
     preferred_sites: list[str] = field(default_factory=list)  # soft-prefer domains (sites_and_internet mode)
     allow_ai_generated: bool = True                    # when False, skip RecipeGenAgent fallback
 
+    # Raw text of the user's current message, set by stream_chat_response before
+    # the run. Tools use it to recover EXACT literals the model may have retyped
+    # inexactly — notably pasted URLs (see _url_from_user_message).
+    current_user_message: str = ""
+
     # ── 3. Per-turn output (cleared by reset_turn) ────────────────────────────
     # Ordered side-effects, appended by tools in call order, drained by the WS handler.
     events: list[TurnEvent] = field(default_factory=list)
@@ -279,6 +285,42 @@ def restore_chat_state(
     deps.last_recipe = state.last_recipe
     deps.last_proposals = state.last_proposals
     return list(ModelMessagesTypeAdapter.validate_json(state.messages_json))
+
+
+# ── URL recovery ──────────────────────────────────────────────────────────────
+
+_URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
+
+
+def _url_from_user_message(model_url: str, user_message: str) -> str:
+    """Prefer the URL as the USER actually typed it over the model's retyped one.
+
+    A tool's `url` argument is generated text: the LLM re-types the link token by
+    token and can corrupt long slugs. Observed live on the chilitonka curry post,
+    where "...chlebkiem-naan/" came back as "...chlebkiem-naaan/" — a 404, so the
+    extraction failed and the user was told the page had no recipe.
+
+    When the user's message contains exactly one URL we trust that literal. With
+    several links we pick the one closest to what the model produced (longest
+    common prefix) so multi-link messages still resolve sensibly, and fall back
+    to the model's string when the message has no URL at all (e.g. the link came
+    from an earlier turn).
+    """
+    candidates = _URL_RE.findall(user_message or "")
+    if not candidates:
+        return model_url
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def _shared_prefix(candidate: str) -> int:
+        n = 0
+        for a, b in zip(candidate, model_url):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    return max(candidates, key=_shared_prefix)
 
 
 # ── Date normalisation ────────────────────────────────────────────────────────
@@ -405,7 +447,9 @@ async def resolve_recipe(
             # Do NOT fall back to a name-search here: returning a recipe from a
             # different site would mis-attribute it (wrong recipe under a wrong
             # "source" link). If both attempts fail, fall through to AI generation.
-            fetch_agent = _cached_agent(agent_cache, "web_fetch", build_web_fetch_agent, config)
+            # Pin the proposal's URL into the fetch tool: the model retyping a long
+            # slug into the tool argument corrupts it and 404s. Per-URL, so not cached.
+            fetch_agent = build_web_fetch_agent(config, pinned_url=selected.source_url)
             for attempt in (1, 2):
                 log.info("get_recipe_details_fetch_known_url",
                          url=selected.source_url, attempt=attempt)
@@ -912,7 +956,13 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         calendar. Do not call propose_recipes or run onboarding for a pasted link.
         """
         cfg: TenantConfig = ctx.deps.config
-        fetch_agent = _cached_agent(sub_agents, "web_fetch", build_web_fetch_agent, cfg)
+        # The model retypes the URL into this argument and can corrupt long slugs,
+        # producing a 404 and a bogus "page has no recipe". Recover the literal the
+        # user actually pasted whenever this turn's message contains one.
+        url = _url_from_user_message(url, ctx.deps.current_user_message)
+        # Pin the URL into the tool so the sub-agent cannot retype (and corrupt)
+        # it either. Per-URL agent, so deliberately NOT cached.
+        fetch_agent = build_web_fetch_agent(cfg, pinned_url=url)
         recipe: Recipe | None = None
         try:
             # Extraction is occasionally flaky — retry once before giving up.
@@ -947,6 +997,24 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # the extractor didn't capture one.
         if not recipe.source_url:
             recipe.source_url = url
+
+        # Scaling is a SEPARATE step from the verbatim extraction above (Rule 5).
+        # The page states its OWN serving count; the user may want a different
+        # number ("dla 4 osób"). Only when the two differ do we rescale — and
+        # original_servings records what the page said, so the recipe card and the
+        # shopping list can tell "this recipe is for N" from "you asked for M".
+        target_servings = ctx.deps.onboarding.servings or 0
+        if target_servings > 0:
+            scale_agent = _cached_agent(sub_agents, "recipe_scale", build_recipe_scale_agent, cfg)
+            before = recipe.servings
+            recipe = await scale_recipe_to_servings(
+                recipe, target_servings, agent=scale_agent, usage=ctx.usage,
+            )
+            if recipe.servings != before:
+                log.info("get_recipe_from_url_scaled", url=url,
+                         original_servings=recipe.original_servings,
+                         target_servings=recipe.servings)
+
         found = FoundRecipe(recipe=recipe, source="web_search")
         ctx.deps.last_recipe = found                 # durable — used by add_to_calendar
         ctx.deps.last_proposals = []                 # a pasted link isn't a selection
@@ -1062,6 +1130,9 @@ async def stream_chat_response(
     tenant's UsageLimits so a runaway tool loop cannot burn unbounded tokens.
     """
     config = deps.config
+    # Expose the raw message to tools so they can recover exact literals (URLs)
+    # rather than trusting the model's retyped tool arguments.
+    deps.current_user_message = user_message
     usage_limits = UsageLimits(
         request_limit=config.usage_request_limit,
         total_tokens_limit=config.usage_total_tokens_limit,

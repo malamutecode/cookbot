@@ -56,7 +56,7 @@ the ChatAgent coordinates them.
 |---|---|---|---|
 | RecipeOptionsAgent | `recipe_options.py` / `build_recipe_options_agent` | `list[RecipeSummary]` (4) | Mix of web-found + AI variations (web-only when AI disabled) |
 | WebSearchAgent | `web_search.py` / `build_web_search_agent` | `Recipe \| None` | DDG search → fetch → extract; never invents content |
-| WebFetchAgent | `web_search.py` / `build_web_fetch_agent` | `Recipe \| None` | Fetch a known URL → extract VERBATIM (no scaling; skips re-search) |
+| WebFetchAgent | `web_search.py` / `build_web_fetch_agent` | `Recipe \| None` | Fetch a known URL → extract VERBATIM (no scaling; skips re-search). Build it with `pinned_url=` — see "Fetching a known URL" below |
 | RecipeGenAgent | `recipe_gen.py` / `build_recipe_gen_agent` | `Recipe` | Generate a recipe only when allowed and web search found nothing |
 | RecipeScaleAgent | `recipe_scale.py` / `build_recipe_scale_agent` | `ScaledIngredients` | Scale a web recipe's quantities to the user's servings — SEPARATE from extraction |
 | ShoppingListAgent | `shopping_list.py` / `build_shopping_list_agent` | `ShoppingList` | Dedup, sum quantities, group by shop section |
@@ -67,6 +67,31 @@ converter (szklanka/łyżka/łyżeczka → ml/g) exposed to the ShoppingListAgen
 **tool**, because the LLM got fractional-cup arithmetic wrong ("1/3 szklanki" →
 150 ml instead of 80 ml). The model normalises amounts by CALLING this code, never
 by guessing. Never move this math into a prompt.
+
+## Fetching a known URL (two failure modes, both fixed — don't regress them)
+
+When the page is already known (a pasted link, or a proposal's `source_url`),
+build the fetch agent as `build_web_fetch_agent(config, pinned_url=<url>)` and do
+**not** cache it (`_cached_agent`) — a pinned agent is per-URL.
+
+1. **Never let the model retype a URL.** Tool arguments are generated text: asked
+   to fetch a long slug the model corrupts it. Observed live on the chilitonka
+   curry post — `.../chlebkiem-naan/` came back as `-naaan/` from the ChatAgent
+   and `-na-nan/` from the fetch sub-agent, both 404 → `None` → the user was told
+   "this page has no recipe". Two defences, both needed because the URL crosses
+   two LLM hops: `_url_from_user_message()` (chat.py) recovers the literal the
+   user pasted from `deps.current_user_message`, and `pinned_url` makes the fetch
+   tool ignore its `url` argument entirely.
+2. **Strip `<script>`/`<style>` before the markdown conversion.** markdownify's
+   `strip=[...]` removes the *tags* but keeps their *text*, so inline CSS/JS lands
+   in the markdown and eats the `_MAX_PAGE_CONTENT` budget. That page converted to
+   ~238k chars with the recipe starting at ~68.5k — past the cap, so the extractor
+   saw only boilerplate. `recipe_web_fetch_tool` (web_search.py) cleans the HTML
+   first, cutting it to ~82k with the ingredients at ~5.1k. Use that tool, never
+   PydanticAI's `web_fetch_tool` directly, and prefer cleaning over raising the cap.
+
+Servings: extraction records the page's OWN count; scaling to the user's target is
+separate (see Rule 5) and runs in `resolve_recipe` **and** `get_recipe_from_url`.
 
 ## State model
 

@@ -282,6 +282,149 @@ cd frontend && npx tsc --noEmit && npm test
 
 ---
 
+## STEP 45 ★ — Multi-recipe pages: ask whether to split
+
+**Goal:** When a fetched page contains more than one recipe, stop silently
+merging them. Ask the user whether to keep them as one recipe or split them into
+separate ones — unless the extra recipe is a small *component* (a sauce, a
+dressing, a marinade), which should stay folded into the main recipe without
+asking.
+
+### Why (found live, 2026-07-25)
+
+`chilitonka.com/.../prawdopodobnie-najlepsze-curry-...-chlebkiem-naan/` hosts
+**two independent recipes** under one URL: the curry ("Składniki dla 4 osób")
+and naan bread ("Składniki na 8 porcji"). Extraction is faithful per
+`agents/CLAUDE.md` Rule 5, so it correctly captures everything — and returns a
+single `Recipe` with **21 ingredients and 17 steps** whose `servings=4`.
+
+Two things then go wrong downstream:
+- **The shopping list is wrong.** A 4-person curry request also buys 8 portions
+  of naan (500 g flour, 110 g butter, yeast) with no indication why.
+- **`servings` is ambiguous.** One integer cannot describe "curry for 4 + bread
+  for 8", so scaling to a different serving count silently rescales both by the
+  curry's ratio.
+
+This is *not* an extraction bug — do not "fix" it by teaching the extractor to
+drop the second recipe. The page really does contain both; the product question
+is what the user wants, which only the user can answer.
+
+### Design decisions to settle before coding
+
+- **Component vs. standalone.** A second ingredient block is a *component* (fold
+  in silently) when it has no serving count of its own, or its serving count
+  matches the main recipe, or its heading names a part of the dish
+  (sos/dressing/marynata/polewa/krem/farsz). It is *standalone* (ask) when it has
+  its own distinct serving count — as naan does with "na 8 porcji" — and reads as
+  a dish that could be cooked alone. Prefer this heuristic over an
+  ingredient-count threshold: "8 porcji" is the signal that actually
+  distinguished the two blocks here.
+- **Where the split decision lives.** Extraction must stay verbatim, so the
+  extractor's job is only to *report* the blocks it saw; the ChatAgent decides
+  whether to ask. Likely shape: the fetch agent gains an optional
+  `components: list[RecipeComponent]` (name + servings + ingredients + steps) on
+  its output, and a ChatAgent tool asks the user when >1 standalone block came
+  back. Confirm this against `agents/CLAUDE.md` Rule 1 (new capability = a
+  ChatAgent tool) before implementing.
+- **How the question reaches the user.** There is no generic "ask the user a
+  question" event today — the ChatAgent asks in prose and reads the next turn's
+  reply. Decide whether that is enough (cheapest, matches guided onboarding) or
+  whether this needs a typed choice event + a frontend affordance. Note the
+  reply must survive a reconnect: whatever holds the pending question must be in
+  the `ChatState` snapshot (Architecture Rule 3), not a module global.
+- **What "split" produces.** Two `FinalRecipeEvent`s / two calendar entries, or
+  one primary recipe plus a linked side? This decides whether `add_to_calendar`
+  needs to handle a set. Both keep the same `source_url` (Rule 5).
+
+### Acceptance criteria
+
+- [ ] A page with one recipe behaves exactly as today — **no question asked**,
+      no extra LLM call on the common path.
+- [ ] A page whose second block is a sauce/dressing (no own serving count) folds
+      into the main recipe silently, as today.
+- [ ] The chilitonka curry+naan page asks the user which they want.
+- [ ] Choosing "split" yields a curry recipe with `servings=4` whose ingredients
+      contain no flour/yeast, and a separate naan recipe with `servings=8`.
+- [ ] Choosing "keep together" reproduces today's merged behaviour.
+- [ ] The shopping list for a 4-person curry contains no naan ingredients once
+      split.
+- [ ] `source_url` is preserved on every recipe produced (Rule 5).
+- [ ] Unit tests with `TestModel` for the component-vs-standalone heuristic
+      (pure function — test it directly, no LLM).
+- [ ] Live e2e extending
+      `tests/integration/test_url_servings_calendar_live.py`, which already pins
+      this page and currently asserts the merged 21-ingredient behaviour —
+      **update those assertions in the same commit.**
+
+### Verify
+
+```bash
+cd packages/cookbot-core && uv run pytest -m "not integration" -q
+cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_url_servings_calendar_live.py -q
+cd clients/tastyhub     && uv run pytest -q
+uv run ruff check . --fix && uv run pyright
+```
+
+---
+
+## STEP 46 — Fix `test_direct_recipe_request_skips_onboarding`
+
+**Goal:** Make the failing live e2e test pass, or correct the assertion if the
+test is wrong about what the product should do.
+
+### Current state (verified 2026-07-25)
+
+`tests/integration/test_chat_e2e_live.py::test_direct_recipe_request_skips_onboarding`
+fails on `assert deps.onboarding.dish_type` — the field is `None` after the turn.
+**Pre-existing, not caused by the STEP 45 work**: confirmed by stashing all local
+changes and re-running against a clean tree, where it fails identically.
+
+What actually happens on "Przepis na halloumi dla 2 osób":
+- The agent **does** skip onboarding and go straight to proposals — 4 real
+  `web_search` proposals come back, which is the behaviour the test is named for.
+- But it reaches them **without calling `update_onboarding`**, so
+  `deps.onboarding` stays entirely empty (`dish_type`, `servings` both `None`).
+
+So the routing works and the *state recording* does not.
+
+### The real question to settle first
+
+Is the empty `onboarding` a bug, or is the assertion too strict?
+
+It matters beyond this test: `deps.onboarding.servings` is what
+`get_recipe_from_url` and `resolve_recipe` scale to. If a direct request never
+records `servings=2`, a later "dodaj do kalendarza" for that dish scales to the
+`or 2` default by luck rather than by the user's stated "dla 2 osób" — ask for 6
+and the recipe silently stays at 2. Check that path before weakening the test.
+
+Likely fix: make the system prompt require `update_onboarding` alongside
+`propose_recipes` on a direct request (§0b currently tells the model to skip the
+*questions*, which gpt-4o-mini reads as "skip the tool"). Prefer a prompt fix to
+a code workaround, but if the model stays unreliable, extracting dish/servings
+from the request into `deps` in the `propose_recipes` tool is a legitimate
+deterministic fallback.
+
+### Acceptance criteria
+
+- [ ] Root cause stated in one line in the commit message: prompt, tool wiring,
+      or over-strict assertion.
+- [ ] A direct "dla N osób" request results in `deps.onboarding.servings == N`,
+      **or** the test is changed with a comment explaining why that is not
+      required and the scaling path is shown to be unaffected.
+- [ ] `test_direct_recipe_request_skips_onboarding` passes on 3 consecutive runs
+      (live tests are flaky by nature — one green run proves nothing).
+- [ ] No regression in `test_full_onboarding_to_web_recipe`, which depends on the
+      guided path still filling the same fields turn by turn.
+
+### Verify
+
+```bash
+cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_chat_e2e_live.py -q
+cd packages/cookbot-core && uv run pytest -m "not integration" -q
+```
+
+---
+
 # PHASE 4 — DEFERRED
 
 Do not implement until Phase 3 is live in production.

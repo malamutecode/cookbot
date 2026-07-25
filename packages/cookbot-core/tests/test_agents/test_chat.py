@@ -524,7 +524,8 @@ def _stub_agent_factory(output):
             calls.append(1)
             return MagicMock(output=output)
 
-    return (lambda _config: _Stub()), calls
+    # Accepts the optional kwargs real factories take (e.g. pinned_url).
+    return (lambda _config, **_kw: _Stub()), calls
 
 
 async def test_resolve_recipe_fetches_known_url() -> None:
@@ -620,7 +621,7 @@ async def test_resolve_recipe_known_url_fetch_retries_then_succeeds() -> None:
     def _gen_boom(_config):  # noqa: ANN202
         raise AssertionError("must not AI-generate when the retry succeeds")
 
-    with patch("cookbot.agents.chat.build_web_fetch_agent", lambda _c: _FlakyFetch()), \
+    with patch("cookbot.agents.chat.build_web_fetch_agent", lambda _c, **_kw: _FlakyFetch()), \
          patch("cookbot.agents.chat.build_recipe_gen_agent", _gen_boom):
         found = await resolve_recipe(
             selected, "1", OnboardingState(servings=2),
@@ -1076,3 +1077,42 @@ async def test_stream_chat_response_yields_tokens() -> None:
     assert all(isinstance(t, str) for t in tokens)
     # history should be updated after the block
     assert len(history) > 0
+
+
+# ── _url_from_user_message ────────────────────────────────────────────────────
+# The model retypes a pasted URL into the tool argument and can corrupt long
+# slugs (observed live: ".../chlebkiem-naan/" → ".../chlebkiem-naaan/", a 404
+# that surfaced to the user as "this page has no recipe"). The user's own message
+# is the source of truth for the link.
+
+def test_url_recovered_from_user_message_when_model_mistypes() -> None:
+    from cookbot.agents.chat import _url_from_user_message
+
+    real = "https://chilitonka.com/2013/09/07/prawdopodobnie-najlepsze-curry-naan/"
+    typo = "https://chilitonka.com/2013/09/07/prawdopodobnie-najlepsze-curry-naaan/"
+    assert _url_from_user_message(typo, f"Dodaj przepis dla 4 osób z {real}") == real
+
+
+def test_url_falls_back_to_model_arg_when_message_has_no_url() -> None:
+    from cookbot.agents.chat import _url_from_user_message
+
+    model_url = "https://example.com/przepis"
+    # Link came from an earlier turn — nothing to recover from this message.
+    assert _url_from_user_message(model_url, "dodaj to do kalendarza") == model_url
+
+
+def test_url_picks_closest_match_when_message_has_several() -> None:
+    from cookbot.agents.chat import _url_from_user_message
+
+    a = "https://aniagotuje.pl/przepis/makaron"
+    b = "https://chilitonka.com/2013/09/07/curry-naan/"
+    msg = f"Wolę ten {a} albo ten {b}"
+    # The model was clearly aiming at the chilitonka one (mistyped slug).
+    assert _url_from_user_message("https://chilitonka.com/2013/09/07/curry-naaan/", msg) == b
+
+
+def test_url_trailing_punctuation_not_swallowed() -> None:
+    from cookbot.agents.chat import _url_from_user_message
+
+    url = "https://chilitonka.com/curry-naan/"
+    assert _url_from_user_message(url, f"Zrób to z {url} (dla 4 osób)") == url

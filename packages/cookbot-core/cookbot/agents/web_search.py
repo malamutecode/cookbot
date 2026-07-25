@@ -1,11 +1,20 @@
+import re
+
+import httpx
+from markdownify import markdownify as md
 from pydantic_ai import Agent
+from pydantic_ai._ssrf import safe_download
 from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
-from pydantic_ai.common_tools.web_fetch import web_fetch_tool
+from pydantic_ai.common_tools.web_fetch import WebFetchLocalTool, WebFetchResult
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.messages import BinaryContent
+from pydantic_ai.tools import Tool
 
 from cookbot.models.recipe import ParsedIngredients, Recipe, UserIntent
 from cookbot.models.tenant import TenantConfig
 
 _WEB_SEARCH_MAX_RESULTS = 5
+_FETCH_TIMEOUT_SECONDS = 30
 # Recipe pages carry heavy nav/menu/related-recipe markup BEFORE the recipe.
 # Measured: kwestiasmaku.com "makaron ze szpinakiem" fetches to ~40k chars of
 # markdown, and the ingredient list ("Składniki", incl. cebula + the 150 g
@@ -16,6 +25,87 @@ _WEB_SEARCH_MAX_RESULTS = 5
 # pages with headroom; ~16k tokens is well within model context and TPM limits.
 # If a page is still truncated, raise this rather than accept a fabricated recipe.
 _MAX_PAGE_CONTENT = 48_000
+
+# markdownify's `strip=[...]` removes the TAGS but keeps their TEXT, so inline
+# <style>/<script> bodies survive as raw CSS/JS in the markdown. On WordPress
+# blogs that is enormous: chilitonka.com's curry post converts to ~238k chars of
+# markdown, of which a single inline stylesheet is ~25k and a GlotPress
+# translation blob ~69k. The recipe ("Składniki dla 4 osób") only began at char
+# ~68.5k — far past _MAX_PAGE_CONTENT, so the fetch truncated the ENTIRE recipe
+# away and the extractor saw nothing but boilerplate.
+#
+# Removing these elements (content included) before the markdown conversion cuts
+# that page to ~82k chars and moves the ingredient list to ~5.1k, comfortably
+# inside the cap. This is a pre-processing fix, not a bigger cap: raising the cap
+# alone would just spend tokens on minified CSS.
+_HTML_NOISE_RE = re.compile(
+    r"<(script|style|noscript|svg|template|iframe)\b[^>]*>.*?</\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXCESS_NEWLINES_RE = re.compile(r"\n{3,}")
+
+
+def _strip_html_noise(html: str) -> str:
+    """Drop <script>/<style>/etc. elements *including their text content*."""
+    return _HTML_NOISE_RE.sub(" ", html)
+
+
+def recipe_web_fetch_tool(
+    max_content_length: int = _MAX_PAGE_CONTENT,
+    pinned_url: str | None = None,
+) -> Tool[None]:
+    """`web_fetch` that strips script/style noise BEFORE markdown conversion.
+
+    Same contract as PydanticAI's `web_fetch_tool` (and the same SSRF-protected
+    downloader), but for HTML we clean the source before converting to markdown,
+    then truncate — so the character budget is spent on the recipe rather than on
+    inline CSS/JS. Non-HTML responses fall through to the stock tool.
+
+    `pinned_url` forces every fetch to that exact URL, ignoring the model's
+    argument. Tool arguments are GENERATED TEXT: asked to fetch a long slug the
+    model retypes it and drops characters — observed live on the chilitonka curry
+    post as ".../chlebkiem-naan/" → ".../chlebkiem-na-nan/", a 404 that made
+    extraction return null and told the user the page had no recipe. When the
+    caller already knows the exact URL there is nothing for the model to decide,
+    so we pin it rather than hope the retype is faithful.
+    """
+    stock = WebFetchLocalTool(
+        max_content_length=max_content_length,
+        allow_local_urls=False,
+        timeout=_FETCH_TIMEOUT_SECONDS,
+    )
+
+    async def web_fetch(url: str) -> WebFetchResult | BinaryContent:
+        """Fetch the content of a web page at the given URL and return it as markdown."""
+        if pinned_url:
+            url = pinned_url
+        try:
+            response = await safe_download(
+                url,
+                allow_local=False,
+                timeout=_FETCH_TIMEOUT_SECONDS,
+                headers={"Accept": "text/markdown, text/html;q=0.9, */*;q=0.8"},
+            )
+        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+            raise ModelRetry(f"Failed to fetch {url}: {e}") from e
+
+        media_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+        if media_type not in ("", "text/html", "application/xhtml+xml"):
+            # JSON / markdown / binary: no noise problem — use the stock behaviour.
+            return await stock(url)
+
+        html = response.text
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else ""
+
+        content = md(_strip_html_noise(html), strip=["img", "script", "style"])
+        content = _EXCESS_NEWLINES_RE.sub("\n\n", content).strip()
+        if len(content) > max_content_length:
+            content = content[:max_content_length]
+
+        return WebFetchResult(url=str(response.url), title=title, content=content)
+
+    return Tool(web_fetch, name="web_fetch")
 
 _EXTRACT_INSTRUCTIONS = """
 ## Steps
@@ -102,7 +192,7 @@ def build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]:
         defer_model_check=True,
         tools=[
             duckduckgo_search_tool(max_results=_WEB_SEARCH_MAX_RESULTS),
-            web_fetch_tool(max_content_length=_MAX_PAGE_CONTENT),
+            recipe_web_fetch_tool(_MAX_PAGE_CONTENT),
         ],
         instructions=(
             f"You are {config.persona}.\n"
@@ -113,13 +203,21 @@ def build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]:
     )
 
 
-def build_web_fetch_agent(config: TenantConfig) -> Agent[None, Recipe | None]:
-    """Agent that fetches a known URL and extracts the recipe — no search needed."""
+def build_web_fetch_agent(
+    config: TenantConfig, pinned_url: str | None = None
+) -> Agent[None, Recipe | None]:
+    """Agent that fetches a known URL and extracts the recipe — no search needed.
+
+    Pass `pinned_url` when the exact page is already known (a pasted link, or a
+    proposal's source_url): the fetch tool then ignores the model's retyped URL
+    argument, which is a real corruption source on long slugs. Agents built with
+    a pinned URL are per-URL and must NOT be cached across different URLs.
+    """
     return Agent(
         config.model_web_search,
         output_type=Recipe | None,
         defer_model_check=True,
-        tools=[web_fetch_tool(max_content_length=_MAX_PAGE_CONTENT)],
+        tools=[recipe_web_fetch_tool(_MAX_PAGE_CONTENT, pinned_url=pinned_url)],
         instructions=(
             f"You are {config.persona}.\n"
             f"You MUST respond exclusively in {config.language}. "
