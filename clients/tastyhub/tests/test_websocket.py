@@ -53,6 +53,10 @@ def _make_mock_firestore(session: Session | None = None) -> AsyncMock:
     # no-op unless a test overrides these.
     uid = session.uid if session else None
     mock.get_user_record = AsyncMock(return_value=UserRecord(uid=uid or "test-uid"))
+    # Temp-password gate (STEP 44): no record ⇒ not locked. Without this the bare
+    # AsyncMock returns a truthy stub whose .must_change_password is also truthy,
+    # and the handshake would close every socket.
+    mock.find_user_record = AsyncMock(return_value=None)
     mock.get_usage_counter = AsyncMock(
         return_value=UsageCounter(period_key="2026-01-01", tokens_used=0)
     )

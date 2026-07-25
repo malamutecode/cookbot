@@ -61,6 +61,19 @@ Bearer …`) carries user identity on REST + WS. Dev bypass: `x-dev-uid` header 
 `DEV_UID` is set — never in prod. Login is gated by `ALLOWED_EMAILS` (checked after
 token verify on both REST and WS; empty = open).
 
+`ALLOWED_EMAILS` is a **bootstrap** list: when it rejects an email,
+`get_current_user` falls back to `firestore.find_user_record(uid)` and an existing,
+non-disabled record authorizes the caller — so admin-created accounts (STEP 44)
+work without a redeploy. `find_user_record` is read-only on purpose;
+`get_user_record` *creates* a default and would make the whitelist a no-op.
+
+Dependency chain: `get_current_user` → `get_user_record` → `require_password_set`
+(423 while `must_change_password`) / `require_admin` (403 unless role=='admin').
+`POST /v1/me/password` deliberately depends on `get_user_record`, **not**
+`require_password_set` — it is the one route a locked user may call. The entry
+points that resolve identity themselves (`POST /v1/sessions`, the WS handshake)
+call `record_is_locked(firestore, uid)` instead of using the dependency chain.
+
 ## Adding a new client
 
 1. Copy `clients/tastyhub/` → `clients/{new_client}/`.

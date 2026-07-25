@@ -3,6 +3,12 @@ from cookbot.models.shopping import ShoppingList
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+# NOTE (STEP 44): deliberately NOT gated by require_password_set. This route
+# carries no user identity at all — it is a stateless formatter over a list of
+# ingredients posted in the body, reachable with only the widget's API key.
+# Adding a Firebase-record dependency here would break the anonymous/API-key
+# path without protecting any user data. A locked account is stopped at
+# /v1/sessions and the WS handshake, which is what actually gates the product.
 router = APIRouter()
 
 

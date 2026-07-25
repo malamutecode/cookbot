@@ -8,6 +8,7 @@ import ChatPanel from './components/ChatPanel'
 import CalendarPage from './components/CalendarPage'
 import SourcesPage from './components/SourcesPage'
 import AdminPage from './components/AdminPage'
+import ChangePassword from './components/ChangePassword'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
 import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView } from './types'
 import { API_BASE, TEST_USER, DEV_MODE } from './config'
@@ -41,6 +42,9 @@ export default function App() {
   const [calDays, setCalDays]     = useState<CalendarDay[]>(loadCalendar)
   const [chatProcessing, setChatProcessing] = useState(false)
   const [isAdmin, setIsAdmin]     = useState(false)
+  // Admin-created accounts start with a temp password and must replace it
+  // before the shell is usable (STEP 44). The server enforces the same rule.
+  const [mustChangePassword, setMustChangePassword] = useState(false)
 
   const { items: spizItems, load: loadSpiz, add: addSpiz, remove: removeSpiz } = useSpizarnia(idToken)
 
@@ -64,15 +68,33 @@ export default function App() {
 
   async function handleLogin(token: string | null) {
     setIdToken(token)
-    await createSession(token)
-    await loadSpiz()
-    // Resolve whether this user is an admin so the Admin tab can be shown.
+    // /v1/me FIRST: a temp-password account is refused (423) by /v1/sessions and
+    // every other product route, so we have to know about the lock before we
+    // try to bootstrap the shell.
+    let locked = false
     try {
       const me: MeView = await fetch(`${API_BASE}/v1/me`, { headers: authHeaders(token) }).then(r => r.json())
       setIsAdmin(!!me.is_admin)
+      locked = !!me.must_change_password
+      setMustChangePassword(locked)
     } catch { setIsAdmin(false) }
+
+    if (!locked) {
+      await createSession(token)
+      await loadSpiz()
+    }
     setLoggedIn(true)
   }
+
+  // Called by ChangePassword once the backend has cleared the flag — finish the
+  // bootstrap that handleLogin skipped while the account was locked.
+  const handlePasswordChanged = useCallback(async () => {
+    setMustChangePassword(false)
+    try {
+      await createSession(idToken)
+      await loadSpiz()
+    } catch { /* the user can reload; the account is no longer locked */ }
+  }, [idToken, createSession, loadSpiz])
 
   // Dev convenience: when VITE_TEST_USER=true, auto-login as the dev user so the
   // login screen is skipped during local smoke-testing. Runs once on mount.
@@ -111,6 +133,7 @@ export default function App() {
     setIdToken(null)
     setSessionId('')
     setIsAdmin(false)
+    setMustChangePassword(false)
     setPage('chat')
   }
 
@@ -172,6 +195,16 @@ export default function App() {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
         <Login ui={ui} onLogin={handleLogin} />
+      </div>
+    )
+  }
+
+  // Forced password change replaces the whole shell — an admin-created account
+  // cannot reach any product route until the temp password is replaced.
+  if (mustChangePassword) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+        <ChangePassword ui={ui} idToken={idToken} onChanged={handlePasswordChanged} />
       </div>
     )
   }

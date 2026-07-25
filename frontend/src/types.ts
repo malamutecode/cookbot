@@ -8,9 +8,11 @@ export interface TokenQuota {
 export interface UserRecord {
   uid: string
   email?: string | null
+  display_name?: string | null
   role: string
   quota: TokenQuota
   disabled: boolean
+  must_change_password?: boolean
 }
 
 export interface UserUsageView {
@@ -19,11 +21,19 @@ export interface UserUsageView {
   monthly_used: number
 }
 
+/** POST /v1/admin/users — the temp password is returned ONCE and never refetched. */
+export interface CreatedUserView {
+  record: UserRecord
+  temp_password: string
+}
+
 export interface MeView {
   uid: string
   email?: string | null
+  display_name?: string | null
   role: string
   is_admin: boolean
+  must_change_password?: boolean
 }
 
 export interface SpizarniaItem {
@@ -135,6 +145,15 @@ export interface UiStrings {
   login_password?: string
   login_button?: string
   logout_button?: string
+  password_change_heading?: string
+  password_change_intro?: string
+  password_change_new?: string
+  password_change_repeat?: string
+  password_change_submit?: string
+  password_change_saving?: string
+  password_change_mismatch?: string
+  password_change_error?: string
+  password_change_success?: string
   hitl?: HitlLabels
 }
 

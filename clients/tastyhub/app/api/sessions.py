@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.config.settings import get_settings
 from app.config.tenant import TASTYHUB_CONFIG
-from app.middleware.auth import _get_firebase_app
+from app.middleware.auth import _get_firebase_app, record_is_locked
 
 router = APIRouter()
 
@@ -58,6 +58,16 @@ async def create_session(
         )
 
     firestore = request.app.state.firestore
+
+    # Temp-password gate (STEP 44). Applied to the already-verified uid rather
+    # than via require_password_set, because this route also accepts the widget's
+    # API key and has no Firebase identity in that case.
+    if uid is not None and await record_is_locked(firestore, uid):
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail="Password change required before using the app.",
+        )
+
     now = datetime.now(UTC)
     expires_at = now + timedelta(hours=settings.session_ttl_hours)
     session = Session(

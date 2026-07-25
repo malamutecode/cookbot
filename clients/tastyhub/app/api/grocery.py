@@ -20,6 +20,11 @@ from pydantic import BaseModel
 
 log = structlog.get_logger()
 
+# NOTE (STEP 44): deliberately NOT gated by require_password_set. Like
+# /v1/shopping-list, this route carries no user identity — it matches an
+# ingredient list posted in the body against a public product feed and is
+# reachable with only the widget's API key. A locked account is stopped at
+# /v1/sessions and the WS handshake.
 router = APIRouter()
 
 # How many lexical candidates to shortlist per ingredient and hand to the re-ranker.

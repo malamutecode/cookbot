@@ -58,6 +58,19 @@ class UiStrings:
     quota_daily_reached: str = "Wykorzystałeś dzienny limit tokenów. Odnowi się {resets}."
     quota_monthly_reached: str = "Wykorzystałeś miesięczny limit tokenów. Odnowi się {resets}."
     quota_disabled: str = "Twoje konto zostało wyłączone. Skontaktuj się z administratorem."
+    # Forced password change on first login (STEP 44).
+    password_change_heading: str = "Ustaw własne hasło"
+    password_change_intro: str = (
+        "Twoje konto zostało utworzone przez administratora z hasłem tymczasowym. "
+        "Zanim przejdziesz dalej, ustaw własne hasło."
+    )
+    password_change_new: str = "Nowe hasło"
+    password_change_repeat: str = "Powtórz hasło"
+    password_change_submit: str = "Zapisz hasło"
+    password_change_saving: str = "Zapisywanie…"
+    password_change_mismatch: str = "Hasła nie są takie same."
+    password_change_error: str = "Nie udało się zmienić hasła. Spróbuj ponownie."
+    password_change_success: str = "Hasło zostało zmienione."
 
 
 _PL = UiStrings(
@@ -153,6 +166,18 @@ _EN = UiStrings(
     quota_daily_reached="You've used your daily token limit. It resets {resets}.",
     quota_monthly_reached="You've used your monthly token limit. It resets {resets}.",
     quota_disabled="Your account has been disabled. Please contact an administrator.",
+    password_change_heading="Set your own password",
+    password_change_intro=(
+        "Your account was created by an administrator with a temporary password. "
+        "Please set your own password before continuing."
+    ),
+    password_change_new="New password",
+    password_change_repeat="Repeat password",
+    password_change_submit="Save password",
+    password_change_saving="Saving…",
+    password_change_mismatch="The passwords do not match.",
+    password_change_error="Could not change the password. Please try again.",
+    password_change_success="Your password has been changed.",
 )
 
 _STRINGS: dict[str, UiStrings] = {"pl": _PL, "en": _EN}

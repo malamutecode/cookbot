@@ -4,9 +4,11 @@ from cookbot.models.user import UserProfile
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel
 
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_password_set
 
-router = APIRouter()
+# Every pantry route is gated on the caller having replaced a temp password
+# (423 while must_change_password is set) — see middleware/auth.py.
+router = APIRouter(dependencies=[Depends(require_password_set)])
 
 
 class AddItemsRequest(BaseModel):

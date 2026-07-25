@@ -40,3 +40,8 @@ Thumbs.db
 # Frontend (Vite)
 frontend/node_modules/
 frontend/dist/
+
+# Firebase local deploy cache (hosting upload hashes, debug logs)
+.firebase/
+firebase-debug.log
+firebase-debug.*.log

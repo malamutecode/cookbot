@@ -168,7 +168,10 @@ DEFAULT_MONTHLY_TOKEN_LIMIT=0        # per-user monthly token budget; 0 = unlimi
 QUOTA_TIMEZONE=Europe/Warsaw         # day/month boundaries for quota resets
 
 # Access whitelist + CORS
-ALLOWED_EMAILS=                      # who may log in: exact emails or @domains, comma-sep; EMPTY = open. Checked after token verify (REST + WS)
+ALLOWED_EMAILS=                      # BOOTSTRAP whitelist: exact emails or @domains, comma-sep; EMPTY = open.
+                                     # Checked after token verify (REST + WS). Since STEP 44 an existing,
+                                     # non-disabled Firestore UserRecord ALSO grants access, so admin-created
+                                     # accounts work without a redeploy.
 ALLOWED_ORIGINS=*                    # browser origins for CORS/WebSocket; comma-sep; set to the Firebase Hosting domain(s) in prod
 
 # Per-agent model selection (see .env.example for the rationale per agent)

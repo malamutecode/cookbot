@@ -1,9 +1,20 @@
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+
+
+def _req(firestore=None):
+    """A stand-in Request for calling get_current_user directly.
+
+    STEP 44 gave get_current_user a `request` parameter so the whitelist check
+    can fall back to a Firestore UserRecord; only `request.app.state.firestore`
+    is ever touched. `firestore=None` means "no record" ⇒ fallback denies.
+    """
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(firestore=firestore)))
 
 
 def _make_decoded(uid: str = "user-123") -> dict:
@@ -33,7 +44,7 @@ async def test_get_current_user_valid_token():
         patch("app.middleware.auth._get_firebase_app"),
         patch("firebase_admin.auth.verify_id_token", return_value=decoded),
     ):
-        profile = await get_current_user(authorization="Bearer valid.token.here")
+        profile = await get_current_user(_req(), authorization="Bearer valid.token.here")
 
     assert profile.uid == "user-123"
     assert profile.email == "test@example.com"
@@ -51,7 +62,7 @@ async def test_get_current_user_invalid_token():
         patch("firebase_admin.auth.verify_id_token", side_effect=ValueError("bad token")),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(authorization="Bearer bad.token")
+            await get_current_user(_req(), authorization="Bearer bad.token")
 
     assert exc_info.value.status_code == 401
     assert "Invalid token" in exc_info.value.detail
@@ -72,7 +83,7 @@ async def test_get_current_user_expired_token():
         ),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(authorization="Bearer expired.token")
+            await get_current_user(_req(), authorization="Bearer expired.token")
 
     assert exc_info.value.status_code == 401
     assert "expired" in exc_info.value.detail.lower()
@@ -85,7 +96,7 @@ async def test_get_current_user_missing_bearer_scheme():
     from app.middleware.auth import get_current_user
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_current_user(authorization="Basic dXNlcjpwYXNz")
+        await get_current_user(_req(), authorization="Basic dXNlcjpwYXNz")
 
     assert exc_info.value.status_code == 401
 
@@ -114,7 +125,7 @@ async def test_get_current_user_email_not_allowed_is_403():
         patch("firebase_admin.auth.verify_id_token", return_value=decoded),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(authorization="Bearer valid.token")
+            await get_current_user(_req(), authorization="Bearer valid.token")
 
     assert exc_info.value.status_code == 403
 
@@ -129,7 +140,7 @@ async def test_get_current_user_email_allowed_passes():
         patch("app.middleware.auth._get_firebase_app"),
         patch("firebase_admin.auth.verify_id_token", return_value=decoded),
     ):
-        profile = await get_current_user(authorization="Bearer valid.token")
+        profile = await get_current_user(_req(), authorization="Bearer valid.token")
 
     assert profile.email == "test@example.com"
 
@@ -144,7 +155,7 @@ async def test_get_current_user_empty_whitelist_allows_all():
         patch("app.middleware.auth._get_firebase_app"),
         patch("firebase_admin.auth.verify_id_token", return_value=decoded),
     ):
-        profile = await get_current_user(authorization="Bearer valid.token")
+        profile = await get_current_user(_req(), authorization="Bearer valid.token")
 
     assert profile.uid == "user-123"
 
@@ -154,7 +165,13 @@ async def test_get_current_user_empty_whitelist_allows_all():
 # ---------------------------------------------------------------------------
 
 def test_create_session_with_api_key(client):
-    resp = client.post("/v1/sessions", headers={"x-api-key": "tk_test_key"})
+    # Pre-existing gap: this fixture uses the real FirestoreService, so
+    # save_session must be stubbed or the test blocks on a live connection.
+    async def _noop_save(self, session):
+        pass
+
+    with patch("cookbot.services.firestore.FirestoreService.save_session", new=_noop_save):
+        resp = client.post("/v1/sessions", headers={"x-api-key": "tk_test_key"})
     assert resp.status_code == 200
     data = resp.json()
     assert "session_id" in data
@@ -171,6 +188,10 @@ def test_create_session_with_firebase_token(client):
         patch("app.api.sessions._get_firebase_app"),
         patch("firebase_admin.auth.verify_id_token", return_value=decoded),
         patch("cookbot.services.firestore.FirestoreService.save_session", new=_noop_save),
+        # STEP 44: /v1/sessions now checks the temp-password lock on the verified
+        # uid. No record ⇒ not locked.
+        patch("cookbot.services.firestore.FirestoreService.find_user_record",
+              new=AsyncMock(return_value=None)),
     ):
         resp = client.post(
             "/v1/sessions",

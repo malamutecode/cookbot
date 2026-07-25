@@ -36,9 +36,20 @@ def client():
 
 @pytest.fixture(autouse=True)
 def mock_auth():
-    with patch("app.middleware.auth._get_firebase_app"), patch(
-        "firebase_admin.auth.verify_id_token",
-        return_value={"uid": _UID, "name": "Test", "email": "test@example.com"},
+    from cookbot.models.user import UserRecord
+
+    with (
+        patch("app.middleware.auth._get_firebase_app"),
+        patch(
+            "firebase_admin.auth.verify_id_token",
+            return_value={"uid": _UID, "name": "Test", "email": "test@example.com"},
+        ),
+        # STEP 44: these routes now run through require_password_set, which loads
+        # the caller's record. Stub it so no real Firestore call is made.
+        patch(
+            "cookbot.services.firestore.FirestoreService.get_user_record",
+            new=AsyncMock(return_value=UserRecord(uid=_UID, email="test@example.com")),
+        ),
     ):
         yield
 

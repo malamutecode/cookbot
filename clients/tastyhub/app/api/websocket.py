@@ -180,10 +180,26 @@ async def websocket_endpoint(
         # Access whitelist (empty ⇒ open) — a valid token for a non-allowed email
         # is refused before the connection is accepted. Only enforced when the
         # token verified (uid is set); a failed verify already left uid=None.
+        # ALLOWED_EMAILS is a *bootstrap* list (STEP 44): an admin-created account
+        # is authorized by its existing, non-disabled Firestore UserRecord instead.
         if uid is not None and not email_allowed(email, settings.allowed_emails):
-            log.warning("ws_email_not_allowed", uid=uid)
-            await websocket.close(code=4008)
-            return
+            from app.middleware.auth import record_grants_access
+
+            if not await record_grants_access(firestore, uid):
+                log.warning("ws_email_not_allowed", uid=uid)
+                await websocket.close(code=4008)
+                return
+
+        # A temp-password account must set its own password before chatting —
+        # the same 423 gate the REST product routes apply (STEP 44). Reuse the
+        # existing error+close path; no new WsMessageType.
+        if uid is not None:
+            from app.middleware.auth import record_is_locked
+
+            if await record_is_locked(firestore, uid):
+                log.warning("ws_password_change_required", uid=uid)
+                await websocket.close(code=4009)
+                return
 
     if session.uid is not None and uid != session.uid:
         await websocket.close(code=4001)

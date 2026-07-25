@@ -164,27 +164,40 @@ class FirestoreService:
         default_quota: TokenQuota | None = None,
         admin_uids: frozenset[str] | set[str] = frozenset(),
         email: str | None = None,
+        display_name: str | None = None,
     ) -> UserRecord:
         """Load a user's account record, creating a default one on first sight.
 
         A new record inherits `default_quota` (the tenant defaults) and is seeded
         as an admin when its uid is in `admin_uids` (bootstrap path so there's a
-        way in before any admin exists)."""
+        way in before any admin exists). `email`/`display_name` backfill an
+        existing record that predates those fields, so the admin table can render
+        an identity without a Firebase read."""
         doc = await self._user_record_ref(uid).get()
         raw = doc.to_dict().get("record") if doc.exists else None  # type: ignore[union-attr]
         if raw is None:
             rec = UserRecord(
                 uid=uid,
                 email=email,
+                display_name=display_name,
                 role="admin" if uid in admin_uids else "user",
                 quota=default_quota or TokenQuota(),
             )
             await self.save_user_record(rec)
             return rec
         rec = UserRecord.model_validate({**raw, "uid": uid})
+        dirty = False
         # Keep the seeded admins admin even if the record predates the seed.
         if uid in admin_uids and rec.role != "admin":
             rec.role = "admin"
+            dirty = True
+        if email and not rec.email:
+            rec.email = email
+            dirty = True
+        if display_name and not rec.display_name:
+            rec.display_name = display_name
+            dirty = True
+        if dirty:
             await self.save_user_record(rec)
         return rec
 
@@ -192,6 +205,28 @@ class FirestoreService:
         await self._user_record_ref(rec.uid).set(
             {"record": rec.model_dump(mode="json")}, merge=True
         )
+
+    async def find_user_record(self, uid: str) -> UserRecord | None:
+        """Read a user's record WITHOUT creating one (unlike `get_user_record`).
+
+        Used by authorization paths that must distinguish "this account exists"
+        from "this uid has a valid token" — creating on read there would turn any
+        authenticated uid into an authorized one."""
+        doc = await self._user_record_ref(uid).get()
+        raw = doc.to_dict().get("record") if doc.exists else None  # type: ignore[union-attr]
+        if raw is None:
+            return None
+        return UserRecord.model_validate({**raw, "uid": uid})
+
+    async def delete_user_record(self, uid: str) -> None:
+        """Remove a user's account record document (`users/{uid}`).
+
+        Deleting the parent doc drops the record, profile and any other fields
+        stored on it. Firestore subcollections (`spizarnia`, `prefs`, `usage`)
+        are NOT cascaded by a parent delete — they are orphaned, which is
+        harmless: nothing reads them without a record, and a re-created uid is
+        never reused by Firebase."""
+        await self._user_record_ref(uid).delete()
 
     async def list_user_records(self) -> list[UserRecord]:
         """All account records (admin listing) — the users collection stream,

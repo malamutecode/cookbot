@@ -4,9 +4,10 @@ from cookbot.models.user import RecipeSource, UserProfile, UserSearchPrefs
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_password_set
 
-router = APIRouter()
+# Gated on the caller having replaced a temp password — see middleware/auth.py.
+router = APIRouter(dependencies=[Depends(require_password_set)])
 
 
 class UpdateSearchPrefsRequest(BaseModel):

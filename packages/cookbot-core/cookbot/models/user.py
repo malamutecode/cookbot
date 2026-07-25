@@ -26,9 +26,15 @@ class UserRecord(BaseModel):
 
     uid: str
     email: str | None = None
+    display_name: str | None = None
     role: str = "user"          # "user" | "admin"
     quota: TokenQuota = TokenQuota()
     disabled: bool = False
+    # Set when an admin creates the account with a generated temp password;
+    # cleared once the user picks their own. Firebase has no such concept, so
+    # the server owns the flag (STEP 44). Defaulted so pre-STEP-44 Firestore
+    # documents still deserialize.
+    must_change_password: bool = False
 
     @property
     def is_admin(self) -> bool:
