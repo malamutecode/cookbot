@@ -29,6 +29,17 @@ class UiStrings:
     spizarnia_toggle: str = "Użyj składników ze spiżarni"
     spizarnia_add_placeholder: str = "Dodaj składnik…"
     spizarnia_add_button: str = "Dodaj"
+    # Tooltip on the ⓘ icon next to the Spiżarnia heading. Deliberately scoped to
+    # what the pantry ACTUALLY does: it is appended to the turn as a "[Pantry: …]"
+    # hint (websocket.py) only while the checkbox is on, so it biases which recipes
+    # get proposed. It is NOT subtracted from the shopping list — get_shopping_list
+    # never sees it. Don't promise that here until it is built.
+    spizarnia_info: str = (
+        "Zapisz tu składniki, które masz w domu. Gdy zaznaczysz "
+        "„Użyj składników ze spiżarni”, będę je brał pod uwagę przy proponowaniu "
+        "przepisów — częściej zaproponuję dania z tego, co już masz. "
+        "Lista jest zapisana na Twoim koncie — nie musisz jej wpisywać za każdym razem."
+    )
     shopping_list_heading: str = "Lista zakupów"
     shopping_list_clear: str = "Wyczyść zaznaczone"
     shopping_list_add_placeholder: str = "Dodaj pozycję…"
@@ -90,10 +101,15 @@ class UiStrings:
 
 _PL = UiStrings(
     greeting=(
-        "Cześć! Jestem Twoim asystentem kulinarnym. Napisz co chcesz ugotować, a znajdę Ci przepis. "
-        "Gdy już go znajdziemy, wystarczy że napiszesz mi tutaj kiedy go zjesz "
-        "(np. \"dodaj na sobotę na obiad\"), a wpiszę danie do kalendarza — "
-        "mogę też z niego przygotować listę zakupów."
+        "Cześć! Powiedz mi, na co masz ochotę — a znajdę przepis. "
+        "Możesz podać składniki, które chcesz wykorzystać, i ile masz czasu "
+        "(np. \"coś z kurczaka i cukinii w 30 minut\"). "
+        "Masz w lodówce tylko dwie rzeczy? Wypisz je, a podrzucę pomysły. "
+        "W każdej chwili napisz, dla ilu osób gotujesz (\"a jednak dla 6\") — "
+        "przeliczę składniki. "
+        "Gotowe danie dopiszę do kalendarza (\"dodaj na sobotę na obiad\"), "
+        "a potem zrobię wspólną listę zakupów na cały tydzień (\"lista na przyszły tydzień\") — "
+        "skopiujesz ją jednym kliknięciem albo znajdziesz produkty w Frisco."
     ),
     thinking="Rozumiem! Chwila, zaraz coś wymyślę…",
     summary_prefix="Świetnie! Danie: {dish}, czas: {time} min, składniki: {items}. Szukam przepisu…",
@@ -123,10 +139,15 @@ _PL = UiStrings(
 
 _EN = UiStrings(
     greeting=(
-        "Hi! I'm your cooking assistant. Tell me what you'd like to cook and I'll find a recipe. "
-        "Once we have one, just tell me here when you'll eat it "
-        "(e.g. \"add it on Saturday for dinner\") and I'll put it in your calendar — "
-        "I can also turn it into a shopping list."
+        "Hi! Tell me what you're in the mood for and I'll find a recipe. "
+        "You can name the ingredients you want to use and how much time you have "
+        "(e.g. \"something with chicken and courgette in 30 minutes\"). "
+        "Only two things in the fridge? List them and I'll suggest ideas. "
+        "Tell me how many people you're cooking for at any point (\"make it 6 after all\") "
+        "and I'll recalculate the amounts. "
+        "I'll add the finished dish to your calendar (\"add it on Saturday for dinner\"), "
+        "then build one shopping list for the whole week (\"a list for next week\") — "
+        "copy it in one click or find the products on Frisco."
     ),
     thinking="Got it! Let me work out what we can make…",
     summary_prefix="Understood! Dish: {dish}, time: {time} min, using: {items}. Searching for a recipe now…",
@@ -157,6 +178,12 @@ _EN = UiStrings(
     spizarnia_toggle="Use pantry ingredients",
     spizarnia_add_placeholder="Add ingredient…",
     spizarnia_add_button="Add",
+    spizarnia_info=(
+        "Keep track of what you already have at home. When \"Use pantry ingredients\" "
+        "is checked, I'll take these into account when suggesting recipes — you'll more "
+        "often get dishes based on what you already have. "
+        "The list is saved to your account, so you only enter it once."
+    ),
     shopping_list_heading="Shopping list",
     shopping_list_clear="Clear checked",
     shopping_list_add_placeholder="Add an item…",

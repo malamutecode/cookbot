@@ -214,7 +214,7 @@ export default function App() {
           <PanelGroup direction="horizontal" style={{ flex: 1, overflow: 'hidden' }}>
             <Panel defaultSize={28} minSize={18} maxSize={50} style={{ display: 'flex', flexDirection: 'column', background: t.color.surface, borderRight: `1px solid ${t.color.border}`, overflow: 'hidden' }}>
               <PanelGroup direction="vertical">
-                <Panel defaultSize={55} minSize={25} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                <Panel defaultSize={20} minSize={12} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   <SpizarniaPanel
                     items={spizItems}
                     useSpizarnia={spizEnabled}
@@ -225,7 +225,7 @@ export default function App() {
                   />
                 </Panel>
                 <PanelResizeHandle style={{ height: 4, background: t.color.border, cursor: 'row-resize' }} />
-                <Panel defaultSize={45} minSize={20} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                <Panel defaultSize={80} minSize={20} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                   <ShoppingList items={shopItems} onChange={setShopItems} ui={ui} />
                 </Panel>
               </PanelGroup>

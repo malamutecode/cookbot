@@ -123,6 +123,7 @@ export interface UiStrings {
   spizarnia_toggle?: string
   spizarnia_add_placeholder?: string
   spizarnia_add_button?: string
+  spizarnia_info?: string
   shopping_list_heading?: string
   shopping_list_clear?: string
   shopping_list_add_placeholder?: string

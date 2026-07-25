@@ -2,6 +2,11 @@ import { useState, KeyboardEvent } from 'react'
 import { SpizarniaItem, UiStrings } from '../types'
 import { t } from '../theme'
 
+// Fallback for older servers whose /v1/ui payload predates spizarnia_info.
+const INFO_FALLBACK =
+  'Zapisz tu składniki, które masz w domu. Gdy zaznaczysz „Użyj składników ze spiżarni”, ' +
+  'będę je brał pod uwagę przy proponowaniu przepisów — częściej zaproponuję dania z tego, co już masz.'
+
 interface Props {
   items: SpizarniaItem[]
   useSpizarnia: boolean
@@ -24,7 +29,18 @@ export default function SpizarniaPanel({ items, useSpizarnia, onToggle, onAdd, o
 
   return (
     <div style={styles.section}>
-      <h3 style={styles.sectionTitle}>{ui.spizarnia_heading ?? 'Spiżarnia'}</h3>
+      <div style={styles.titleRow}>
+        <h3 style={styles.sectionTitle}>{ui.spizarnia_heading ?? 'Spiżarnia'}</h3>
+        <span
+          style={styles.infoIcon}
+          title={ui.spizarnia_info ?? INFO_FALLBACK}
+          role="img"
+          aria-label={ui.spizarnia_info ?? INFO_FALLBACK}
+          tabIndex={0}
+        >
+          ⓘ
+        </span>
+      </div>
       <label style={styles.toggle}>
         <input
           type="checkbox"
@@ -65,7 +81,9 @@ export default function SpizarniaPanel({ items, useSpizarnia, onToggle, onAdd, o
 
 const styles: Record<string, React.CSSProperties> = {
   section: { display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', padding: 16 },
-  sectionTitle: { fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, color: t.color.textMuted, marginBottom: 12 },
+  titleRow: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 },
+  sectionTitle: { fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, color: t.color.textMuted, margin: 0 },
+  infoIcon: { fontSize: '0.82rem', color: t.color.textFaint, cursor: 'help', lineHeight: 1, userSelect: 'none' },
   toggle: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, cursor: 'pointer', color: t.color.text },
   list: { flex: 1, overflowY: 'auto', fontSize: '0.84rem', marginBottom: 10 },
   empty: { color: t.color.textFaint, fontStyle: 'italic', fontSize: '0.8rem' },
