@@ -1,14 +1,13 @@
 # Feedek — Deployment Runbook
 
 Backend → **Cloud Run**, frontend → **Firebase Hosting**. This file is the ordered
-list of commands **you** run. Claude prepared the Dockerfile / cloudbuild.yaml /
-firebase.json / config but does not execute deploys.
+list of deploy commands, plus the Firebase-console steps that cannot be scripted.
 
 > ## ⚡ Scripted path (use this)
 >
-> The steps below are now wrapped in idempotent bash scripts under [`infra/`](infra/)
+> The steps below are wrapped in idempotent bash scripts under [`infra/`](infra/)
 > — portable to git bash, Linux and macOS. Read this file for the *why*, the
-> Firebase-console steps that can't be scripted, and rollback.
+> console steps, and rollback.
 >
 > ```bash
 > cp infra/deploy.env.example infra/deploy.env   # once; edit the values
@@ -19,6 +18,43 @@ firebase.json / config but does not execute deploys.
 >
 > Add `--dry-run` to any of them to print the commands without running them.
 > See [`infra/README.md`](infra/README.md) for flags and the guardrails they add.
+
+## Who runs deploys
+
+**Claude may run the two release scripts** — `./infra/deploy-backend.sh` and
+`./infra/deploy-frontend.sh` — when the user asks for a deploy. Both are
+repeatable, read their config from `infra/deploy.env`, smoke-test afterwards, and
+roll back through Cloud Run revisions. Standing rules for an agent-run deploy:
+
+- **Only when asked.** A deploy is never a follow-on step to a commit, a merge, or
+  a green test run. It happens because the user asked for it in that turn.
+- **Green tests first.** Run the `pre-commit-check` tiers for the diff; never
+  deploy a working tree with failing tests.
+- **Deploy committed code.** Warn if the working tree is dirty or the branch is
+  ahead of its remote — what deploys is the local tree, so uncommitted work ships
+  silently and is unreviewable afterwards.
+- **Report the URL and the smoke-test result**, not just "done". If `/health`
+  fails, say so and surface the logs the script dumped.
+
+**Claude must NOT run these without explicit per-run confirmation**, because they
+are one-time, destructive, or cost-bearing beyond a release:
+
+- `./infra/bootstrap.sh` — creates projects/repos/secrets and grants IAM.
+- Anything writing Secret Manager (`gcloud secrets create` / `versions add`).
+- `seed_admin.py` — creates a real user account.
+- `gcloud run services update-traffic` — rollback is a judgement call; propose it,
+  let the user decide.
+- Any change to `infra/deploy.env`, `ALLOWED_EMAILS`, or `ALLOWED_ORIGINS` —
+  these are the access gate, not tuning knobs.
+
+Preflight for an agent deploy (cheap, catches the usual failures):
+
+```bash
+gcloud auth list                     # an active account exists
+gcloud config get-value project      # matches PROJECT_ID in infra/deploy.env
+git status --short                   # clean tree
+./infra/deploy-backend.sh --dry-run  # prints effective config + commands
+```
 
 - **Part 1 — Backend → Cloud Run** (sections 0–8)
 - **Part 2 — Frontend → Firebase Hosting + real Firebase Auth** (sections 9–13)
