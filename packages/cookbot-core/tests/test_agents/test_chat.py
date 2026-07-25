@@ -1116,3 +1116,49 @@ def test_url_trailing_punctuation_not_swallowed() -> None:
 
     url = "https://chilitonka.com/curry-naan/"
     assert _url_from_user_message(url, f"Zrób to z {url} (dla 4 osób)") == url
+
+
+# ── propose_recipes persists the direct-request context (STEP 46) ─────────────
+# A direct request ("przepis na halloumi dla 4 osób") reaches propose_recipes
+# without update_onboarding running first. The arguments must be written back to
+# deps.onboarding, because resolve_recipe / get_recipe_from_url read `servings`
+# ONLY from there when scaling the chosen recipe.
+
+async def _run_propose(deps, **kwargs):
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "propose_recipes")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    class _Opts:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            return MagicMock(output=MagicMock(proposals=[]))
+
+    with patch("cookbot.agents.chat.build_recipe_options_agent", lambda _c: _Opts()):
+        return await fn(ctx, **kwargs)
+
+
+async def test_propose_recipes_records_direct_request_context() -> None:
+    deps = _make_deps()
+    assert deps.onboarding.servings is None
+
+    await _run_propose(deps, dish_type="halloumi", ingredients=[], servings=4,
+                       max_time_minutes=30)
+
+    # Without this, the recipe would later scale to the `or 2` default.
+    assert deps.onboarding.servings == 4
+    assert deps.onboarding.dish_type == "halloumi"
+    assert deps.onboarding.max_time_minutes == 30
+
+
+async def test_propose_recipes_does_not_overwrite_existing_answers() -> None:
+    """Guided onboarding already collected these — a later call must not clobber
+    them with its own defaults (servings defaults to 2 in the signature)."""
+    deps = _make_deps()
+    deps.onboarding.servings = 6
+    deps.onboarding.dish_type = "zupa"
+
+    await _run_propose(deps, dish_type="halloumi", ingredients=[])
+
+    assert deps.onboarding.servings == 6, "user's stated servings was overwritten"
+    assert deps.onboarding.dish_type == "zupa", "user's stated dish was overwritten"

@@ -367,10 +367,31 @@ uv run ruff check . --fix && uv run pyright
 
 ---
 
-## STEP 46 — Fix `test_direct_recipe_request_skips_onboarding`
+## STEP 46 ✔ — Fix `test_direct_recipe_request_skips_onboarding`
 
 **Goal:** Make the failing live e2e test pass, or correct the assertion if the
 test is wrong about what the product should do.
+
+> **DONE 2026-07-25.** The assertion was right and the test was pointing at a
+> real bug. `propose_recipes` *received* `dish_type`/`servings` as arguments,
+> used them for the search, and **discarded them** — it never wrote to
+> `deps.onboarding`, which is the only place `resolve_recipe` /
+> `get_recipe_from_url` read `servings` from when scaling. So a direct "dla N
+> osób" request scaled to the `or 2` default: right by luck for "dla 2 osób",
+> silently wrong for every other number (verified live — "dla 6 osób" recorded
+> `None` before, `6` after).
+>
+> Fixed on both fronts the step called for:
+> - **Deterministic (the real fix):** `propose_recipes` now writes its arguments
+>   back to `deps.onboarding`, filling blanks only — never overwriting an answer
+>   guided onboarding already collected (unit-tested both ways).
+> - **Prompt:** §0b said to skip the onboarding *questions*, which gpt-4o-mini
+>   read as "skip the tool". It now says to skip the questions but still call
+>   `update_onboarding` with what the message already gave.
+>
+> Verified: target test green on 3 consecutive runs; all 3 chat e2e tests pass
+> (incl. `test_full_onboarding_to_web_recipe`, the guided-path regression);
+> 194 core + 91 client unit tests; extraction + STEP 45 e2e unaffected.
 
 ### Current state (verified 2026-07-25)
 

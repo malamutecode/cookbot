@@ -704,9 +704,12 @@ You MUST respond exclusively in {config.language}. Never use another language.
    calendar. If it returns source="not_found" or "error", no card is shown —
    explain briefly (the page had no readable recipe / a temporary problem).
 0b. If the user's message already names a SPECIFIC dish (e.g. "przepis na halloumi
-   dla 2 osób"), they know what they want — skip the onboarding questions and call
-   propose_recipes straight away for that dish. Only run the guided questions when
-   the request is vague ("coś na obiad", "zaproponuj coś").
+   dla 2 osób"), they know what they want — do NOT ask the onboarding questions.
+   Skip the QUESTIONS, not the recording: first call update_onboarding with every
+   detail the message already gives (here dish_type="halloumi", servings=2), then
+   call propose_recipes straight away for that dish. Recording the serving count
+   matters — it is what the recipe is later scaled to. Only ask the guided
+   questions when the request is vague ("coś na obiad", "zaproponuj coś").
 1. When the user wants a recipe, call propose_recipes — this shows 4 options.
 2. Tell the user to pick one (e.g. "Który przepis Cię interesuje?").
 3. When the user picks (says a number or name), call get_recipe_details with their choice.
@@ -851,6 +854,28 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             available_ingredients=ingredients or ob.ingredients or [],
             free_notes=free_notes or ob.free_notes or "",
         )
+
+        # Persist what this call was told, so a DIRECT request ("przepis na
+        # halloumi dla 4 osób") records its context even though the model went
+        # straight here without calling update_onboarding first.
+        #
+        # This is not just bookkeeping for the next turn: `servings` is what
+        # resolve_recipe / get_recipe_from_url scale the chosen recipe to, and
+        # they read it ONLY from deps.onboarding. Without this write the arguments
+        # above are used for the search and then discarded, so picking a proposal
+        # scaled to the `or 2` default instead of the user's stated count — right
+        # by luck for "dla 2 osób", silently wrong for any other number.
+        # Only fill blanks; never overwrite an answer the user already gave.
+        if dish_type and not ob.dish_type:
+            ob.dish_type = dish_type
+        if servings and not ob.servings:
+            ob.servings = servings
+        if max_time_minutes and not ob.max_time_minutes:
+            ob.max_time_minutes = max_time_minutes
+        if ingredients and not ob.ingredients:
+            ob.ingredients = ingredients
+        if free_notes and not ob.free_notes:
+            ob.free_notes = free_notes
         parsed = ParsedIngredients(
             items=intent.available_ingredients,
             must_use=[],
