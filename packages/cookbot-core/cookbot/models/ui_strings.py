@@ -90,8 +90,10 @@ class UiStrings:
 
 _PL = UiStrings(
     greeting=(
-        "Cześć! Jestem Twoim asystentem kulinarnym. Napisz co chcesz ugotować, a znajdę Ci przepis "
-        "— mogę też dodać danie do kalendarza lub przygotować listę zakupów."
+        "Cześć! Jestem Twoim asystentem kulinarnym. Napisz co chcesz ugotować, a znajdę Ci przepis. "
+        "Gdy już go znajdziemy, wystarczy że napiszesz mi tutaj kiedy go zjesz "
+        "(np. \"dodaj na sobotę na obiad\"), a wpiszę danie do kalendarza — "
+        "mogę też z niego przygotować listę zakupów."
     ),
     thinking="Rozumiem! Chwila, zaraz coś wymyślę…",
     summary_prefix="Świetnie! Danie: {dish}, czas: {time} min, składniki: {items}. Szukam przepisu…",
@@ -121,8 +123,10 @@ _PL = UiStrings(
 
 _EN = UiStrings(
     greeting=(
-        "Hi! I'm your cooking assistant. Tell me what you'd like to cook and I'll find a recipe "
-        "— I can also add meals to your calendar or build a shopping list."
+        "Hi! I'm your cooking assistant. Tell me what you'd like to cook and I'll find a recipe. "
+        "Once we have one, just tell me here when you'll eat it "
+        "(e.g. \"add it on Saturday for dinner\") and I'll put it in your calendar — "
+        "I can also turn it into a shopping list."
     ),
     thinking="Got it! Let me work out what we can make…",
     summary_prefix="Understood! Dish: {dish}, time: {time} min, using: {items}. Searching for a recipe now…",
