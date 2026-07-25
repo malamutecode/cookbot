@@ -4,6 +4,9 @@ export interface OrganizedItem {
   name: string
   quantity: string
   section: string
+  // Server-side field name (cookbot ShoppingItem.pantry_note) — snake_case here,
+  // camelCase once it becomes a ShopItem.
+  pantry_note?: string
 }
 
 // Mirrors SECTIONS_ORDER in cookbot/agents/shopping_list.py (store-aisle order).
@@ -37,7 +40,16 @@ export function mergeOrganized(current: ShopItem[], organized: OrganizedItem[]):
     name: i.quantity ? `${i.name} — ${i.quantity}` : i.name,
     checked: false,
     section: i.section,
+    // Only set when non-empty, so an untagged item stays shaped exactly as before.
+    ...(i.pantry_note ? { pantryNote: i.pantry_note } : {}),
   }))
+}
+
+/** One exported line. The pantry tag rides along in parentheses so the copied
+ * list carries the same information as the on-screen chip — the user asked for
+ * both. It stays out of `name` itself, which the Frisco lookup uses verbatim. */
+function line(i: ShopItem): string {
+  return i.pantryNote ? `- ${i.name} (${i.pantryNote})` : `- ${i.name}`
 }
 
 /** Plain-text render for export — paste-safe (no markdown), grouped by section. */
@@ -58,11 +70,11 @@ export function renderListText(items: ShopItem[], heading: string): string {
     ]
     ordered.forEach(sec => {
       lines.push(`${sec}:`)
-      bySection.get(sec)!.forEach(i => lines.push(`- ${i.name}`))
+      bySection.get(sec)!.forEach(i => lines.push(line(i)))
       lines.push('')
     })
   } else {
-    items.forEach(i => lines.push(`- ${i.name}`))
+    items.forEach(i => lines.push(line(i)))
   }
   return lines.join('\n').trim()
 }

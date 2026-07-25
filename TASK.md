@@ -15,7 +15,7 @@
 ## Status
 
 **Phases 1–3 are complete and the app is deployable** (Cloud Run backend +
-Firebase Hosting frontend, scripted in `infra/`). Steps 1–50 are shipped; their
+Firebase Hosting frontend, scripted in `infra/`). Steps 1–51 are shipped; their
 history is in `git log` and their behaviour is documented in the `CLAUDE.md` files.
 
 One thing remains open:
@@ -157,3 +157,11 @@ Kept because each is a real, decided-against gap — not a to-do list.
 - **Caching DDG results per dish** — needs Firestore/GCS; belongs with the blob-cache work.
 - **Streaming enrichment on the fast path** — needs a new `WsMessageType` plus
   merge-by-index in `ChatPanel`, and risks reintroducing an LLM call.
+- **Structured `SpizarniaItem.quantity`** (number + unit at entry time, STEP 51) —
+  would make pantry subtraction exact, but it is a data migration on every existing
+  pantry plus an input-UX change. The flag-when-unknown behaviour in
+  `models/pantry_math.py` exists precisely so the feature works without it.
+- **Pantry as live stock** (deducting it after shopping, STEP 51) — the pantry is
+  read-only by decision; `ws_send_spizarnia_offer` remains dead scaffolding.
+- **Per-item "I have this" override in the shopping-list UI** — the `pantryNote`
+  chip informs, but does not yet let the user resolve it in place.

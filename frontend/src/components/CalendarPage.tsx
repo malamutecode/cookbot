@@ -12,6 +12,8 @@ import {
   removeEntry,
 } from '../lib/calendar'
 import { portionsLabel, servingsAreKnown } from '../lib/servings'
+import { mergeOrganized } from '../lib/shoppingList'
+import { authHeaders } from '../hooks/useSpizarnia'
 import { t } from '../theme'
 
 const DAYS_PL = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
@@ -69,9 +71,13 @@ interface Props {
   onChange: (days: CalendarDay[]) => void
   onExportToShoppingList: (items: ShopItem[]) => void
   ui: UiStrings
+  // STEP 51 — deduct the pantry from the built list. The server ignores this
+  // unless the request also carries a verifiable identity, hence the token.
+  subtractPantry: boolean
+  idToken: string | null
 }
 
-export default function CalendarPage({ days, onChange, onExportToShoppingList, ui }: Props) {
+export default function CalendarPage({ days, onChange, onExportToShoppingList, ui, subtractPantry, idToken }: Props) {
   const [weekOffset, setWeekOffset] = useState(0)
   // Drop target under the cursor, keyed "date|slot" so only one slot highlights.
   const [dragOver, setDragOver] = useState<string | null>(null)
@@ -165,17 +171,15 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList, u
     try {
       const resp = await fetch(`${API_BASE}/v1/shopping-list/build`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ingredients }),
+        // Identity is optional on this route; sending it lets the server
+        // subtract the pantry when subtractPantry is on (it ignores it otherwise).
+        headers: authHeaders(idToken, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ ingredients, subtract_pantry: subtractPantry }),
       })
       if (resp.ok) {
         const data = await resp.json()
-        // Structured response: { items: [{name, quantity, section}], sections: [...] }
-        const items: ShopItem[] = (data.items ?? []).map((i: { name: string; quantity: string; section: string }) => ({
-          name: i.quantity ? `${i.name} — ${i.quantity}` : i.name,
-          checked: false,
-          section: i.section,
-        }))
+        // Structured response: { items: [{name, quantity, section, pantry_note}], sections: [...] }
+        const items: ShopItem[] = mergeOrganized([], data.items ?? [])
         onExportToShoppingList(items)
       } else {
         const unique = [...new Set(ingredients.map(i => i.toLowerCase()))]

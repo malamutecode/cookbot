@@ -70,6 +70,34 @@ package, and the one place both matching capabilities are wired together:
 - The route carries **no user identity** (it is a stateless computation over an
   ingredient list, reachable with the widget's API key alone) — which is why
   `require_password_set` is deliberately not applied to it or to `shopping_list`.
+  `shopping_list` is the narrower case: identity-*aware*, never identity-*required*
+  (see below).
+
+## Pantry-aware shopping list (`api/shopping_list.py`, STEP 51)
+
+Two **independent** user-facing flags, and conflating them is the mistake to avoid:
+
+| Flag | Where it travels | What it does |
+|---|---|---|
+| `use_spizarnia` | connect-time WS **query param** | appends a `[Pantry: …]` hint to each turn, biasing which recipes get proposed |
+| `subtract_pantry` | **per-turn** WS payload + REST body | deducts the pantry from a generated shopping list |
+
+- **The new flag is per-turn on purpose.** `use_spizarnia` is read once at the
+  handshake, so toggling it mid-session does nothing without a reconnect — a trap
+  this feature deliberately does not repeat.
+- **The pantry is loaded for every authenticated connection**, not just when
+  `use_spizarnia` is set, because the per-turn flag isn't known at handshake time.
+  The proposal hint therefore stays explicitly gated on `use_spizarnia` — reducing
+  that check to `if spizarnia_items` would bias every turn with an unchecked box.
+- **Subtraction is deterministic Python, never the LLM**: `cookbot/models/pantry_math.py`
+  runs *after* the ShoppingListAgent, so the agent keeps its single job and the
+  feature costs **zero extra tokens**.
+- **`POST /v1/shopping-list/build` is identity-aware, not identity-required.** A
+  valid token (or the `x-dev-uid` bypass) plus `subtract_pantry=true` reads the
+  pantry; anonymous API-key callers behave exactly as before, and an invalid token
+  or a failed pantry read degrades to the plain list rather than erroring. The
+  anonymous path is the widget's, and it must never break.
+- **The pantry is read-only here.** Building a list never mutates it.
 
 Details and the Frisco licensing blocker:
 [delivery-shops/CLAUDE.md](../../../packages/delivery-shops/CLAUDE.md).

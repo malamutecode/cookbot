@@ -38,6 +38,10 @@ export default function App() {
   const [page, setPage]           = useState<Page>('chat')
   const [ui, setUi]               = useState<UiStrings>({})
   const [spizEnabled, setSpizEnabled] = useState(false)
+  // Independent of spizEnabled — deducts the pantry from a generated shopping
+  // list (STEP 51). Sent per-turn to the chat and per-request to the calendar's
+  // list builder, so toggling it takes effect without reconnecting.
+  const [spizSubtract, setSpizSubtract] = useState(false)
   const [shopItems, setShopItems] = useState<ShopItem[]>(loadShopItems)
   const [calDays, setCalDays]     = useState<CalendarDay[]>(loadCalendar)
   const [chatProcessing, setChatProcessing] = useState(false)
@@ -219,6 +223,8 @@ export default function App() {
                     items={spizItems}
                     useSpizarnia={spizEnabled}
                     onToggle={setSpizEnabled}
+                    subtractPantry={spizSubtract}
+                    onToggleSubtract={setSpizSubtract}
                     onAdd={addSpiz}
                     onRemove={removeSpiz}
                     ui={ui}
@@ -238,6 +244,7 @@ export default function App() {
                 sessionId={sessionId}
                 idToken={idToken}
                 useSpizarnia={spizEnabled}
+                subtractPantry={spizSubtract}
                 ui={ui}
                 shopItems={shopItems}
                 onShopItemsChange={setShopItems}
@@ -263,6 +270,8 @@ export default function App() {
           onChange={handleCalendarChange}
           onExportToShoppingList={handleExportToShoppingList}
           ui={ui}
+          subtractPantry={spizSubtract}
+          idToken={idToken}
         />
       </div>
 

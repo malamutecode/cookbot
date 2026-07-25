@@ -211,6 +211,7 @@ function ItemRow({ item, onToggle, onRemove }: { item: ShopItem; onToggle: () =>
       <label style={styles.rowLabel}>
         <input type="checkbox" checked={item.checked} onChange={onToggle} style={{ accentColor: t.color.primary }} />
         <span style={{ ...(item.checked ? styles.strikethrough : {}) }}>{item.name}</span>
+        {item.pantryNote && <span style={styles.pantryChip}>{item.pantryNote}</span>}
       </label>
       <button style={styles.removeBtn} onClick={onRemove} title="Usuń" aria-label="Usuń pozycję">×</button>
     </div>
@@ -229,6 +230,9 @@ const styles: Record<string, React.CSSProperties> = {
   row: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0', borderBottom: `1px solid ${t.color.divider}` },
   rowLabel: { display: 'flex', alignItems: 'center', gap: 8, flex: 1, cursor: 'pointer', minWidth: 0, color: t.color.text },
   strikethrough: { textDecoration: 'line-through', color: t.color.textFaint },
+  // Pantry tag (STEP 51) — a muted chip, deliberately quieter than the item name:
+  // it is a hint to check at home, not part of what to buy.
+  pantryChip: { flexShrink: 0, fontSize: '0.68rem', color: t.color.textMuted, background: t.color.bg, border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '1px 6px', whiteSpace: 'nowrap' },
   removeBtn: { background: 'none', border: 'none', color: t.color.textFaint, fontSize: '1.1rem', lineHeight: 1, cursor: 'pointer', padding: '0 4px', flexShrink: 0 },
   actions: { display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center', marginTop: 8 },
   primaryBtn: { background: t.color.primary, border: `1px solid ${t.color.primary}`, borderRadius: t.radius.sm, padding: '8px 12px', fontSize: '0.78rem', color: '#fff', cursor: 'pointer', fontWeight: 600, flex: 1, boxShadow: t.shadow.sm },

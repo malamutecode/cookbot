@@ -476,3 +476,101 @@ def test_ws_spizarnia_toggle_sends_announcement(
     assert any("spiżarni" in c.lower() or "kurczak" in c.lower() for c in contents), (
         "Expected spiżarnia announcement mentioning pantry items"
     )
+
+
+def test_ws_no_spizarnia_announcement_without_the_toggle(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """STEP 51 loads the pantry for EVERY authenticated connection (subtraction
+    needs it, and the per-turn flag isn't known at handshake time). The proposal
+    hint must stay gated on use_spizarnia regardless — a regression here would
+    bias every turn's proposals with an unchecked box."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_stream(*_a, **_kw):
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        url = f"/v1/ws/{valid_session_id}"  # no ?use_spizarnia
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(url, headers=headers) as ws:
+            ws.receive_json()  # greeting (its own copy names example dishes)
+            # With the toggle on, the announcement is the very next message. It
+            # must be absent here, so the next message is this turn's response.
+            ws.send_json({"type": "message", "content": "cześć"})
+            after = ws.receive_json()
+
+    assert after.get("content") == "ok"
+
+
+def test_ws_subtract_pantry_flag_reaches_deps_per_turn(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """The flag rides the per-turn message payload (NOT a connect-time query
+    param like use_spizarnia), so toggling it mid-session takes effect on the
+    next turn without a reconnect. Also pins that the pantry is loaded even
+    though use_spizarnia is off."""
+    from contextlib import asynccontextmanager
+
+    seen: list[tuple[bool, list[str]]] = []
+
+    @asynccontextmanager
+    async def _fake_stream(_agent, deps, *_a, **_kw):
+        seen.append((deps.subtract_pantry, [i.name for i in deps.pantry]))
+
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        url = f"/v1/ws/{valid_session_id}"
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(url, headers=headers) as ws:
+            ws.receive_json()  # greeting
+            ws.send_json({"type": "message", "content": "lista", "subtract_pantry": True})
+            ws.receive_json()
+            # Same connection, flag flipped off — the next turn must follow it.
+            ws.send_json({"type": "message", "content": "jeszcze raz", "subtract_pantry": False})
+            ws.receive_json()
+
+    assert [flag for flag, _ in seen] == [True, False]
+    assert seen[0][1] == ["kurczak", "szpinak"]
+
+
+def test_ws_subtract_pantry_defaults_to_false_for_an_older_client(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """A payload with no subtract_pantry key must still parse and stay off."""
+    from contextlib import asynccontextmanager
+
+    seen: list[bool] = []
+
+    @asynccontextmanager
+    async def _fake_stream(_agent, deps, *_a, **_kw):
+        seen.append(deps.subtract_pantry)
+
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        url = f"/v1/ws/{valid_session_id}"
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(url, headers=headers) as ws:
+            ws.receive_json()
+            ws.send_json({"type": "message", "content": "lista"})
+            ws.receive_json()
+
+    assert seen == [False]

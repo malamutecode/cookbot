@@ -27,6 +27,7 @@ from cookbot.agents.chat import (
 from cookbot.models.calendar import CalendarEntry, CalendarState, MealSlot
 from cookbot.models.recipe import Recipe, RecipeSummary
 from cookbot.models.shopping import ShoppingItem, ShoppingList
+from cookbot.models.spizarnia import SpizarniaItem
 from cookbot.models.tenant import TenantConfig
 
 _CONFIG = TenantConfig(
@@ -660,6 +661,118 @@ async def test_get_shopping_list_empty_range_skips_agent() -> None:
     sl_events = _events_of(deps, ShoppingListEvent)
     assert len(sl_events) == 1
     assert sl_events[0].shopping_list.items == []
+
+
+# ── get_shopping_list × pantry subtraction (STEP 51) ──────────────────────────
+#
+# The math itself is covered exhaustively in tests/test_pantry_math.py. These
+# only pin the WIRING: that the flag gates it, and that the off path is a
+# regression-guard-level no-op.
+
+_PANTRY_CAL = CalendarState(entries=[
+    CalendarEntry(id="1", date="2026-06-01", recipe_name="Ciasto",
+                  ingredients=["mąka 500 g", "cukier 200 g"]),
+])
+
+_PANTRY_LIST = ShoppingList(
+    items=[
+        ShoppingItem(name="mąka", quantity="500 g", section="produkty suche/sypkie"),
+        ShoppingItem(name="cukier", quantity="200 g", section="produkty suche/sypkie"),
+    ],
+    sections=["produkty suche/sypkie"],
+)
+
+
+async def test_get_shopping_list_subtracts_pantry_when_flag_is_on() -> None:
+    deps = _make_deps(
+        calendar=_PANTRY_CAL,
+        subtract_pantry=True,
+        pantry=[
+            SpizarniaItem(name="mąka", quantity="200 g"),   # partial → reduced
+            SpizarniaItem(name="cukier", quantity="1 kg"),  # full    → covered
+        ],
+    )
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    stub_factory, _ = _stub_shopping_agent(_PANTRY_LIST)
+    with patch("cookbot.agents.chat.build_shopping_list_agent", stub_factory):
+        result = await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+
+    emitted = _events_of(deps, ShoppingListEvent)[0].shopping_list
+    assert [i.name for i in emitted.items] == ["mąka"]
+    assert emitted.items[0].quantity == "300 g"
+    assert emitted.items[0].pantry_note == _CONFIG.ui.pantry_note_have
+    assert result.item_count == 1
+    assert result.pantry_subtracted is True
+    assert result.pantry_covered == ["cukier"]
+    assert result.pantry_reduced == ["mąka"]
+
+
+async def test_get_shopping_list_flags_pantry_items_without_a_quantity() -> None:
+    deps = _make_deps(
+        calendar=_PANTRY_CAL,
+        subtract_pantry=True,
+        pantry=[SpizarniaItem(name="mąka", quantity="")],
+    )
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    stub_factory, _ = _stub_shopping_agent(_PANTRY_LIST)
+    with patch("cookbot.agents.chat.build_shopping_list_agent", stub_factory):
+        result = await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+
+    emitted = _events_of(deps, ShoppingListEvent)[0].shopping_list
+    # Nothing dropped, nothing reduced — the full amount is kept and tagged.
+    assert result.item_count == 2
+    assert emitted.items[0].quantity == "500 g"
+    assert emitted.items[0].pantry_note == _CONFIG.ui.pantry_note_check
+    assert result.pantry_flagged == ["mąka"]
+    assert result.pantry_covered == []
+
+
+async def test_get_shopping_list_is_unchanged_when_the_flag_is_off() -> None:
+    """Regression guard: a populated pantry with subtract_pantry=False must
+    produce byte-identical output to the pre-STEP-51 behaviour."""
+    deps = _make_deps(
+        calendar=_PANTRY_CAL,
+        subtract_pantry=False,
+        pantry=[SpizarniaItem(name="mąka", quantity="200 g")],
+    )
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    stub_factory, _ = _stub_shopping_agent(_PANTRY_LIST)
+    with patch("cookbot.agents.chat.build_shopping_list_agent", stub_factory):
+        result = await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+
+    assert _events_of(deps, ShoppingListEvent)[0].shopping_list == _PANTRY_LIST
+    assert result.item_count == 2
+    assert result.pantry_subtracted is False
+    assert result.pantry_covered == []
+    assert result.pantry_reduced == []
+    assert result.pantry_flagged == []
+
+
+async def test_get_shopping_list_with_flag_on_but_empty_pantry_is_a_no_op() -> None:
+    deps = _make_deps(calendar=_PANTRY_CAL, subtract_pantry=True, pantry=[])
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    stub_factory, _ = _stub_shopping_agent(_PANTRY_LIST)
+    with patch("cookbot.agents.chat.build_shopping_list_agent", stub_factory):
+        result = await fn(ctx, date_from="2026-06-01", date_to="2026-06-05")
+
+    assert _events_of(deps, ShoppingListEvent)[0].shopping_list == _PANTRY_LIST
+    assert result.pantry_subtracted is False
 
 
 # ── _normalize_date ───────────────────────────────────────────────────────────

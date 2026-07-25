@@ -2,21 +2,29 @@ import { useState, KeyboardEvent } from 'react'
 import { SpizarniaItem, UiStrings } from '../types'
 import { t } from '../theme'
 
-// Fallback for older servers whose /v1/ui payload predates spizarnia_info.
+// Fallbacks for older servers whose /v1/ui payload predates these strings.
 const INFO_FALLBACK =
-  'Zapisz tu składniki, które masz w domu. Gdy zaznaczysz „Użyj składników ze spiżarni”, ' +
-  'będę je brał pod uwagę przy proponowaniu przepisów — częściej zaproponuję dania z tego, co już masz.'
+  'Zapisz tu składniki, które masz w domu. Dwa niezależne ustawienia poniżej decydują, ' +
+  'jak ich używam: przy proponowaniu przepisów i przy tworzeniu listy zakupów.'
+const SUBTRACT_INFO_FALLBACK =
+  'Gdy tworzę listę zakupów, odejmę od niej to, co masz już w spiżarni. Jeśli przy składniku ' +
+  'podałaś/eś ilość, zmniejszę ją o tyle (a gdy masz wszystko — usunę pozycję). Jeśli ilości ' +
+  'nie ma, zostawię pozycję w całości i tylko ją oznaczę.'
 
 interface Props {
   items: SpizarniaItem[]
   useSpizarnia: boolean
   onToggle: (v: boolean) => void
+  // Independent of useSpizarnia: that one biases which recipes get proposed,
+  // this one deducts the pantry from a generated shopping list (STEP 51).
+  subtractPantry: boolean
+  onToggleSubtract: (v: boolean) => void
   onAdd: (name: string) => void
   onRemove: (name: string) => void
   ui: UiStrings
 }
 
-export default function SpizarniaPanel({ items, useSpizarnia, onToggle, onAdd, onRemove, ui }: Props) {
+export default function SpizarniaPanel({ items, useSpizarnia, onToggle, subtractPantry, onToggleSubtract, onAdd, onRemove, ui }: Props) {
   const [input, setInput] = useState('')
 
   function submit() {
@@ -49,6 +57,26 @@ export default function SpizarniaPanel({ items, useSpizarnia, onToggle, onAdd, o
           style={{ accentColor: t.color.primary }}
         />
         <span style={{ fontSize: '0.82rem' }}>{ui.spizarnia_toggle ?? 'Użyj składników z spiżarni'}</span>
+      </label>
+      <label style={styles.toggle}>
+        <input
+          type="checkbox"
+          checked={subtractPantry}
+          onChange={e => onToggleSubtract(e.target.checked)}
+          style={{ accentColor: t.color.primary }}
+        />
+        <span style={{ fontSize: '0.82rem' }}>
+          {ui.spizarnia_subtract_toggle ?? 'Odejmij spiżarnię od listy zakupów'}
+        </span>
+        <span
+          style={styles.infoIcon}
+          title={ui.spizarnia_subtract_info ?? SUBTRACT_INFO_FALLBACK}
+          role="img"
+          aria-label={ui.spizarnia_subtract_info ?? SUBTRACT_INFO_FALLBACK}
+          tabIndex={0}
+        >
+          ⓘ
+        </span>
       </label>
       <div style={styles.list}>
         {items.length === 0

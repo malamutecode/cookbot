@@ -52,3 +52,44 @@ test('renderListText groups by section, paste-safe plain text', () => {
   // No markdown/HTML artifacts.
   assert.ok(!text.includes('**') && !text.includes('<'))
 })
+
+// ── Pantry tag (STEP 51) ──────────────────────────────────────────────────────
+// The tag is a real field, never a suffix on `name`: the copied text and the
+// Frisco lookup both read `name` verbatim, so folding it in would corrupt them.
+
+test('mergeOrganized carries pantry_note through as pantryNote', () => {
+  const organized = [
+    { name: 'mąka', quantity: '300 g', section: 'produkty suche/sypkie', pantry_note: 'masz w spiżarni' },
+    { name: 'kurczak', quantity: '1 kg', section: 'mięso/ryby/wędliny' },
+  ]
+  const result = mergeOrganized([], organized)
+
+  const flour = result.find(i => i.name.startsWith('mąka'))!
+  assert.equal(flour.pantryNote, 'masz w spiżarni')
+  // The name is untouched — the tag never leaks into it.
+  assert.equal(flour.name, 'mąka — 300 g')
+
+  // An untagged item stays shaped exactly as before (no empty-string key).
+  const chicken = result.find(i => i.name.startsWith('kurczak'))!
+  assert.equal(chicken.pantryNote, undefined)
+})
+
+test('renderListText appends the pantry tag in parentheses', () => {
+  const items: ShopItem[] = [
+    { name: 'mąka — 300 g', checked: false, section: 'produkty suche/sypkie', pantryNote: 'masz w spiżarni' },
+    { name: 'kurczak — 1 kg', checked: false, section: 'mięso/ryby/wędliny' },
+  ]
+  const text = renderListText(items, 'Lista zakupów')
+  assert.ok(text.includes('- mąka — 300 g (masz w spiżarni)'))
+  // Untagged lines are unchanged — no stray parentheses.
+  assert.ok(text.includes('- kurczak — 1 kg'))
+  assert.ok(!text.includes('kurczak — 1 kg ('))
+})
+
+test('renderListText appends the pantry tag in the section-less branch too', () => {
+  const items: ShopItem[] = [
+    { name: 'mąka', checked: false, pantryNote: 'sprawdź w spiżarni' },
+  ]
+  const text = renderListText(items, 'Lista zakupów')
+  assert.ok(text.includes('- mąka (sprawdź w spiżarni)'))
+})

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from cookbot.agents.measures import convert_measure
+from cookbot.models.measures import convert_measure
 
 
 @pytest.mark.parametrize(

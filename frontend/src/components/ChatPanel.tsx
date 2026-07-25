@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
 import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay, MealSlot, DEFAULT_MEAL_SLOT } from '../types'
 import { WS_BASE, DEV_MODE, DEV_UID } from '../config'
 import { portionsLabel } from '../lib/servings'
+import { OrganizedItem, mergeOrganized } from '../lib/shoppingList'
 import { t } from '../theme'
 
 // The calendar grid matches day cells by exact YYYY-MM-DD string. Coerce common
@@ -26,6 +27,9 @@ interface Props {
   sessionId: string
   idToken: string | null
   useSpizarnia: boolean
+  // STEP 51. Sent with every turn rather than at connect time (as useSpizarnia
+  // is), so toggling the checkbox mid-session works without a reconnect.
+  subtractPantry: boolean
   ui: UiStrings
   shopItems: ShopItem[]
   onShopItemsChange: (items: ShopItem[]) => void
@@ -59,7 +63,7 @@ function calendarToWsPayload(calDays: CalendarDay[]) {
   }
 }
 
-export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopItems, onShopItemsChange, onAddToCalendar, onCalendarRemove, calDays, onProcessingChange }: Props) {
+export default function ChatPanel({ sessionId, idToken, useSpizarnia, subtractPantry, ui, shopItems, onShopItemsChange, onAddToCalendar, onCalendarRemove, calDays, onProcessingChange }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [inputEnabled, setInputEnabled] = useState(false)
@@ -101,9 +105,11 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopIt
     ])
   }
 
-  function mergeShopItems(msg: { items: string[]; replace: boolean; structured?: { items: { name: string; quantity: string; section: string }[]; sections: string[] } }) {
+  function mergeShopItems(msg: { items: string[]; replace: boolean; structured?: { items: OrganizedItem[]; sections: string[] } }) {
     if (msg.structured) {
-      const newItems: ShopItem[] = msg.structured.items.map(i => ({ name: i.quantity ? `${i.name} — ${i.quantity}` : i.name, checked: false, section: i.section }))
+      // mergeOrganized owns the name/quantity/pantryNote shaping — one place, so
+      // this path and the calendar's export can't drift.
+      const newItems: ShopItem[] = mergeOrganized([], msg.structured.items)
       if (msg.replace) {
         onShopItemsChange(newItems)
       } else {
@@ -282,7 +288,7 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopIt
     if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     addMsg({ kind: 'user', text })
     // Include current calendar state so agent can read/write it
-    sendWS({ type: 'message', content: text, calendar: calendarToWsPayload(calDays) })
+    sendWS({ type: 'message', content: text, calendar: calendarToWsPayload(calDays), subtract_pantry: subtractPantry })
     setInput('')
     setInputEnabled(false)
     streamingRef.current = true
@@ -293,7 +299,7 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopIt
   function pickRecipe(choice: number) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || streamingRef.current) return
     addMsg({ kind: 'user', text: `wybieram ${choice}` })
-    sendWS({ type: 'message', content: `wybieram ${choice}`, calendar: calendarToWsPayload(calDays) })
+    sendWS({ type: 'message', content: `wybieram ${choice}`, calendar: calendarToWsPayload(calDays), subtract_pantry: subtractPantry })
     setInputEnabled(false)
     streamingRef.current = true
     setIsTyping(true)

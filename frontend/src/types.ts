@@ -52,6 +52,9 @@ export interface ShopItem {
   name: string
   checked: boolean
   section?: string  // set when coming from ShoppingListAgent
+  // Pantry tag (STEP 51) — a real field, not a suffix on `name`, so it renders as
+  // its own chip and never corrupts the copied text or the Frisco lookup.
+  pantryNote?: string
 }
 
 export interface ShoppingSection {
@@ -124,6 +127,10 @@ export interface UiStrings {
   spizarnia_add_placeholder?: string
   spizarnia_add_button?: string
   spizarnia_info?: string
+  spizarnia_subtract_toggle?: string
+  spizarnia_subtract_info?: string
+  pantry_note_have?: string
+  pantry_note_check?: string
   shopping_list_heading?: string
   shopping_list_clear?: string
   shopping_list_add_placeholder?: string
@@ -192,7 +199,7 @@ export type WsOutMessage =
   | { type: 'hitl_checkpoint'; recipe: Recipe; round: number; labels: HitlLabels }
   | { type: 'spizarnia_offer'; missing_ingredients: string[]; used_from_spizarnia: string[] }
   | { type: 'calendar_update'; action: 'add' | 'remove'; entry?: CalendarEntry; entry_id?: string }
-  | { type: 'shopping_list_update'; items: string[]; replace: boolean; structured?: { items: { name: string; quantity: string; section: string }[]; sections: string[] } }
+  | { type: 'shopping_list_update'; items: string[]; replace: boolean; structured?: { items: { name: string; quantity: string; section: string; pantry_note?: string }[]; sections: string[] } }
   | { type: 'quota_exceeded'; window: 'daily' | 'monthly'; message: string; resets_at: string }
   | { type: 'error'; message: string }
 

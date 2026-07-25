@@ -30,16 +30,28 @@ class UiStrings:
     spizarnia_add_placeholder: str = "Dodaj składnik…"
     spizarnia_add_button: str = "Dodaj"
     # Tooltip on the ⓘ icon next to the Spiżarnia heading. Deliberately scoped to
-    # what the pantry ACTUALLY does: it is appended to the turn as a "[Pantry: …]"
-    # hint (websocket.py) only while the checkbox is on, so it biases which recipes
-    # get proposed. It is NOT subtracted from the shopping list — get_shopping_list
-    # never sees it. Don't promise that here until it is built.
+    # what the pantry ACTUALLY does. The two checkboxes are INDEPENDENT jobs:
+    # "Użyj składników…" appends a "[Pantry: …]" hint to the turn (websocket.py),
+    # biasing which recipes get proposed; "Odejmij spiżarnię…" (STEP 51) subtracts
+    # the pantry from a generated shopping list. Keep this copy in step with what
+    # each flag actually does — don't promise behaviour that isn't built.
     spizarnia_info: str = (
-        "Zapisz tu składniki, które masz w domu. Gdy zaznaczysz "
-        "„Użyj składników ze spiżarni”, będę je brał pod uwagę przy proponowaniu "
-        "przepisów — częściej zaproponuję dania z tego, co już masz. "
-        "Lista jest zapisana na Twoim koncie — nie musisz jej wpisywać za każdym razem."
+        "Zapisz tu składniki, które masz w domu. Lista jest zapisana na Twoim "
+        "koncie — nie musisz jej wpisywać za każdym razem. Dwa niezależne "
+        "ustawienia poniżej decydują, jak jej używam: przy proponowaniu przepisów "
+        "i przy tworzeniu listy zakupów."
     )
+    # STEP 51 — the second, independent checkbox.
+    spizarnia_subtract_toggle: str = "Odejmij spiżarnię od listy zakupów"
+    spizarnia_subtract_info: str = (
+        "Gdy tworzę listę zakupów, odejmę od niej to, co masz już w spiżarni. "
+        "Jeśli przy składniku podałaś/eś ilość, zmniejszę ją o tyle (a gdy masz "
+        "wszystko — usunę pozycję z listy). Jeśli ilości nie ma, zostawię pozycję "
+        "w całości i tylko ją oznaczę — sprawdzisz w domu, ile naprawdę zostało."
+    )
+    # Tags rendered next to a shopping-list item (models/pantry_math.py).
+    pantry_note_have: str = "masz w spiżarni"
+    pantry_note_check: str = "sprawdź w spiżarni"
     shopping_list_heading: str = "Lista zakupów"
     shopping_list_clear: str = "Wyczyść zaznaczone"
     shopping_list_add_placeholder: str = "Dodaj pozycję…"
@@ -179,11 +191,21 @@ _EN = UiStrings(
     spizarnia_add_placeholder="Add ingredient…",
     spizarnia_add_button="Add",
     spizarnia_info=(
-        "Keep track of what you already have at home. When \"Use pantry ingredients\" "
-        "is checked, I'll take these into account when suggesting recipes — you'll more "
-        "often get dishes based on what you already have. "
-        "The list is saved to your account, so you only enter it once."
+        "Keep track of what you already have at home. The list is saved to your "
+        "account, so you only enter it once. The two independent settings below "
+        "decide how I use it: when suggesting recipes, and when building a "
+        "shopping list."
     ),
+    spizarnia_subtract_toggle="Subtract pantry from the shopping list",
+    spizarnia_subtract_info=(
+        "When I build a shopping list, I'll deduct what's already in your pantry. "
+        "If you gave an amount for an ingredient, I'll reduce the list by that much "
+        "(and drop the line entirely when you have enough). If there's no amount, "
+        "I'll keep the full quantity and just tag it — you check at home how much "
+        "is really left."
+    ),
+    pantry_note_have="in your pantry",
+    pantry_note_check="check your pantry",
     shopping_list_heading="Shopping list",
     shopping_list_clear="Clear checked",
     shopping_list_add_placeholder="Add an item…",

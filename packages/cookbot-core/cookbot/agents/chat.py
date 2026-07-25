@@ -53,8 +53,11 @@ from cookbot.agents.recipe_search_fast import (
 from cookbot.agents.shopping_list import build_shopping_list_agent
 from cookbot.agents.web_search import build_web_fetch_agent, build_web_search_agent, web_fetch_prompt, web_search_prompt
 from cookbot.models.calendar import CalendarEntry, CalendarState, MealSlot
+from cookbot.models.pantry_math import PantryOutcome
+from cookbot.models.pantry_math import subtract_pantry as subtract_pantry_from_list
 from cookbot.models.recipe import ParsedIngredients, Recipe, RecipeSummary, UserIntent
 from cookbot.models.shopping import ShoppingList
+from cookbot.models.spizarnia import SpizarniaItem
 from cookbot.models.tenant import TenantConfig
 
 log = structlog.get_logger()
@@ -182,6 +185,12 @@ class ShoppingListResult(BaseModel):
     date_to: str
     # Set when the ShoppingListAgent failed — tells the chat agent to apologise.
     error: str | None = None
+    # Pantry subtraction (STEP 51), all empty/False unless the user turned it on.
+    # The agent mentions these so a dropped or reduced line isn't a silent edit.
+    pantry_subtracted: bool = False
+    pantry_covered: list[str] = []   # items dropped — the pantry covers them fully
+    pantry_reduced: list[str] = []   # items whose quantity was lowered
+    pantry_flagged: list[str] = []   # kept at full quantity, tagged "check the pantry"
 
 
 # ── Turn events (ordered side-effects, drained by the WS handler) ──────────────
@@ -255,6 +264,13 @@ class ChatAgentDeps:
     search_site_filter: str = ""                       # hard site: restriction (sites_only mode only)
     preferred_sites: list[str] = field(default_factory=list)  # soft-prefer domains (sites_and_internet mode)
     allow_ai_generated: bool = True                    # when False, skip RecipeGenAgent fallback
+    # Pantry subtraction (STEP 51). `pantry` is the user's Firestore spiżarnia and
+    # is READ-ONLY here; `subtract_pantry` is a per-turn flag from the message
+    # payload (NOT a connect-time query param — it must be togglable mid-session).
+    # Independent of the "use pantry ingredients" proposal hint, which never
+    # reaches deps at all — it is a text suffix added by the WS handler.
+    pantry: list[SpizarniaItem] = field(default_factory=list)
+    subtract_pantry: bool = False
 
     # Raw text of the user's current message, set by stream_chat_response before
     # the run. Tools use it to recover EXACT literals the model may have retyped
@@ -757,6 +773,12 @@ You MUST respond exclusively in {config.language}. Never use another language.
   give you; if `servings` is null, simply don't mention portions.
 - Remove a meal from the calendar → call remove_from_calendar.
 - Build a shopping list for a date range → call get_shopping_list.
+  When `pantry_subtracted` is true, the user asked for their pantry to be deducted,
+  so say what changed rather than letting it look like a mistake: name the items in
+  `pantry_covered` as dropped because they already have them, mention that
+  `pantry_reduced` amounts were lowered, and say `pantry_flagged` items are marked
+  to check at home because the pantry entry gave no amount. Keep it to one short
+  sentence; never list items these fields did not give you.
 - Answer general cooking questions directly.
 
 ## Recipe flow
@@ -1285,12 +1307,37 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
                 error="temporary failure while building the list — apologise briefly "
                       "and ask the user to try again in a moment.",
             )
+        # Pantry subtraction (STEP 51) — deterministic Python AFTER the agent, so
+        # the agent keeps its single job and this costs no extra tokens. Skipped
+        # entirely (byte-identical output) unless the user turned the flag on.
+        covered: list[str] = []
+        reduced: list[str] = []
+        flagged: list[str] = []
+        if ctx.deps.subtract_pantry and ctx.deps.pantry:
+            ui = ctx.deps.config.ui
+            aware = subtract_pantry_from_list(
+                shopping_list,
+                ctx.deps.pantry,
+                note_have=ui.pantry_note_have,
+                note_check=ui.pantry_note_check,
+            )
+            shopping_list = aware.shopping_list
+            covered = aware.covered
+            reduced = [r.item.name for r in aware.results if r.outcome is PantryOutcome.REDUCED]
+            flagged = [r.item.name for r in aware.results if r.outcome is PantryOutcome.FLAGGED]
+            log.info("shopping_list_pantry_subtracted",
+                     covered=len(covered), reduced=len(reduced), flagged=len(flagged))
+
         ctx.deps.events.append(ShoppingListEvent(shopping_list=shopping_list))
         return ShoppingListResult(
             item_count=len(shopping_list.items),
             sections=shopping_list.sections,
             date_from=date_from,
             date_to=date_to,
+            pantry_subtracted=bool(covered or reduced or flagged),
+            pantry_covered=covered,
+            pantry_reduced=reduced,
+            pantry_flagged=flagged,
         )
 
     return agent

@@ -210,9 +210,15 @@ async def websocket_endpoint(
     config = _get_tenant_config()
     ui = config.ui
 
-    # Load spiżarnia items if toggle is on
+    # Load the pantry once per connection. It feeds two INDEPENDENT features:
+    #   • the "[Pantry: …]" proposal hint below, gated on the connect-time
+    #     `use_spizarnia` param;
+    #   • shopping-list subtraction (STEP 51), gated on the per-turn
+    #     `subtract_pantry` flag, which is not known yet at handshake time.
+    # Hence it is fetched for any authenticated user, not only when use_spizarnia
+    # is set — one read per connection either way.
     spizarnia_items: list[SpizarniaItem] = []
-    if use_spizarnia and uid is not None:
+    if uid is not None:
         spizarnia = await firestore.get_spizarnia(uid)
         spizarnia_items = spizarnia.items
 
@@ -262,9 +268,13 @@ async def websocket_endpoint(
                 log.warning("chat_state_restore_failed",
                             session_id=session_id, error=str(exc))
 
+        # The proposal hint stays gated on use_spizarnia — the pantry is now loaded
+        # unconditionally (for STEP 51 subtraction), so this check can NOT be
+        # reduced to "if spizarnia_items" or an unchecked box would still bias
+        # every turn's proposals.
         spiz_suffix = (
             f"\n[Pantry: {', '.join(i.name for i in spizarnia_items)}]"
-            if spizarnia_items else ""
+            if use_spizarnia and spizarnia_items else ""
         )
 
         # ── Main chat loop ────────────────────────────────────────────────
@@ -280,6 +290,11 @@ async def websocket_endpoint(
 
             # Per-turn input: refresh calendar from this message (frontend sends current state)
             deps.calendar = msg.calendar or CalendarState()
+            # Per-turn input: pantry subtraction (STEP 51). Refreshed from THIS
+            # message so toggling the checkbox mid-session takes effect on the
+            # next turn, without a reconnect.
+            deps.subtract_pantry = msg.subtract_pantry
+            deps.pantry = spizarnia_items
 
             # Clear per-turn output collectors (contract lives in reset_turn)
             deps.reset_turn()

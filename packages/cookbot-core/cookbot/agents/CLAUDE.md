@@ -54,7 +54,7 @@ the ChatAgent coordinates them.
 | Compose / extract full recipe | `get_recipe_details` → WebFetch (known URL) or WebSearch, RecipeGen fallback |
 | Adapt to servings / ingredients | servings & onboarding context passed into fetch/gen prompts |
 | Calendar / meal planning | `add_to_calendar` / `remove_from_calendar` |
-| Structured shopping list | `get_shopping_list` over a date range → ShoppingListAgent |
+| Structured shopping list | `get_shopping_list` over a date range → ShoppingListAgent, then (opt-in) pantry subtraction |
 | General cooking Q&A | answered directly, no tool call |
 | Source trust & transparency | `search_site_filter` from user prefs; `source_url` preserved on the Recipe |
 | Graceful fallback | when `allow_ai_generated=False` and web search finds nothing, return a `source="not_found"` placeholder so the agent can explain and suggest changing sources / enabling AI |
@@ -97,11 +97,31 @@ Three invariants to preserve:
 The unit tier must never reach the network: `tests/test_agents/conftest.py` has an
 autouse fixture that neuters the fast path unless a test stubs it explicitly.
 
-`measures.py` is **not an agent** — it is a deterministic Polish cooking-measure
-converter (szklanka/łyżka/łyżeczka → ml/g) exposed to the ShoppingListAgent as a
-**tool**, because the LLM got fractional-cup arithmetic wrong ("1/3 szklanki" →
-150 ml instead of 80 ml). The model normalises amounts by CALLING this code, never
-by guessing. Never move this math into a prompt.
+**`models/measures.py` lives in `models/`, not here** — it is a deterministic
+Polish cooking-measure converter (szklanka/łyżka/łyżeczka → ml/g) merely *exposed*
+to the ShoppingListAgent as a **tool**, because the LLM got fractional-cup
+arithmetic wrong ("1/3 szklanki" → 150 ml instead of 80 ml). The model normalises
+amounts by CALLING this code, never by guessing. Never move this math into a prompt.
+
+It sat in `agents/` until STEP 51, when `models/pantry_math.py` also needed it
+(and its `fold_text` diacritic folding) — and `agents/__init__` imports `chat.py`,
+so a model importing from `agents/` is a circular import. **The layering is
+one-way: `agents/` → `models/`.** Anything pure and shared belongs in `models/`.
+
+`models/pantry_math.py` (STEP 51) is the same idea one step further: pantry
+subtraction runs as **deterministic Python after `get_shopping_list`'s agent call
+returns**, never as prompt instructions. Three consequences worth preserving:
+
+- **The ShoppingListAgent still knows nothing about a pantry** — it dedups/sums/
+  sections, full stop. Subtraction is a separate pass over its output, so the
+  feature adds **no model call and no tokens**.
+- **Quantity present → subtract; absent → tag, never drop.** `SpizarniaItem.quantity`
+  is free text and usually empty, so this is the common path, not an edge case.
+  Anything ambiguous (unparseable amount, mismatched unit families) is left
+  completely untouched: silently under-buying is worse than a redundant line.
+- **The tag is a data field** (`ShoppingItem.pantry_note` / `ShopItem.pantryNote`),
+  never a suffix on `name` — the copied list text and the Frisco product lookup
+  both read `name` verbatim.
 
 ## Fetching a known URL (two failure modes, both fixed — don't regress them)
 
@@ -168,8 +188,9 @@ by `frontend/src/lib/servings.ts`.
 
 - **`ChatAgentDeps`** — a dataclass, one instance per WebSocket connection.
   - `onboarding` (`OnboardingState`) **accumulates across turns** until complete.
-  - `calendar`, `search_site_filter`, `allow_ai_generated` — **refreshed each turn**
-    by the WS handler from the message payload / user's Firestore prefs.
+  - `calendar`, `search_site_filter`, `allow_ai_generated`, `pantry`,
+    `subtract_pantry` — **refreshed each turn** by the WS handler from the message
+    payload / user's Firestore prefs.
   - `last_recipe`, `last_proposals` — carry selection context between turns.
   - `events` (`list[TurnEvent]`) — **ordered per-turn side-effect collector,
     reset each turn** via `deps.reset_turn()`, then drained into typed WS

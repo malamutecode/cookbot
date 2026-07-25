@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic_ai import Agent
 
-from cookbot.agents.measures import convert_measure
+from cookbot.models.measures import convert_measure
 from cookbot.models.shopping import ShoppingList
 from cookbot.models.tenant import TenantConfig
 

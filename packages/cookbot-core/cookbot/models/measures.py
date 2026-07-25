@@ -52,12 +52,20 @@ _UNIT_STEMS = (
 )
 
 
-def _fold(text: str) -> str:
+def fold_text(text: str) -> str:
+    """Strip Polish diacritics and lowercase, so "Mąka"/"maka"/"MĄKA" compare equal.
+
+    Public because pantry matching (`models/pantry_math.py`) needs exactly this
+    normalisation — one folding rule for the whole codebase, not two that drift.
+    """
     # "ł"/"Ł" do NOT decompose to ASCII "l" under NFKD (they're distinct letters),
     # so map them first — otherwise "łyżka" would fold to "yzka" and never match.
     text = text.replace("ł", "l").replace("Ł", "L")
     decomposed = unicodedata.normalize("NFKD", text)
     return decomposed.encode("ascii", "ignore").decode("ascii").lower()
+
+
+_fold = fold_text  # module-internal alias (historic name)
 
 
 def _parse_amount(token_stream: str) -> Fraction | None:

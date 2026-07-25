@@ -5,7 +5,6 @@ from cookbot.agents.chat import (
     restore_chat_state,
     stream_chat_response,
 )
-from cookbot.agents.measures import convert_measure
 from cookbot.agents.product_rerank import (
     ReRankChoice,
     build_product_rerank_agent,
@@ -35,7 +34,6 @@ __all__ = [
     "scale_recipe_to_servings",
     "build_shopping_list_agent",
     "shopping_list_instructions",
-    "convert_measure",
     "web_search_prompt",
     "recipe_gen_prompt",
 ]

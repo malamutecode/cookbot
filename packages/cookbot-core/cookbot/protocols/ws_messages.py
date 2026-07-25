@@ -37,6 +37,11 @@ class WsInbound(BaseModel):
     add_missing: bool | None = None       # for spizarnia_response
     remove_used: bool | None = None       # for spizarnia_response
     calendar: CalendarState | None = None  # current calendar state sent by frontend
+    # STEP 51 — deduct the pantry from a generated shopping list. Sent PER TURN
+    # (like `calendar`), deliberately NOT as a connect-time query param the way
+    # `use_spizarnia` is: a mid-session toggle must reach the server without a
+    # reconnect. Defaults to False so an older client's payload still parses.
+    subtract_pantry: bool = False
 
 
 class WsOutToken(BaseModel):
