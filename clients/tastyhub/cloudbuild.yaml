@@ -1,8 +1,10 @@
 # Cloud Build → Artifact Registry → Cloud Run for the Feedek backend.
 #
-# Run from the REPO ROOT (build context must be the root — see Dockerfile):
+# Prefer ../../infra/deploy-backend.sh — it fills these substitutions from
+# infra/deploy.env, quotes the comma-separated lists correctly, and smoke-tests.
+# Raw invocation (from the REPO ROOT — build context must be the root):
 #   gcloud builds submit --config clients/tastyhub/cloudbuild.yaml \
-#     --substitutions=_REGION=europe-west1,_AR_REPO=feedek,_SERVICE=cookbot-tastyhub
+#     --substitutions=_REGION=europe-west1,_AR_REPO=feedek,_SERVICE=cookbot
 #
 # Prereqs (one-time, see DEPLOY.md): Artifact Registry repo created, secrets
 # openai-key + api-key in Secret Manager, Cloud Run + the build SA granted access.
@@ -14,7 +16,9 @@
 substitutions:
   _REGION: europe-west1
   _AR_REPO: feedek
-  _SERVICE: cookbot-tastyhub
+  # MUST match the `serviceId` in firebase.json's rewrites, or Hosting's
+  # same-origin /v1 proxy points at a different (or nonexistent) service.
+  _SERVICE: cookbot
   # Comma-separated origins allowed to call the API directly / open the WebSocket.
   # Set to your Firebase Hosting domain(s) at deploy time, e.g.
   #   https://feedek.web.app,https://feedek.firebaseapp.com

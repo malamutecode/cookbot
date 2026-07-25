@@ -4,6 +4,22 @@ Backend → **Cloud Run**, frontend → **Firebase Hosting**. This file is the o
 list of commands **you** run. Claude prepared the Dockerfile / cloudbuild.yaml /
 firebase.json / config but does not execute deploys.
 
+> ## ⚡ Scripted path (use this)
+>
+> The steps below are now wrapped in idempotent bash scripts under [`infra/`](infra/)
+> — portable to git bash, Linux and macOS. Read this file for the *why*, the
+> Firebase-console steps that can't be scripted, and rollback.
+>
+> ```bash
+> cp infra/deploy.env.example infra/deploy.env   # once; edit the values
+> ./infra/bootstrap.sh          # once per GCP project (sections 1–5)
+> ./infra/deploy-backend.sh     # every backend release (section 6 + 7 smoke test)
+> ./infra/deploy-frontend.sh    # every frontend release (section 11)
+> ```
+>
+> Add `--dry-run` to any of them to print the commands without running them.
+> See [`infra/README.md`](infra/README.md) for flags and the guardrails they add.
+
 - **Part 1 — Backend → Cloud Run** (sections 0–8)
 - **Part 2 — Frontend → Firebase Hosting + real Firebase Auth** (sections 9–13)
 
@@ -19,7 +35,7 @@ project — decide whether prod reuses it or is a new project).
 export PROJECT_ID=<YOUR_PROJECT_ID>          # e.g. feedek-prod
 export REGION=europe-west1
 export AR_REPO=feedek                         # Artifact Registry repo name
-export SERVICE=cookbot              # Cloud Run service name
+export SERVICE=cookbot              # Cloud Run service name — must match firebase.json's rewrite serviceId
 
 gcloud config set project "$PROJECT_ID"
 gcloud auth login          # if not already authenticated

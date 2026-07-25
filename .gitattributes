@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings. With CRLF, bash fails on the shebang:
+#   /usr/bin/env: 'bash\r': No such file or directory
+# This matters on Windows checkouts (core.autocrlf=true) — see infra/.
+*.sh text eol=lf

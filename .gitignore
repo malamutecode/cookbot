@@ -19,6 +19,9 @@ wheels/
 !.env.example
 !**/.env*.example
 
+# Deploy config (per-environment; infra/deploy.env.example IS committed)
+infra/deploy.env
+
 # Type checking / linting caches
 .ruff_cache/
 .pyright/
