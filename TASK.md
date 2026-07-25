@@ -18,7 +18,10 @@
 ## Current Step: → STEP 45
 
 **STEP 45** (multi-recipe pages: ask whether to split) is the only unstarted
-feature step. **STEP 49 ✔** (portion counts visible + trustworthy) ·
+feature step. **STEP 50 ✔** (Frisco live search API replaces the 50 MB feed:
+10/10 live match quality with zero LLM calls, no cold-start download;
+**production rollout gated on written consent from Frisco — see the STEP 50
+blocker**) · **STEP 49 ✔** (portion counts visible + trustworthy) ·
 **STEP 48 ✔** (meal slots + drag-and-drop, `9fdb8ba`) ·
 **STEP 47 ✔** (zero-LLM fast path: 11.73s → 3.50s, 2629 tokens → 0, 6 cards,
 `eaa984f`) · **STEP 46 ✔** · **STEP 44 ✔**. Phases 1–3 are otherwise complete —
@@ -709,12 +712,254 @@ cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_
 
 ---
 
+## STEP 50 ✔ — Frisco live search API replaces the 50 MB feed download
+
+**Goal:** Match shopping-list ingredients against Frisco's own search endpoint
+(`GET /api/v1/offer/products/query`) instead of downloading and locally indexing
+the 50 MB public feed. Frisco's server-side ranking is better than our lexical
+matcher, prices/stock become real-time instead of up-to-12-hours stale, and the
+Cloud Run cold-start penalty disappears. A whole shopping list is resolved with
+one `asyncio.gather` fan-out.
+
+### Current state (audited 2026-07-25)
+
+**Exists:**
+- `packages/delivery-shops/delivery_shops/shops/frisco.py` — `FriscoShop.load()`
+  downloads the ~50 MB feed (14,653 products, `generatedAt` 2026-07-25), maps to
+  `Product`, caches 12 h in memory behind an `asyncio.Lock`.
+- `delivery_shops/matcher.py` — `ProductMatcher`: local inverted index + weighted
+  lexical scoring (`_NAME_TOKEN_WEIGHT` … `_MIN_SCORE`), plus the `ReRanker`
+  callable seam.
+- `delivery_shops/base.py` — `DeliveryShop` **Protocol** with a single
+  `async load() -> tuple[list[Product], str | None]` + `get_shop(id)` registry.
+- `clients/tastyhub/app/api/grocery.py` — `POST /v1/grocery/{shop}/match`;
+  caches a `ProductMatcher` per shop on `app.state` keyed by `generated_at`;
+  LLM-re-ranks ambiguous shortlists concurrently via `asyncio.gather`.
+- `cookbot/agents/product_rerank.py` — `ProductReRankAgent`.
+- `frontend/src/components/FriscoPanel.tsx` — renders `GroceryMatchResult`,
+  including `generated_at` ("Katalog z dnia") and per-product "otwórz w Frisco".
+- Tests: `test_matcher.py`, `test_matching_quality.py` (hermetic, 9 query cases),
+  `test_frisco_live.py` (`integration`, category-substring assertions).
+
+**Does NOT exist:** any query-based shop interface. `DeliveryShop` only knows how
+to dump a whole catalogue, so the search API has nowhere to plug in today.
+
+**Verified live against `commerce.frisco.pl` on 2026-07-25** (this is why the STEP
+is worth doing — do not re-derive):
+- Frisco publishes an official **OpenAPI spec**: `/swagger/index.html` →
+  `/swagger/public/swagger.json` (786 KB, title `Frisco.Commerce.Web`, version
+  `Public`, 188 paths, auth schemes `ApiKey` + `Identity`).
+- `GET /api/v1/offer/products/query?search=…&language=pl&pageSize=5&pageIndex=1`
+  → **200 in ~120–150 ms, no auth**. Returns
+  `{products[], totalCount, facets, suggestions, categories}`; each hit carries
+  `ordererScore`/`originalScore`/`bucketScore` (Frisco's own relevance ranking).
+- **`pageIndex` is 1-based** — `pageIndex=0` returns HTTP 400.
+- **Quality: all 12 probe ingredients matched correctly with zero LLM calls**, and
+  every top hit satisfies the existing `_EXPECTED_CATEGORY_SUBSTR` table in
+  `test_frisco_live.py` (`sól`→Jodowana, `szpinak`→Szpinak, `makaron penne`→Penne,
+  `parmezan`→Parmezan, `pierś z kurczaka`→Filet, `śmietana 30%`→Świeża 30+%, …).
+- **Fan-out: 12 ingredients in 585 ms wall-clock** via `asyncio.gather`. A 28-query
+  burst returned `{200: 28}` at concurrency 4, 8 and 28 — no throttling observed,
+  no `Retry-After`. (Absence of a limit today is not a guarantee — cap anyway.)
+- **Search results omit `productUrl` and `keywords`** (both present in the feed).
+  `Product.url` is required and `FriscoPanel` renders it, so the URL must be
+  reconstructed. Feed format is
+  `https://www.frisco.pl/pid,{id}/n,{slug}/stn,product`; the slugless form
+  **`https://www.frisco.pl/pid,{id}/stn,product` returns 200** — confirmed, so
+  reconstruction is safe and does not depend on deriving a slug.
+- Search *does* provide `primaryCategory.name.pl`, `brand`/`producer`, `grammage`,
+  `unitOfMeasure`, `price.price`, `imageUrl`, `isAvailable`, plus feed-absent
+  extras (`ean`, `stock`, `rating`, `tags`).
+
+### Design decisions (settled during planning 2026-07-25)
+
+- **New optional `search()` on the `DeliveryShop` protocol**, alongside the
+  existing `load()` — *not* a replacement. `load()` is a catalogue-dump contract;
+  this is a query contract. Feed-only shops stay valid by simply not implementing
+  `search()`. Callers use `getattr`/`hasattr` capability detection, so
+  `packages/delivery-shops/CLAUDE.md` rule 1 ("shops are providers") holds.
+- **Search API primary, feed fallback** — on any API failure (timeout, non-200,
+  malformed body) fall back to the cached `ProductMatcher` feed path. The 50 MB
+  download then only happens when Frisco's API is actually broken.
+- **LLM re-ranker becomes opt-in, default OFF for API-backed matching.** Frisco's
+  ranking already beat it on all 12 probes; keeping it on would spend STEP 42
+  quota per match to re-decide a solved question. `ProductReRankAgent`, the
+  `ReRanker` seam and `model_product_rerank` all **stay** — gated by a new
+  `TenantConfig` flag so it can be switched back on per-tenant without a revert.
+  The re-ranker is still used unconditionally on the **feed fallback** path, where
+  lexical shortlists genuinely are ambiguous.
+- **Bounded concurrency via `asyncio.Semaphore`** (default 8) rather than an
+  unbounded `gather`. A 40-item shopping list must not open 40 sockets to a
+  third party we have no agreement with. 8 resolved 28 queries in 593 ms.
+- **One shared `httpx.AsyncClient` per shop instance**, created lazily and reused
+  across the fan-out — connection pooling is most of why the burst was fast.
+  Never one client per ingredient.
+- **`score` for API matches is Frisco's `ordererScore`**, carried through
+  unchanged rather than recomputed locally. It is not on the same scale as the
+  lexical score; `ProductMatch.score` is display/debug metadata, not compared
+  across sources, so this is safe.
+- **`generated_at` becomes `None` in API mode** — results are live, so "Katalog z
+  dnia" is meaningless. `FriscoPanel` already guards on `result.generated_at`
+  before rendering that line, so no frontend change is required for this.
+- **Per-ingredient failure is contained** — a single query that errors yields an
+  `UnmatchedItem`, never a failed request. Only a *wholesale* API failure trips
+  the feed fallback (`return_exceptions=True` on the gather).
+- **URL reconstruction uses the slugless form** `pid,{id}/stn,product` (verified
+  200). Do not attempt to rebuild the SEO slug — it is not in the search payload
+  and is not needed.
+
+### Tasks
+
+- [x] **Package models** — `delivery_shops/models.py` unchanged; `Product.keywords`
+      defaults to `""`, which is fine (the API path builds no local index).
+- [x] **Shop protocol** — `delivery_shops/base.py`: added `SearchableShop`
+      (extends `DeliveryShop` with `search` + `search_many`) and the
+      `supports_search()` `TypeGuard`. `load()` stays required, search optional.
+- [x] **Frisco provider** — `shops/frisco.py`: `_DEFAULT_SEARCH_URL`,
+      `_PRODUCT_URL_TEMPLATE`, `_DEFAULT_SEARCH_CONCURRENCY = 8`,
+      `_search_category()`, `_search_hit_to_product()`, pure
+      `parse_search_response()`, `search()`, `search_many()`, lazily pooled
+      `AsyncClient` + `aclose()`. `load()` and its TTL cache untouched.
+- [x] **Env / config** — `FRISCO_SEARCH_URL`, `FRISCO_SEARCH_CONCURRENCY`,
+      `FRISCO_SEARCH_TIMEOUT_SECONDS` documented in `.env.example` (read from
+      `os.environ` in `frisco.py`, like the existing feed vars);
+      `TenantConfig.grocery_llm_rerank: bool = False` added.
+- [x] **REST API** — `app/api/grocery.py`: search-first via `supports_search`,
+      shared `_resolve()` helper, `_match_via_feed()` fallback on any failure.
+- [x] **Agent/tool** — none, as planned. No new LLM call anywhere.
+- [x] **Protocol** — untouched.
+- [x] **Frontend** — untouched and verified: 25 tests + `tsc --noEmit` clean.
+- [x] **`ui_strings.py`** — untouched.
+- [x] **Docs** — `packages/delivery-shops/CLAUDE.md` documents both capabilities,
+      the feature-detection idiom, and the licensing gate.
+- [x] **Tests:** 17 new package unit tests (`test_frisco_search.py`), 5 new client
+      tests, 3 live tests (`test_frisco_search_live.py`). Existing
+      `test_matcher.py` / `test_matching_quality.py` pass untouched.
+
+### Deviation from plan (2026-07-25)
+
+**`Product.category` carries the full ancestry, not `primaryCategory`.** The plan
+said to map `primaryCategory.name.pl`. Implementing it that way failed the live
+quality test on `pomidory`: the API's `primaryCategory` is the *deepest leaf*
+(`Malinowe` for "Pomidory malinowe", `Jodowana` for iodised salt), which drops the
+very word the user searched for. The feed's category was higher up the tree, so
+the existing `_EXPECTED_CATEGORY_SUBSTR` contract broke. Fix: `_search_category()`
+joins the whole `categories` chain (`Warzywa i owoce Pomidory Duże Malinowe`),
+deduped, falling back to the leaf when the chain is absent. All 10 live cases pass.
+
+### Deferred within this feature
+
+- **Add-to-basket** (`PUT /api/v1/visitor/cart` with a self-generated
+  `X-Frisco-VisitorId`). Out of scope: it is a **write** to a third party we have
+  no agreement with. Needs a Frisco partnership conversation first — see the note
+  below. Spec facts re-verified against `swagger.json` 2026-07-25:
+  - Body is `Visitor.Cart.Commands.UpdateCart` = `{warehouse, visitorId,
+    products[], …}` where `products[]` is `{productId: str, quantity: int}`.
+  - **Full-state PUT, not an append** — the payload replaces the product list, so
+    adding to a non-empty basket requires `GET /api/v1/visitor/cart` first.
+  - `X-Frisco-VisitorId` (uuid) is a **required header**; `warehouse` partitions
+    availability/pricing, so it is postcode-dependent.
+  - Only the **GET** was probed live. An unauthenticated **PUT** is *untested* —
+    deliberately, since writing without consent is the thing being negotiated.
+  - **There is no cart-merge/transfer endpoint** (searched paths + schemas). So an
+    anonymous basket we fill server-side only becomes the user's basket if
+    frisco.pl adopts our `visitorId` client-side — unverified, and the main open
+    product risk for this feature.
+- **Logged-in cart / ordering** (`PUT /api/v1/users/{userId}/cart`, same
+  `products[]` shape). **Correction:** the spec's `Identity` scheme is OAuth2
+  **authorizationCode** (`https://identity.frisco.pl/connect/authorize`,
+  token at `/connect/token`) — *not* a password grant, so this does **not** require
+  custodying user credentials. It does require Frisco to register a
+  `client_id`/`redirect_uri` for us, i.e. a partnership deliverable. Softer
+  alternative on the same auth: `POST /api/v1/users/{userId}/lists` ("Creates
+  named list") pushes the shopping list as a Frisco list instead of a cart.
+  Separate STEP; product + security decision.
+- **`substitutes` / `recommendations` endpoints** for the unmatched list — a real
+  quality win, but a distinct feature with its own UI. Confirmed present and
+  anonymous-capable: `GET /api/v1/offer/products/substitutes`,
+  `/api/v1/offer/products/{productId}/substitutes`,
+  `/api/v1/offer/products/{productId}/recommendations`. Included in the
+  partnership ask since it is Frisco's own merchandising logic doing the work.
+- **Removing `ProductReRankAgent`** — kept deliberately as the opt-in escape
+  hatch and for the feed-fallback path.
+- **Autocomplete / query correction** (`/api/v1/autocomplete/…`,
+  `enableSuggestions`) — not needed while direct search scores 12/12.
+
+> **⚠ BLOCKER — commercial licensing. Resolve before this carries production
+> traffic.** (Researched 2026-07-25.)
+>
+> **Owner:** the API is first-party Frisco infrastructure (`commerce.frisco.pl`,
+> `identity.frisco.pl`). Operator: **Frisco.pl Sp. z o.o.**, Warsaw, ul. Omulewska 27,
+> KRS 0000261409, NIP 1132619524 — **100% owned by Grupa Eurocash S.A.** since
+> Dec 2019 (44% from 2014, remaining 56% bought from MCI for 132.5 M PLN).
+>
+> **Cost:** no API key, no billing, no metering — the search endpoint answers
+> unauthenticated. Free *of charge*.
+>
+> **Permission: not granted.** Frisco's Regulamin §8 states:
+> - **§8.3** — service elements may be used *"wyłącznie w zakresie dozwolonego
+>   użytku"*, expressly invoking the **Ustawa o ochronie baz danych** (27.07.2001)
+>   alongside copyright and unfair-competition law. The catalogue is claimed as a
+>   protected database (*sui generis*), the regime aimed precisely at systematic
+>   extraction.
+> - **§8.4** — *"Zabronione jest dokonywane w jakichkolwiek celach a w szczególności
+>   komercyjnych **bez uprzedniej pisemnej zgody** Spółki Frisco.pl, kopiowanie,
+>   modyfikowanie w jakikolwiek sposób Strony"*.
+>
+> The OpenAPI spec carries **no `license`, `termsOfService`, or `contact`** field
+> (verified) — so §8 is the only governing text, and it names commercial use and
+> requires **prior written consent**. CookBot is commercial multi-tenant SaaS.
+>
+> **This is not new exposure created by STEP 50.** `robots.txt` already scopes the
+> *feed* to "personal, non-commercial use", so the current STEP 41 implementation
+> is outside those terms too. Switching to the API is a good moment to fix it, not
+> the cause of it.
+>
+> **Action:** approach Frisco/Eurocash for written consent via the
+> [partner program](https://www.frisco.pl/stn,program-partnerski). The commercial
+> case is favourable — an assistant that fills Frisco baskets is affiliate-shaped
+> revenue for them — and the same conversation is what unlocks the deferred
+> add-to-basket work. Note they ship a competing in-app assistant (**Friscoach**,
+> Aug 2025), so expect the terms to be negotiated rather than rubber-stamped.
+>
+> Implementation and testing of this STEP may proceed (dev-scale, read-only);
+> **production rollout is gated on that written consent.**
+
+### Verify
+
+```bash
+cd packages/delivery-shops && uv run pytest -m "not integration" -q
+cd packages/cookbot-core   && uv run pytest -m "not integration" -q
+cd clients/tastyhub        && uv run pytest -q
+cd frontend                && npm test && npx tsc --noEmit
+cd packages/delivery-shops && uv run ruff check . --fix && npx -y pyright@latest
+
+# Live tier (real Frisco API, no LLM cost, ~1.6s):
+cd packages/delivery-shops && uv run pytest -m integration tests/test_frisco_search_live.py -v
+```
+
+> Ran 2026-07-25: **37 delivery-shops** (was 20) · **250 core** · **96 client**
+> (was 91) · **25 frontend** · **3/3 live** in 1.63s — all green. `ruff check`
+> clean in all three packages; `tsc --noEmit` clean. pyright unchanged from
+> baseline (7 delivery-shops / 18 core / 31 client, all pre-existing in test
+> files — verified by stashing the diff and re-running).
+>
+> **Live quality: 10/10 ingredients land in the right category with zero LLM
+> calls** — the same bar the feed path meets via `ProductReRankAgent`.
+
+### ⏸ PAUSE 50
+
+
+---
+
 # PHASE 4 — DEFERRED
 
 Do not implement until Phase 3 is live in production.
 
 - `○` GCS blob cache for the Frisco feed/index (~50 MB re-downloaded + rebuilt
-  on every Cloud Run cold start today — deferred out of STEP 41)
+  on every Cloud Run cold start today — deferred out of STEP 41).
+  **Largely obsoleted by STEP 50** — the search API removes the feed from the hot
+  path entirely; this only matters for the fallback path after STEP 50 lands.
 - `○` Cloud SQL + pgvector + recipe KB
 - `○` TastyHub recipe indexer (crawl → embed → pgvector)
 - `○` RecipeSearchAgent (pgvector-backed)

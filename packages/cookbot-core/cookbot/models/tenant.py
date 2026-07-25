@@ -41,6 +41,12 @@ class TenantConfig:
     # tenant may match its shopping list against, by shop id (e.g. "frisco").
     # The client contributes only this config; shop code lives in delivery-shops.
     delivery_shops: list[str] = field(default_factory=list)
+    # Whether to LLM-re-rank grocery shortlists that came from a shop's own search
+    # backend. Default OFF: shops that rank server-side (Frisco) already return the
+    # right product, so re-ranking would spend quota re-deciding a solved question.
+    # The feed-fallback path re-ranks regardless — lexical shortlists really are
+    # ambiguous. Flip this on per-tenant if a shop's own ranking regresses.
+    grocery_llm_rerank: bool = False
     # Per-turn guardrails: one chat turn (the ChatAgent run plus every sub-agent
     # call made from its tools, which share usage via usage=ctx.usage) may not
     # exceed these. Protects against runaway tool loops and TPM blowups.
