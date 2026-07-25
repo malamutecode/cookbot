@@ -16,9 +16,13 @@ frontend/
     ├── firebase.ts    # real Firebase Auth client
     ├── config.ts      # API base URL, API key
     ├── theme.ts / types.ts
-    ├── components/     # chat UI, recipe cards, calendar, shopping list, …
-    ├── hooks/          # useSpizarnia, …
-    └── lib/            # shoppingList.ts (+ .test.ts)
+    ├── components/     # ChatPanel, CalendarPage, ShoppingList, FriscoPanel,
+    │                   # SpizarniaPanel, SourcesPage, AdminPage, ChangePassword,
+    │                   # Login, NavBar
+    ├── hooks/          # useSpizarnia
+    └── lib/            # pure logic, each with a sibling .test.ts:
+                        #   shoppingList.ts · calendar.ts (slot move/selection
+                        #   reducers) · servings.ts (portionsLabel)
 ```
 
 ## Conventions
@@ -29,4 +33,12 @@ frontend/
   `Authorization: Bearer <firebase-id-token>` header. WS message shapes are the
   server's `cookbot/protocols/ws_messages.py` — keep the client in sync with it.
 - Dev server: `npm run dev` → http://localhost:3000 (talks to the client app on :8000).
-- Tests use Vitest (`*.test.ts`, e.g. `lib/shoppingList.test.ts`).
+- **Keep testable logic out of the components.** Reducers and formatters live in
+  `src/lib/` as pure functions so they can be tested without a DOM — there is no
+  component-testing setup (no jsdom, no React Testing Library), so logic left
+  inside a `.tsx` is effectively untested.
+- Tests are **`node:test` run through `tsx`**, not Vitest: `npm test` →
+  `tsx --test src/lib/*.test.ts`. Import `test`/`assert` from `node:test` /
+  `node:assert`, and note the glob only picks up `src/lib/` — a test file
+  elsewhere is silently never run.
+- Type check with `npx tsc --noEmit` (the build runs `tsc -b && vite build`).

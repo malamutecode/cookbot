@@ -46,10 +46,52 @@ else:
 **raises when every query fails** — that is the caller's signal to fall back to
 `load()`. `clients/tastyhub/app/api/grocery.py` is the reference implementation.
 
-> **Frisco licensing:** the search API is first-party, unauthenticated and free of
-> charge, but Frisco's Regulamin §8.4 requires **prior written consent** for
-> commercial use and §8.3 invokes Polish database-protection law. See the STEP 50
-> blocker note in [TASK.md](../../TASK.md) before production traffic.
+## ⚠ Frisco licensing — production traffic is BLOCKED on written consent
+
+Researched 2026-07-25. Not a code problem; do not "fix" it in code.
+
+- **Free, but not permitted.** The search endpoint answers unauthenticated with no
+  API key, billing or metering. Cost is not the issue — permission is.
+- **Regulamin §8.4** forbids use *"w jakichkolwiek celach a w szczególności
+  komercyjnych **bez uprzedniej pisemnej zgody**"*; **§8.3** invokes the Polish
+  *Ustawa o ochronie baz danych* (27.07.2001), i.e. *sui generis* database
+  protection aimed precisely at systematic extraction. The OpenAPI spec carries no
+  `license`, `termsOfService` or `contact` field, so §8 is the only governing text.
+  CookBot is commercial multi-tenant SaaS.
+- **Not new exposure:** `robots.txt` already scoped the *feed* to "personal,
+  non-commercial use", so the older feed-based path is outside those terms too.
+- **Operator:** Frisco.pl Sp. z o.o. (KRS 0000261409), 100% Grupa Eurocash S.A.
+- **Action:** seek written consent via the
+  [partner program](https://www.frisco.pl/stn,program-partnerski). The commercial
+  case is favourable (an assistant that fills baskets is affiliate-shaped revenue),
+  but they ship a competing assistant (*Friscoach*, Aug 2025) — expect negotiation.
+
+**Dev-scale, read-only work may proceed; production rollout may not.**
+
+### If we ever get consent — verified API facts (don't re-derive)
+
+Probed live 2026-07-25 against `commerce.frisco.pl`; spec at
+`/swagger/public/swagger.json` (title `Frisco.Commerce.Web`, 188 paths).
+
+- `GET /api/v1/offer/products/query` → 200 in ~120–150 ms, no auth. **`pageIndex`
+  is 1-based** (`0` ⇒ HTTP 400). Hits carry Frisco's own `ordererScore`.
+- Search omits `productUrl`/`keywords` (the feed has both), so `Product.url` is
+  reconstructed as `https://www.frisco.pl/pid,{id}/stn,product` — the slugless form
+  is confirmed 200. Don't try to rebuild the SEO slug.
+- `primaryCategory` is the **deepest leaf** (`Malinowe` for "Pomidory malinowe"),
+  which drops the searched word; `_search_category()` joins the whole `categories`
+  chain instead. This broke a live quality test once — keep the chain.
+- No throttling observed at concurrency 4/8/28, and no `Retry-After`. Absence of a
+  limit today is not a guarantee — the semaphore stays.
+- **Add-to-basket is deliberately unimplemented.** `PUT /api/v1/visitor/cart` is a
+  **write** to a third party we have no agreement with. It is a *full-state* PUT
+  (replaces the product list, so it needs a GET first), requires an
+  `X-Frisco-VisitorId` header, and is postcode-partitioned by `warehouse`. Only the
+  GET was probed; the PUT was left untested on purpose. **There is no cart
+  merge/transfer endpoint**, so a basket we fill server-side only becomes the
+  user's if frisco.pl adopts our `visitorId` client-side — unverified, and the main
+  product risk. Logged-in carts use OAuth2 **authorizationCode** (not a password
+  grant, so no credential custody), but need Frisco to register a `client_id`.
 
 ## Non-negotiable rules
 
@@ -68,7 +110,8 @@ else:
 
 ## Adding a shop
 
-1. Add `shops/{name}.py` with a `DeliveryShop` subclass (feed fetch + normalise to `Product`).
+1. Add `shops/{name}.py` with a class satisfying the `DeliveryShop` **Protocol**
+   (structural — do not inherit): feed fetch + normalise to `Product`.
 2. Register it in `get_shop`.
 3. Unit-test the matcher against a fixture feed — no live network in the unit suite.
 4. *Optional:* if the shop has its own search backend, also implement

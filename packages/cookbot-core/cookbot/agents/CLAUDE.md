@@ -20,17 +20,24 @@ This replaced the original rigid 5-step pipeline (see [TASK.md](../../../../TASK
                     │  deps=ChatAgentDeps (per-connection) │   • free-chat after first recipe
                     └──────────────┬───────────────────────┘
                                    │ calls as @agent.tool
-        ┌──────────────┬──────────┼───────────────┬──────────────────┐
-        ▼              ▼          ▼                ▼                  ▼
-  propose_recipes  get_recipe_  add_to_calendar  get_shopping_list  update_onboarding
-        │           details      remove_from_…    │                  (state only)
-        ▼              ▼                           ▼
-  fast path OR    WebSearch / WebFetch        ShoppingList
-  RecipeOptions    / RecipeGen Agent             Agent
-     Agent        (full Recipe extract/gen)   (dedup + sections)
-  (6 zero-LLM /
+        ┌──────────────┬──────────────┼───────────────┬──────────────────┐
+        ▼              ▼              ▼               ▼                  ▼
+  propose_recipes  get_recipe_    add_to_calendar  get_shopping_list  update_onboarding
+        │           details        remove_from_…     │                  (state only)
+        │           get_recipe_                      │
+        │           from_url                         │
+        ▼              ▼                             ▼
+  fast path OR    WebSearch / WebFetch          ShoppingList
+  RecipeOptions    / RecipeGen Agent               Agent
+     Agent        (full Recipe extract/gen)     (dedup + sections)
+  (6 zero-LLM /   then RecipeScaleAgent
    4 summaries)
 ```
+
+`get_recipe_details` resolves a *proposal* (by index or name, via
+`resolve_recipe`); `get_recipe_from_url` handles a **pasted link** and takes an
+explicit `servings` argument — see "Servings" below for why it cannot read the
+count from onboarding.
 
 **ChatAgent is the only stateful, conversational agent.** Every sub-agent is a
 single-LLM-call, stateless function built by a `build_*_agent(config)` factory
@@ -118,8 +125,44 @@ build the fetch agent as `build_web_fetch_agent(config, pinned_url=<url>)` and d
    first, cutting it to ~82k with the ingredients at ~5.1k. Use that tool, never
    PydanticAI's `web_fetch_tool` directly, and prefer cleaning over raising the cap.
 
-Servings: extraction records the page's OWN count; scaling to the user's target is
-separate (see Rule 5) and runs in `resolve_recipe` **and** `get_recipe_from_url`.
+## Servings (STEP 46 + 49) — where the target count comes from
+
+Extraction records the page's OWN count into `Recipe.original_servings`; scaling to
+the user's target is separate (Rule 5) and runs in `resolve_recipe` **and**
+`get_recipe_from_url`. The subtle part is where the *target* comes from, and it
+differs per path — three traps, each of which shipped as a bug:
+
+- **`deps.onboarding.servings` is the single anchor for scaling**, so any tool that
+  learns a serving count must write it back there, filling blanks only and never
+  overwriting an answer guided onboarding already collected. `propose_recipes` does
+  this (STEP 46: it used to accept `servings`, search with it and discard it, so
+  everything but the `or 2` default silently scaled wrong).
+- **A pasted link populates nothing.** Proposals are skipped and the prompt tells
+  the model not to run onboarding for a link, so onboarding stayed empty and
+  `scale_recipe_to_servings` never ran at all. Hence `get_recipe_from_url` takes an
+  explicit `servings: int = 0` argument and persists it. Don't "simplify" it back
+  to reading onboarding.
+- **`add_to_calendar` trusts `deps.last_recipe`, never its own arguments.** The
+  `ingredients` parameter is model-generated text, so it can carry the *pre-scale*
+  amounts while `last_recipe` holds the scaled ones. When `_same_dish` confirms the
+  resolved recipe is this dish, its ingredients and both counts win; otherwise the
+  entry falls back to `onboarding.servings` with no source count. A portion number
+  stamped on a list it doesn't describe is worse than no number.
+
+`CalendarEntry.servings` / `.source_servings` are `None`-defaulted so pre-STEP-49
+`localStorage` entries still parse; the three display states are defined once by
+`servings_are_known` / `servings_were_scaled` in `models/calendar.py` and rendered
+by `frontend/src/lib/servings.ts`.
+
+> **The calendar is `localStorage`-only — every new `CalendarEntry` field must be
+> optional.** There is no migration step and no server-side store, so a required
+> field would make every previously-saved meal plan unparseable. Both additions so
+> far follow this: `meal_slot` defaults to `obiad` and `servings`/`source_servings`
+> to `None`, each read defensively (`entry.mealSlot ?? DEFAULT_MEAL_SLOT`) rather
+> than by rewriting stored data. `MealSlot` values are **stable English keys**
+> (`sniadanie`/`lunch`/`obiad`/`kolacja`) precisely because they are persisted —
+> Polish display labels live in `ui_strings.py`, so changing copy can never
+> invalidate a saved plan.
 
 ## State model
 

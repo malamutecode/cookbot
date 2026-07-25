@@ -9,7 +9,8 @@
 ```
 app/
 ├── main.py        # FastAPI entry point — all routers mounted under /v1
-├── api/           # sessions, spizarnia, search_prefs, shopping_list, ui, websocket, …
+├── api/           # sessions, admin, spizarnia, search_prefs, shopping_list,
+│                  # grocery, ui, websocket
 ├── config/        # Settings (env) + the TastyHub TenantConfig instance
 ├── middleware/    # API key auth + Firebase token auth
 └── indexer/       # Phase 2 stub — empty
@@ -53,6 +54,26 @@ In the chat flow, tools never call these directly — they append `TurnEvent`s t
 `deps.events` and the WS handler's `_emit_event` maps each event to its helper.
 See [cookbot-core agents/CLAUDE.md](../../../packages/cookbot-core/cookbot/agents/CLAUDE.md).
 
+## Grocery matching (`api/grocery.py`)
+
+`POST /v1/grocery/{shop}/match` is the reference consumer of the `delivery-shops`
+package, and the one place both matching capabilities are wired together:
+
+- **Search-first, feed-fallback.** It feature-detects with `supports_search(shop)`
+  and only builds a `ProductMatcher` from the 50 MB feed when the live search path
+  fails wholesale. Keep the fallback — it is what makes a third-party API outage a
+  slow request instead of a broken feature.
+- **The LLM re-ranker is opt-in on the search path** (`TenantConfig.grocery_llm_rerank`,
+  default `False`): Frisco's own ranking already scores 10/10 live, so re-deciding
+  it would spend STEP 42 quota per match. It still runs unconditionally on the feed
+  fallback, where lexical shortlists genuinely are ambiguous.
+- The route carries **no user identity** (it is a stateless computation over an
+  ingredient list, reachable with the widget's API key alone) — which is why
+  `require_password_set` is deliberately not applied to it or to `shopping_list`.
+
+Details and the Frisco licensing blocker:
+[delivery-shops/CLAUDE.md](../../../packages/delivery-shops/CLAUDE.md).
+
 ## Auth
 
 Two middleware layers: an **API key** (`x-api-key`, the key embedded in the widget
@@ -66,6 +87,15 @@ token verify on both REST and WS; empty = open).
 non-disabled record authorizes the caller — so admin-created accounts (STEP 44)
 work without a redeploy. `find_user_record` is read-only on purpose;
 `get_user_record` *creates* a default and would make the whitelist a no-op.
+
+Admin-created accounts get a server-generated temp password
+(`cookbot/models/password.py`, `generate_temp_password()`: `secrets.choice` over an
+unambiguous alphabet with no `0/O/1/l/I`, 12 chars, ≥1 digit). It is kept pure and
+out of the API module so it stays unit-testable, and it is shown **once** in the
+admin panel — there is no email sender, and the response is never refetched.
+Forced rotation is `UserRecord.must_change_password` (Firebase has no such concept,
+so the server owns it); `POST /v1/me/password` updates Firebase via
+`asyncio.to_thread` (blocking SDK — Architecture Rule 4) and then clears the flag.
 
 Dependency chain: `get_current_user` → `get_user_record` → `require_password_set`
 (423 while `must_change_password`) / `require_admin` (403 unless role=='admin').

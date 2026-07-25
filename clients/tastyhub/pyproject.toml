@@ -35,9 +35,22 @@ packages = ["app"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pyright]
+# Pinned so `uv run pyright` gives the same answer everywhere (CI, any machine).
+pythonVersion = "3.12"
+# "standard", not "strict" — see the note in packages/cookbot-core/pyproject.toml.
+typeCheckingMode = "standard"
+include = ["app", "tests"]
+exclude = [".venv", "**/__pycache__"]
+# Baseline: 31 errors — 30 in tests/, plus one in app/config/settings.py where
+# pyright cannot see that pydantic-settings fills the required fields from env
+# (see tools/pyright_baseline.json). Judge a change by whether it MOVES that
+# count — `tools/check_pyright.py` enforces it.
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "pyright>=1.1.406",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]

@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Known pyright error counts per package, per file. These are pre-existing and",
+    "accepted; `tools/check_pyright.py` fails only when a file EXCEEDS its entry or",
+    "a file not listed here reports an error. When you legitimately fix errors, lower",
+    "the numbers here in the same commit — the script tells you which line to change.",
+    "Measured 2026-07-25 with pyright 1.1.411, typeCheckingMode=standard."
+  ],
+  "packages": {
+    "packages/cookbot-core": {
+      "//cookbot/protocols/ws_messages.py": "TYPE_CHECKING-only `from fastapi import WebSocket`. cookbot-core deliberately does not depend on fastapi (only clients do), so pyright cannot resolve it in this venv. Correct as written — do not add the dep to silence it.",
+      "cookbot/protocols/ws_messages.py": 1,
+      "tests/integration/test_url_servings_calendar_live.py": 2,
+      "tests/test_agents/test_chat.py": 1,
+      "tests/test_agents/test_recipe_search_fast.py": 7,
+      "tests/test_calendar_servings.py": 8
+    },
+    "packages/delivery-shops": {
+      "tests/test_matcher.py": 6,
+      "tests/test_matching_quality.py": 1
+    },
+    "clients/tastyhub": {
+      "app/config/settings.py": 1,
+      "tests/test_api.py": 4,
+      "tests/test_auth.py": 7,
+      "tests/test_auth_firestore_fallback.py": 7,
+      "tests/test_grocery.py": 2,
+      "tests/test_websocket.py": 10
+    }
+  }
+}

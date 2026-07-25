@@ -35,21 +35,48 @@ that matches.
 
 ## Step 2 — Static tier (always, for any code change)
 
-Ruff config lives in each package's `pyproject.toml` (`line-length=120`, lint
-`E,F,I,UP`). Run format-check + lint on the affected package(s):
+### Ruff — run all three packages, every time
+
+Ruff is cheap (sub-second per package) and lint errors leak across packages, so
+don't scope this to the diff — run the whole set on any Python change:
 
 ```bash
-# per affected Python package, e.g. cookbot-core:
-cd packages/cookbot-core && uv run ruff format --check . && uv run ruff check .
+cd packages/cookbot-core   && uv run ruff check .
+cd packages/delivery-shops && uv run ruff check .
+cd clients/tastyhub        && uv run ruff check .
 ```
 
-Pyright is **best-effort** (CLAUDE.md asks for strict types but it is not wired
-into pyproject). Try it; if the tool isn't installed, note that and move on — do
-not treat a missing pyright as a failure:
+All three are green today; **any** finding is a real regression from this change.
+Config is per package in `pyproject.toml` (`line-length=120`, lint `E,F,I,UP`).
+
+**Do not run `ruff format --check`, and do not run `ruff format .`.** It reports
+~55 pre-existing files repo-wide because `ruff format` collapses the codebase's
+aligned trailing-comment style. That is a known, deliberate divergence — the lint
+gate is `ruff check`. If the user explicitly asks to reformat, that is its own
+commit, never folded into a feature change.
+
+### Pyright — ratchet against the baseline
+
+Pyright is a dev dependency in all three packages, so `uv run` finds it. The repo
+carries a **known non-zero baseline** (57 errors, almost all untyped test
+fixtures), so never gate on "zero errors" — gate on "no *new* errors" with the
+ratchet script:
 
 ```bash
-cd packages/cookbot-core && uv run pyright . 2>/dev/null || echo "pyright unavailable — skipped (not a failure)"
+cd packages/cookbot-core   && uv run python ../../tools/check_pyright.py
+cd packages/delivery-shops && uv run python ../../tools/check_pyright.py
+cd clients/tastyhub        && uv run python ../../tools/check_pyright.py
 ```
+
+Exit 0 = at baseline. It fails in two directions, and they mean opposite things:
+
+- **New errors** → a real regression in this change. Fix the code; do **not** raise
+  the baseline to make it pass.
+- **Fewer errors than baseline** → you fixed something. Lower those entries in
+  `tools/pyright_baseline.json` in the same commit; the script prints exactly which.
+
+Run only the affected packages if you're in a hurry, but prefer all three — a core
+change routinely moves the client's count.
 
 For the **frontend** bucket, static = typecheck:
 

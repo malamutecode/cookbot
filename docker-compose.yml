@@ -9,3 +9,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # The same image Cloud Build ships to Cloud Run, so a broken Dockerfile is
+  # caught here rather than in CI. Build context is the repo root because the
+  # client's uv.lock pins editable path deps at ../../packages/* — see the
+  # comment at the top of clients/tastyhub/Dockerfile.
+  tastyhub:
+    build:
+      context: .
+      dockerfile: clients/tastyhub/Dockerfile
+    ports:
+      - "8000:8080"
+    env_file:
+      - clients/tastyhub/.env
+    environment:
+      # Override the .env values that only make sense outside the container:
+      # localhost inside the container is the container itself, not the emulator.
+      FIRESTORE_EMULATOR_HOST: firestore-emulator:8080
+      # The image already defaults to 8080; stated here so the port mapping above
+      # is readable without opening the Dockerfile.
+      PORT: 8080
+    depends_on:
+      firestore-emulator:
+        condition: service_healthy

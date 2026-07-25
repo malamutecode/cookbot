@@ -192,6 +192,13 @@ PROPOSAL_COUNT=4          # cards from the LLM (RecipeOptionsAgent) path
 PROPOSAL_COUNT_FAST=6     # cards from the zero-LLM DuckDuckGo fast path
 PROPOSAL_MIN_FAST=3       # below this many usable results, fall back to the LLM path
 
+# Frisco live search (STEP 50) — all optional, read from os.environ in shops/frisco.py.
+# Defaults are baked in; set only to override. Matching goes search-API-first and
+# falls back to the 50 MB feed on any failure.
+# FRISCO_SEARCH_URL=https://commerce.frisco.pl/api/v1/offer/products/query
+# FRISCO_SEARCH_CONCURRENCY=8        # max parallel queries per shopping list
+# FRISCO_SEARCH_TIMEOUT_SECONDS=10   # per-query timeout
+
 # Phase 2 only — not required for MVP
 # DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/cookbot
 # EMBEDDING_MODEL=text-embedding-3-small
@@ -204,6 +211,12 @@ pydantic-settings loads that file at app startup (docker-compose only runs the e
 ---
 
 ## Running Locally
+
+Two modes. `docker-compose up --build` runs the **whole stack** — the emulator plus
+the same image Cloud Build ships to Cloud Run — which is how you catch a broken
+Dockerfile locally instead of in CI (compose points the container at
+`firestore-emulator:8080`, overriding the `.env` value). It has no hot reload, so
+for actual development use the native loop below.
 
 ```bash
 # 1. Start dependencies (Firestore emulator only — no postgres needed for MVP)
@@ -372,11 +385,20 @@ attribution — `deploy-backend.sh` sets this; preserve it in any manual overrid
 
 ## Useful Commands
 
+> **Two known tooling quirks — don't chase either as a new problem.**
+> Pyright's baseline is **non-zero** (57 errors: 7 delivery-shops / 19 core / 31
+> client) and that is expected — all but two are loosely typed test fixtures. Judge
+> a change by whether it *moves* that count: `tools/check_pyright.py` enforces
+> exactly that against `tools/pyright_baseline.json`, failing on new errors *and*
+> on a stale baseline after you fix some. Likewise `ruff format .` reformats ~55
+> pre-existing files repo-wide (it collapses the codebase's aligned trailing-comment
+> style), so never run it inside a feature commit; the gate is `ruff check`.
+
 ```bash
-# Format + lint (run before every commit)
-uv run ruff format .
+# Lint + types (run before every commit, per package)
 uv run ruff check . --fix
-npx -y pyright@latest      # NOT `uv run pyright` — not installed as a dev dep yet
+uv run python ../../tools/check_pyright.py   # pyright vs the checked-in baseline
+uv run pyright                                # raw run, if you want the errors themselves
 
 # Check dependency graph (verify no circular imports)
 uv run pydeps cookbot --max-bacon=3 --noshow

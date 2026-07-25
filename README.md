@@ -31,6 +31,26 @@ frontend/                  Vite + React test app (mock cooking site + chat widge
 
 ## Running locally
 
+Two ways: **containers** (closest to production, one command) or a **native dev
+loop** (hot reload, what you want while writing code).
+
+### The whole stack in Docker
+
+Builds and runs the same image Cloud Build ships to Cloud Run, alongside the
+emulator. Needs `clients/tastyhub/.env` to exist first (step 2 below):
+
+```bash
+docker-compose up --build
+curl http://localhost:8000/health
+```
+
+The container reaches the emulator at `firestore-emulator:8080` — compose
+overrides `FIRESTORE_EMULATOR_HOST` for you, so the `localhost:8080` in your
+`.env` stays correct for native runs. No hot reload here; use it to check the
+image builds and boots, then switch to the native loop below.
+
+### Native (hot reload)
+
 **1. Start the Firestore emulator** (the only local dependency):
 
 ```bash
@@ -89,8 +109,40 @@ cd packages/cookbot-core && uv run pytest -m integration tests/test_firestore.py
 
 ## Formatting & type checks (before committing)
 
+Run per package (`packages/cookbot-core`, `packages/delivery-shops`,
+`clients/tastyhub` — each carries its own ruff and pyright config):
+
 ```bash
-uv run ruff format .
-uv run ruff check . --fix
-uv run pyright
+uv run ruff check .                          # the lint gate — must be clean
+uv run python ../../tools/check_pyright.py   # pyright vs the checked-in baseline
 ```
+
+Two things to know before you chase a red run:
+
+- **`ruff format` is not a gate.** Running it repo-wide reformats ~55 pre-existing
+  files (it collapses the codebase's aligned trailing-comment style), so don't run
+  it inside a feature commit. `ruff check` is the gate.
+- **Pyright's baseline is non-zero and that is expected** — 57 errors, almost all
+  in test files with deliberately loose fixtures.
+  [`tools/check_pyright.py`](tools/check_pyright.py) enforces "no *new* errors"
+  against [`tools/pyright_baseline.json`](tools/pyright_baseline.json) rather than
+  "zero errors", so the count can only ratchet down. If you fix errors, lower the
+  baseline in the same commit — the script prints exactly which entries to change.
+
+Plain `uv run pyright` also works (pyright is a dev dependency in all three
+packages); it just prints the raw baseline count instead of comparing it.
+
+## Deploying
+
+Deployment is scripted — don't hand-roll `gcloud`. Backend and frontend deploy
+independently, and every script takes `--dry-run` and `--help`:
+
+```bash
+./infra/bootstrap.sh          # once per GCP project: APIs, Firestore, secrets, IAM
+./infra/deploy-backend.sh     # Cloud Build → Artifact Registry → Cloud Run + /health smoke test
+./infra/deploy-frontend.sh    # npm run build → Firebase Hosting
+```
+
+Config lives in `infra/deploy.env` (gitignored; copy from `deploy.env.example`).
+See **[DEPLOY.md](DEPLOY.md)** for the runbook and **[infra/README.md](infra/README.md)**
+for script flags and the guardrails they enforce.
