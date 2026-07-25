@@ -808,6 +808,12 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
 - User can ask to add the current recipe to another date → call add_to_calendar.
   If several turns pass after a recipe was shown and it still has not been added,
   it is fine to remind them once that you can put it in the calendar on request.
+- User can change how many people the dish is for ("a jednak dla 6", "zrób to na 4
+  osoby") → call update_onboarding with the new `servings`, then re-resolve the SAME
+  recipe (get_recipe_details with the same choice, or get_recipe_from_url with the
+  same link and the new `servings`) so the quantities are actually recalculated.
+  Updating onboarding alone does not rescale a card that is already on screen.
+  Keep the same dish — this is a rescale, not a new search.
 - User can ask about shopping, substitutions, cooking tips → answer directly.
 - If the user says "nowa rozmowa", "od nowa", "reset" or similar → acknowledge and
   tell them to use the restart button, or simply forget the context and start fresh
@@ -843,7 +849,12 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             f"- 'today' / 'dzisiaj' → {today}.\n"
             f"- A date without a year (e.g. '06.08', '8 sierpnia', '12th') → use year {year}, "
             f"giving YYYY-MM-DD. Never use a past year like 2023 or 2024.\n"
-            f"- If that date has already passed this year, still use {year} unless the user says otherwise."
+            f"- If that date has already passed this year, still use {year} unless the user says otherwise.\n"
+            f"- Weeks start on MONDAY (Polish convention). For a shopping list over a relative "
+            f"range, resolve it yourself into date_from/date_to: 'ten tydzień' / 'this week' → "
+            f"the Monday..Sunday containing {today}; 'przyszły tydzień' / 'next week' → the "
+            f"following Monday..Sunday; 'najbliższe X dni' → {today} plus X-1 days. Never ask "
+            f"the user for exact dates when the range can be resolved this way."
         )
 
     # Dynamic system prompt — injected on every turn, shows exactly what's
