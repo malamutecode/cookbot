@@ -17,6 +17,10 @@ export default function AdminPage({ idToken }: Props) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [savingUid, setSavingUid] = useState<string | null>(null)
+  // Lives here, NOT in CreateUserForm: the temp password is shown exactly once and
+  // is unrecoverable, so it must outlive the `loading`/`error` early returns below
+  // (they unmount the form, which would silently discard it). See TempPasswordPanel.
+  const [created, setCreated] = useState<CreatedUserView | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -97,8 +101,25 @@ export default function AdminPage({ idToken }: Props) {
     }
   }
 
-  if (loading) return <div style={styles.page}><p style={{ color: '#888' }}>Ładowanie…</p></div>
-  if (error) return <div style={styles.page}><p style={{ color: t.color.danger }}>{error}</p></div>
+  // The temp-password panel renders before the early returns: a refresh triggered
+  // by creating the user flips `loading` back on, and anything rendered only in
+  // the branch below would be torn down mid-flight, taking the password with it.
+  if (loading) {
+    return (
+      <div style={styles.page}>
+        <TempPasswordPanel created={created} onDismiss={() => setCreated(null)} />
+        <p style={{ color: '#888' }}>Ładowanie…</p>
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div style={styles.page}>
+        <TempPasswordPanel created={created} onDismiss={() => setCreated(null)} />
+        <p style={{ color: t.color.danger }}>{error}</p>
+      </div>
+    )
+  }
 
   return (
     <div style={styles.page}>
@@ -107,7 +128,8 @@ export default function AdminPage({ idToken }: Props) {
         Limit 0 oznacza brak ograniczenia (∞). Zużycie liczone jest w tokenach na dzień / miesiąc.
       </p>
 
-      <CreateUserForm idToken={idToken} onCreated={load} />
+      <TempPasswordPanel created={created} onDismiss={() => setCreated(null)} />
+      <CreateUserForm idToken={idToken} onCreated={load} onCreatedUser={setCreated} />
 
       <div style={styles.tableWrap}>
         <table style={styles.table}>
@@ -145,16 +167,65 @@ export default function AdminPage({ idToken }: Props) {
   )
 }
 
-interface CreateFormProps {
-  idToken: string | null
-  onCreated: () => void
+interface TempPasswordPanelProps {
+  created: CreatedUserView | null
+  onDismiss: () => void
 }
 
 /**
- * "Dodaj użytkownika" — creates the Firebase account server-side and shows the
- * generated temp password ONCE. Nothing refetches it: the backend keeps no copy.
+ * The one and only surface for the generated temp password. Rendered by AdminPage
+ * (not by CreateUserForm) and outside the loading/error early returns, because the
+ * backend keeps no copy — if this unmounts, the password is gone for good and the
+ * account has to be deleted and recreated.
  */
-function CreateUserForm({ idToken, onCreated }: CreateFormProps) {
+function TempPasswordPanel({ created, onDismiss }: TempPasswordPanelProps) {
+  const [copied, setCopied] = useState(false)
+
+  // Reset the transient "Skopiowano ✓" state when a different account is shown.
+  useEffect(() => { setCopied(false) }, [created?.temp_password])
+
+  if (!created) return null
+
+  async function copyPassword() {
+    if (!created) return
+    try {
+      await navigator.clipboard.writeText(created.temp_password)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* clipboard denied — the password is visible on screen anyway */ }
+  }
+
+  return (
+    <div style={styles.tempPanel}>
+      <div style={styles.tempHeading}>Konto utworzone: {created.record.email}</div>
+      <p style={styles.tempWarn}>
+        To hasło tymczasowe pokazujemy tylko raz — nie zobaczysz go ponownie.
+        Przekaż je użytkownikowi; przy pierwszym logowaniu ustawi własne hasło.
+      </p>
+      <div style={styles.tempRow}>
+        <code style={styles.tempPassword}>{created.temp_password}</code>
+        <button style={styles.saveBtn} onClick={copyPassword}>
+          {copied ? 'Skopiowano ✓' : 'Kopiuj'}
+        </button>
+        <button style={styles.secondaryBtn} onClick={onDismiss}>
+          Zamknij
+        </button>
+      </div>
+    </div>
+  )
+}
+
+interface CreateFormProps {
+  idToken: string | null
+  onCreated: () => void
+  onCreatedUser: (created: CreatedUserView) => void
+}
+
+/**
+ * "Dodaj użytkownika" — creates the Firebase account server-side and hands the
+ * response up to AdminPage, which owns displaying the temp password.
+ */
+function CreateUserForm({ idToken, onCreated, onCreatedUser }: CreateFormProps) {
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -163,8 +234,6 @@ function CreateUserForm({ idToken, onCreated }: CreateFormProps) {
   const [monthly, setMonthly] = useState('0')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [created, setCreated] = useState<CreatedUserView | null>(null)
-  const [copied, setCopied] = useState(false)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -183,7 +252,9 @@ function CreateUserForm({ idToken, onCreated }: CreateFormProps) {
         }),
       })
       if (r.ok) {
-        setCreated(await r.json())
+        // Hand the password up BEFORE onCreated(): the refresh it triggers unmounts
+        // this form, so anything kept in local state here would never be shown.
+        onCreatedUser(await r.json())
         setEmail(''); setDisplayName(''); setRole('user'); setDaily('0'); setMonthly('0')
         setOpen(false)
         onCreated()
@@ -199,36 +270,8 @@ function CreateUserForm({ idToken, onCreated }: CreateFormProps) {
     }
   }
 
-  async function copyPassword() {
-    if (!created) return
-    try {
-      await navigator.clipboard.writeText(created.temp_password)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch { /* clipboard denied — the password is visible on screen anyway */ }
-  }
-
   return (
     <div style={styles.createWrap}>
-      {created && (
-        <div style={styles.tempPanel}>
-          <div style={styles.tempHeading}>Konto utworzone: {created.record.email}</div>
-          <p style={styles.tempWarn}>
-            To hasło tymczasowe pokazujemy tylko raz — nie zobaczysz go ponownie.
-            Przekaż je użytkownikowi; przy pierwszym logowaniu ustawi własne hasło.
-          </p>
-          <div style={styles.tempRow}>
-            <code style={styles.tempPassword}>{created.temp_password}</code>
-            <button style={styles.saveBtn} onClick={copyPassword}>
-              {copied ? 'Skopiowano ✓' : 'Kopiuj'}
-            </button>
-            <button style={styles.secondaryBtn} onClick={() => setCreated(null)}>
-              Zamknij
-            </button>
-          </div>
-        </div>
-      )}
-
       {!open && (
         <button style={styles.saveBtn} onClick={() => { setOpen(true); setError(null) }}>
           Dodaj użytkownika
