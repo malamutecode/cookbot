@@ -6,6 +6,7 @@ directly (via agent._function_tools dict).  No real LLM calls are made.
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,7 +24,7 @@ from cookbot.agents.chat import (
     onboarding_status_prompt,
     stream_chat_response,
 )
-from cookbot.models.calendar import CalendarEntry, CalendarState
+from cookbot.models.calendar import CalendarEntry, CalendarState, MealSlot
 from cookbot.models.recipe import Recipe, RecipeSummary
 from cookbot.models.shopping import ShoppingItem, ShoppingList
 from cookbot.models.tenant import TenantConfig
@@ -296,6 +297,58 @@ async def test_add_to_calendar_appends_entry() -> None:
     assert adds[0].entry.recipe_name == "Tomato Pasta"
     assert adds[0].entry.date == "2026-06-01"
     assert result.recipe_name == "Tomato Pasta"
+
+
+async def test_add_to_calendar_defaults_to_obiad() -> None:
+    """Omitting meal_slot must not fail and must land in the default section."""
+    deps = _make_deps()
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    result = await fn(ctx, recipe_name="Rosół", ingredients=["kurczak"],
+                      target_date="2026-06-01")
+    assert _events_of(deps, CalendarAddEvent)[0].entry.meal_slot is MealSlot.OBIAD
+    assert result.meal_slot is MealSlot.OBIAD
+
+
+async def test_add_to_calendar_honours_explicit_meal_slot() -> None:
+    deps = _make_deps()
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    result = await fn(ctx, recipe_name="Owsianka", ingredients=["płatki"],
+                      target_date="2026-06-01", meal_slot=MealSlot.SNIADANIE)
+    assert _events_of(deps, CalendarAddEvent)[0].entry.meal_slot is MealSlot.SNIADANIE
+    assert result.meal_slot is MealSlot.SNIADANIE
+
+
+def test_calendar_entry_without_meal_slot_parses_as_obiad() -> None:
+    """Entries persisted before STEP 48 carry no meal_slot — they must still
+    parse, defaulting to obiad, or every saved plan would break on load."""
+    entry = CalendarEntry.model_validate({
+        "id": "1", "date": "2026-06-01",
+        "recipe_name": "Legacy", "ingredients": ["x"],
+    })
+    assert entry.meal_slot is MealSlot.OBIAD
+
+
+def test_calendar_update_ws_message_round_trips_meal_slot() -> None:
+    """The slot reaches the browser through the existing calendar_update message,
+    which is why this feature needs no new WsMessageType."""
+    from cookbot.protocols.ws_messages import WsOutCalendarUpdate
+
+    entry = CalendarEntry(
+        id="1", date="2026-06-01", recipe_name="Owsianka",
+        ingredients=["płatki"], meal_slot=MealSlot.SNIADANIE,
+    )
+    payload = json.loads(WsOutCalendarUpdate(action="add", entry=entry).model_dump_json())
+    assert payload["entry"]["meal_slot"] == "sniadanie"
 
 
 # ── remove_from_calendar tool ─────────────────────────────────────────────────

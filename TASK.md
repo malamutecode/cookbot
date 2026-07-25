@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 47 ✔ (fast path: zero-LLM DuckDuckGo search for plain recipe requests — measured 11.73s → 3.50s, 2629 tokens → 0, 6 cards). STEP 46 ✔; STEP 44 COMPLETE (admin-created user accounts). Phases 1–3 otherwise complete (app is deployable: Cloud Run backend + Firebase Hosting frontend); STEP 43 deployment polish still open.
+## Current Step: → STEP 48 (meal slots in the calendar + shopping-list button row). STEP 47 ✔ (fast path: zero-LLM DuckDuckGo search for plain recipe requests — measured 11.73s → 3.50s, 2629 tokens → 0, 6 cards); STEP 46 ✔; STEP 44 COMPLETE (admin-created user accounts). Phases 1–3 otherwise complete (app is deployable: Cloud Run backend + Firebase Hosting frontend); STEP 43 deployment polish still open.
 
 ---
 
@@ -661,6 +661,147 @@ uv run ruff check . --fix && uv run pyright
 ```
 
 ### ⏸ PAUSE 47
+
+---
+
+## STEP 48 ★ — Meal slots in the calendar + shopping-list button row
+
+**Goal:** Split every calendar day into `Notatki` + 4 meal sections (Śniadanie,
+Lunch, Obiad, Kolacja) so a week reads as a real meal plan, and let the user drag
+dishes between slots and days. Add per-dish selection so a shopping list can be
+built from chosen meals rather than whole days, and add a "clear the whole list"
+button to the shopping-list panel with the button row rearranged.
+
+### Current state (audited 2026-07-25)
+
+- `CalendarEntry` (`packages/cookbot-core/cookbot/models/calendar.py`) has
+  `id/date/recipe_name/ingredients/recipe` — **no meal-slot field**.
+- The calendar is **client-only state in `localStorage`** (`frontend/src/App.tsx:17-25`,
+  `CAL_KEY = 'tastyhub_calendar'`). Firestore stores **no** calendar; the backend
+  only emits `calendar_update` events. So slots need **no persistence work**.
+- `CalendarPage.tsx` renders one flat `dayBody` per day: all `day.recipes` chips
+  followed by a single `freeText` textarea (`:202-219`).
+- **Day-level shopping-list selection already exists** — `selectedDays`
+  (`CalendarPage.tsx:43-74`), a checkbox in each day header, and the toolbar button
+  `Utwórz listę zakupów (N dni)` (`:158-167`). This STEP keeps it and adds a second,
+  independent per-dish selection.
+- Drag-and-drop today is **copy, not move**: `effectAllowed = 'copy'` (`:239`) and
+  `onDrop` (`:93-103`) appends to the target day, deduping by `entry.id`, so the
+  source copy is never removed.
+- `WsOutCalendarUpdate` (`protocols/ws_messages.py:84-88`) embeds the whole
+  `CalendarEntry`, so a new model field reaches the browser with **no new
+  `WsMessageType`, no new event class, and no `_emit_event` arm**.
+- `add_to_calendar` (`agents/chat.py:1102-1130`) takes `recipe_name`,
+  `ingredients`, `target_date` — no slot argument.
+- `ShoppingList.tsx` has three separate `styles.actions` rows (`:165-187`):
+  organize / copy+share / clear-checked+frisco. `clearChecked` exists (`:56-58`);
+  **no clear-all**. `Udostępnij` renders only when `navigator.share` exists (`:109`).
+- Shopping-list copy lives in `models/ui_strings.py:32-41` (PL) and `:141-150` (EN).
+
+### Design decisions (settled during planning 2026-07-25)
+
+- **Slot IDs are stable English keys** (`sniadanie`, `lunch`, `obiad`, `kolacja`);
+  Polish labels come from `ui_strings.py` — persisted `localStorage` entries must
+  not break when copy changes.
+- **`Notatki` is not a slot.** It stays `day.freeText`, rendered as the first
+  section. It holds no recipes, so no checkbox and it is never a drop target.
+- **Legacy entries default to `obiad`** on read (`entry.mealSlot ?? 'obiad'`), not
+  by rewriting `localStorage` — slot-less data keeps working untouched.
+- **The agent picks the slot** — `add_to_calendar` gains an optional `meal_slot`
+  enum arg defaulting to `obiad`, plus one prompt rule, so "śniadanie w środę"
+  lands correctly. Cost is one enum in an existing tool schema: **no new LLM call
+  and no measurable per-turn token increase** (STEP 42 quotas unaffected).
+- **Drag is move, not copy** — payload `{entryId, fromDate, fromSlot}` with
+  `effectAllowed = 'move'`; the drop removes from source before inserting. Copy
+  semantics would duplicate a dish across slots.
+- **Two independent selection models, two buttons** (user's explicit choice):
+  the existing day checkboxes drive `Utwórz listę zakupów (N dni)`; new per-chip
+  checkboxes drive `Utwórz listę zakupów (wybrane dania)`. Neither clears the other.
+- **`Wyczyść wszystko` confirms** via `window.confirm` — unlike clear-checked it is
+  unrecoverable. `Wyczyść zaznaczone` keeps its current no-confirm behaviour.
+- **No `TenantConfig` field** — the 4 slots are a fixed product concept, not a
+  per-tenant tunable. Revisit only if a client needs different meal structure.
+
+### Tasks
+
+- [ ] **Core models** — `models/calendar.py`: add `MealSlot(StrEnum)` with
+      `SNIADANIE/LUNCH/OBIAD/KOLACJA` (values `sniadanie|lunch|obiad|kolacja`) and
+      `CalendarEntry.meal_slot: MealSlot = MealSlot.OBIAD`. Default keeps every
+      existing payload valid.
+- [ ] **Firestore service** — **untouched.** The calendar is `localStorage`-only;
+      making it durable is a separate feature, not a rider on this one.
+- [ ] **Agent/tool** — `agents/chat.py`: `add_to_calendar` takes
+      `meal_slot: MealSlot = MealSlot.OBIAD`, passes it into `CalendarEntry`, and
+      returns it on `CalendarAddResult`. Add one prompt line under "Recipe flow":
+      map śniadanie/lunch/obiad/kolacja from the user's words, default obiad.
+- [ ] **Protocol** — **untouched.** `WsOutCalendarUpdate` already nests the full
+      `CalendarEntry`; the new field serialises automatically.
+- [ ] **REST API** — **untouched.** Both buttons reuse `POST /v1/shopping-list/build`.
+- [ ] **Env / config** — **untouched.** No new tunables.
+- [ ] **Copy** — `models/ui_strings.py`: add `shopping_list_clear_all`
+      ("Wyczyść wszystko" / "Clear all") and
+      `shopping_list_clear_all_confirm` ("Usunąć całą listę zakupów?"), plus
+      `calendar_export_selected` ("Utwórz listę zakupów (wybrane dania)") and
+      `calendar_notes_label` ("Notatki"). Keep PL defaults and EN overrides in sync.
+- [ ] **Frontend — types** — `frontend/src/types.ts`: `MealSlot` union type;
+      `CalendarEntry.mealSlot?: MealSlot`.
+- [ ] **Frontend — ShoppingList** — `ShoppingList.tsx`: add `clearAll()` guarded by
+      `window.confirm`; restructure the action rows to
+      `[Poukładaj listę zakupów]` full-width, then `[Kopiuj][Udostępnij]`, then
+      `[Wyczyść zaznaczone][Znajdź w Frisco][Wyczyść wszystko]`. Let the third row
+      wrap (`flexWrap`) — it is 3 buttons in a narrow panel.
+- [ ] **Frontend — CalendarPage** — `CalendarPage.tsx`:
+      render `Notatki` (the existing textarea) then the 4 slot sections per day;
+      each slot is its own drop target; empty slots collapse to a thin labelled
+      drop strip so a 1/7-width column stays readable; chips carry a selection
+      checkbox; move-on-drop replaces copy-on-drop; add the second toolbar button
+      whose label counts selected dishes and which is disabled at zero.
+- [ ] **Frontend — App** — `App.tsx`: `handleAddToCalendar` must respect
+      `entry.mealSlot` from the WS payload (currently appends slot-blind).
+- [ ] **Tests:**
+  - Core unit `tests/test_agents/` — `add_to_calendar` with an explicit
+      `meal_slot` sets it on the emitted `CalendarAddEvent`; omitting it yields
+      `obiad`; a `CalendarEntry` parsed from slot-less JSON defaults to `obiad`
+      (the legacy-payload guarantee). `TestModel` for the ChatAgent, per house rule.
+  - Core unit — `WsOutCalendarUpdate(action="add", entry=…).model_dump_json()`
+      round-trips `meal_slot`, proving the protocol needs no change.
+  - Frontend unit (`node:test` via `tsx` — NOT Vitest; `frontend/CLAUDE.md` says
+      Vitest but `package.json` is the authority and uses `node:test`) — extract the
+      slot/move reducers into `frontend/src/lib/calendar.ts` so they are testable
+      without React: moving an entry between slots removes it from the source;
+      moving onto its own slot is a no-op; per-dish selection collects ingredients
+      from only the ticked chips. Widen the `test` script glob to `src/lib/*.test.ts`
+      so new lib tests actually run (it hardcoded the one shopping-list file).
+  - Integration — **none needed.** No emulator, no new live-LLM behaviour.
+
+### Deferred within this feature
+
+- **Reordering chips within a slot** — drag targets the slot; order stays
+  append-only. Full sortable lists need a drag library and are not what was asked.
+- **Firestore persistence for the calendar** — it is `localStorage` today, so a
+  meal plan does not follow the user across devices. Real gap, but a separate
+  STEP: it needs a document shape, a sync/conflict story, and a migration.
+- **Per-tenant slot configuration** (e.g. a client wanting 3 or 6 meals) — no
+  demand yet; would become a `TenantConfig` field.
+- **Collapsing to a single selection model** — two selection systems on one screen
+  may read as cluttered once built. Revisit after seeing it in use.
+
+### Verify
+
+```bash
+cd packages/cookbot-core && uv run pytest -m "not integration" -q
+cd clients/tastyhub     && uv run pytest -q
+cd frontend             && npm test && npx tsc --noEmit
+cd packages/cookbot-core && uv run ruff check . --fix && npx -y pyright@latest
+```
+
+> `pyright` is not installed in the core venv (`uv run pyright` fails with
+> "program not found"); run it via `npx` until it is added as a dev dependency.
+> Baseline on this branch is **10 pre-existing errors**, all in
+> `test_recipe_search_fast.py`, `test_url_servings_calendar_live.py` and
+> `test_chat.py:826` — STEP 48 adds none.
+
+### ⏸ PAUSE 48
 
 ---
 

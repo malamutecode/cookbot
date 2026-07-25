@@ -130,6 +130,14 @@ export interface UiStrings {
   shopping_list_share?: string
   shopping_list_copied?: string
   shopping_list_empty?: string
+  shopping_list_clear_all?: string
+  shopping_list_clear_all_confirm?: string
+  calendar_notes_label?: string
+  calendar_slot_sniadanie?: string
+  calendar_slot_lunch?: string
+  calendar_slot_obiad?: string
+  calendar_slot_kolacja?: string
+  calendar_export_selected?: string
   frisco_button?: string
   frisco_heading?: string
   frisco_not_found?: string
@@ -181,6 +189,15 @@ export type WsOutMessage =
   | { type: 'quota_exceeded'; window: 'daily' | 'monthly'; message: string; resets_at: string }
   | { type: 'error'; message: string }
 
+// Meal section within a calendar day. Stable English keys — these are persisted
+// in localStorage, so Polish labels must never become the stored value.
+export type MealSlot = 'sniadanie' | 'lunch' | 'obiad' | 'kolacja'
+
+export const MEAL_SLOTS: MealSlot[] = ['sniadanie', 'lunch', 'obiad', 'kolacja']
+
+// Fallback for entries saved before meal slots existed (STEP 48).
+export const DEFAULT_MEAL_SLOT: MealSlot = 'obiad'
+
 export interface CalendarDay {
   date: string // ISO date string YYYY-MM-DD
   recipes: CalendarEntry[]
@@ -193,4 +210,5 @@ export interface CalendarEntry {
   ingredients: string[]
   date?: string    // ISO YYYY-MM-DD — set when added via agent
   recipe?: Recipe  // full recipe for detail view
+  mealSlot?: MealSlot  // undefined on legacy entries → treated as DEFAULT_MEAL_SLOT
 }

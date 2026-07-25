@@ -57,6 +57,15 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
     onChange(items.filter(i => !i.checked))
   }
 
+  // Unlike clearChecked this is unrecoverable (the whole list, checked or not),
+  // so it asks first.
+  function clearAll() {
+    if (items.length === 0) return
+    const question = ui.shopping_list_clear_all_confirm ?? 'Usunąć całą listę zakupów?'
+    if (!window.confirm(question)) return
+    onChange([])
+  }
+
   // Send the current item names to the ShoppingListAgent, which merges duplicates,
   // sums/normalizes amounts and assigns a section. Result replaces the list.
   async function organize() {
@@ -177,12 +186,15 @@ export default function ShoppingList({ items, onChange, ui }: Props) {
           </button>
         )}
       </div>
-      <div style={styles.actions}>
+      <div style={{ ...styles.actions, flexWrap: 'wrap' }}>
         <button style={styles.clearBtn} onClick={clearChecked} disabled={isEmpty}>
           {ui.shopping_list_clear ?? 'Wyczyść zaznaczone'}
         </button>
         <button style={styles.friscoBtn} onClick={findInFrisco} disabled={friscoLoading || isEmpty}>
           {friscoLoading ? (ui.frisco_loading ?? 'Szukam w Frisco…') : (ui.frisco_button ?? 'Znajdź w Frisco')}
+        </button>
+        <button style={styles.clearAllBtn} onClick={clearAll} disabled={isEmpty}>
+          {ui.shopping_list_clear_all ?? 'Wyczyść wszystko'}
         </button>
       </div>
 
@@ -223,4 +235,6 @@ const styles: Record<string, React.CSSProperties> = {
   secondaryBtn: { background: t.color.surface, border: `1px solid ${t.color.primary}`, borderRadius: t.radius.sm, padding: '7px 12px', fontSize: '0.78rem', color: t.color.primary, cursor: 'pointer', fontWeight: 600 },
   clearBtn: { background: 'none', border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '6px 10px', fontSize: '0.78rem', color: t.color.textMuted, cursor: 'pointer', flexShrink: 0 },
   friscoBtn: { background: 'none', border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '6px 10px', fontSize: '0.78rem', color: t.color.textMuted, cursor: 'pointer', flexShrink: 0 },
+  // Destructive: wipes the whole list, so it reads differently from "clear checked".
+  clearAllBtn: { background: 'none', border: `1px solid ${t.color.danger}`, borderRadius: t.radius.sm, padding: '6px 10px', fontSize: '0.78rem', color: t.color.danger, cursor: 'pointer', flexShrink: 0 },
 }

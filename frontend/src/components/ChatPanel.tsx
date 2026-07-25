@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
-import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay } from '../types'
+import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay, MealSlot, DEFAULT_MEAL_SLOT } from '../types'
 import { WS_BASE, DEV_MODE, DEV_UID } from '../config'
 import { t } from '../theme'
 
@@ -52,6 +52,7 @@ function calendarToWsPayload(calDays: CalendarDay[]) {
         date: day.date,
         recipe_name: r.recipeName,
         ingredients: r.ingredients,
+        meal_slot: r.mealSlot ?? DEFAULT_MEAL_SLOT,
       }))
     ),
   }
@@ -200,13 +201,14 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopIt
       case 'calendar_update':
         console.debug('[CAL] calendar_update received:', msg.action, JSON.stringify(msg.entry ?? msg.entry_id))
         if (msg.action === 'add' && msg.entry) {
-          const raw = msg.entry as CalendarEntry & { recipe_name?: string; date?: string; recipe?: Recipe }
+          const raw = msg.entry as CalendarEntry & { recipe_name?: string; date?: string; recipe?: Recipe; meal_slot?: MealSlot }
           const entry: CalendarEntry = {
             id: raw.id,
             recipeName: raw.recipe_name ?? raw.recipeName ?? '',
             ingredients: raw.ingredients,
             date: normalizeIsoDate(raw.date),
             recipe: raw.recipe ?? undefined,
+            mealSlot: raw.meal_slot ?? raw.mealSlot ?? DEFAULT_MEAL_SLOT,
           }
           console.debug('[CAL] mapped entry → date:', entry.date, 'name:', entry.recipeName, 'rawDate:', raw.date)
           onAddToCalendarRef.current(entry)

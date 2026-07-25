@@ -52,7 +52,7 @@ from cookbot.agents.recipe_search_fast import (
 )
 from cookbot.agents.shopping_list import build_shopping_list_agent
 from cookbot.agents.web_search import build_web_fetch_agent, build_web_search_agent, web_fetch_prompt, web_search_prompt
-from cookbot.models.calendar import CalendarEntry, CalendarState
+from cookbot.models.calendar import CalendarEntry, CalendarState, MealSlot
 from cookbot.models.recipe import ParsedIngredients, Recipe, RecipeSummary, UserIntent
 from cookbot.models.shopping import ShoppingList
 from cookbot.models.tenant import TenantConfig
@@ -163,6 +163,7 @@ class CalendarAddResult(BaseModel):
     entry_id: str
     date: str
     recipe_name: str
+    meal_slot: MealSlot = MealSlot.OBIAD
 
 
 class CalendarRemoveResult(BaseModel):
@@ -721,7 +722,10 @@ You MUST respond exclusively in {config.language}. Never use another language.
 ## Capabilities
 - Propose recipe options → call propose_recipes (sends 4 cards to the user).
 - Get full recipe after user picks one → call get_recipe_details.
-- Add a meal to the calendar → call add_to_calendar.
+- Add a meal to the calendar → call add_to_calendar. Each calendar day has four
+  meal sections; pass meal_slot when the user names one — "śniadanie" → sniadanie,
+  "lunch" → lunch, "obiad" → obiad, "kolacja" → kolacja. If they do not say,
+  omit it (it defaults to obiad); never ask just to fill this in.
 - Remove a meal from the calendar → call remove_from_calendar.
 - Build a shopping list for a date range → call get_shopping_list.
 - Answer general cooking questions directly.
@@ -1104,8 +1108,13 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         recipe_name: str,
         ingredients: list[str],
         target_date: str,
+        meal_slot: MealSlot = MealSlot.OBIAD,
     ) -> CalendarAddResult:
-        """Add a recipe to the meal calendar on target_date (YYYY-MM-DD)."""
+        """Add a recipe to the meal calendar on target_date (YYYY-MM-DD).
+
+        meal_slot places the dish in one of the day's meal sections; pass the one
+        the user named (śniadanie / lunch / obiad / kolacja), or leave the default.
+        """
         # Normalise the date to strict YYYY-MM-DD — the frontend calendar matches
         # day cells by exact string, so "2026-06-4" or "4.06" would silently fail.
         norm_date = _normalize_date(target_date)
@@ -1120,6 +1129,7 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             recipe_name=recipe_name,
             ingredients=ingredients,
             recipe=recipe_dict,
+            meal_slot=meal_slot,
         )
         # Guard against emitting the same entry id twice in one turn.
         already = {
@@ -1127,7 +1137,12 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         }
         if entry.id not in already:
             ctx.deps.events.append(CalendarAddEvent(entry=entry))
-        return CalendarAddResult(entry_id=entry.id, date=norm_date, recipe_name=recipe_name)
+        return CalendarAddResult(
+            entry_id=entry.id,
+            date=norm_date,
+            recipe_name=recipe_name,
+            meal_slot=meal_slot,
+        )
 
     @agent.tool
     async def remove_from_calendar(

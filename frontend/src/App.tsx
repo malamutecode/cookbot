@@ -10,7 +10,7 @@ import SourcesPage from './components/SourcesPage'
 import AdminPage from './components/AdminPage'
 import ChangePassword from './components/ChangePassword'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
-import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView } from './types'
+import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView, DEFAULT_MEAL_SLOT } from './types'
 import { API_BASE, TEST_USER, DEV_MODE } from './config'
 import { t } from './theme'
 
@@ -155,21 +155,16 @@ export default function App() {
 
   function handleAddToCalendar(entry: CalendarEntry) {
     const targetDate = entry.date ?? new Date().toISOString().slice(0, 10)
-    console.debug('[CAL] handleAddToCalendar entry:', entry.recipeName, '@', targetDate, 'id:', entry.id)
+    // The agent may name a meal section; anything without one lands in obiad,
+    // which is also how legacy slot-less entries are read.
+    const slotted: CalendarEntry = { ...entry, mealSlot: entry.mealSlot ?? DEFAULT_MEAL_SLOT }
     updateCalendar(prev => {
       const existing = prev.find(d => d.date === targetDate)
-      let next: CalendarDay[]
       if (existing) {
-        if (existing.recipes.some(r => r.id === entry.id)) {
-          next = prev  // already there
-        } else {
-          next = prev.map(d => d.date === targetDate ? { ...d, recipes: [...d.recipes, entry] } : d)
-        }
-      } else {
-        next = [...prev, { date: targetDate, recipes: [entry], freeText: '' }]
+        if (existing.recipes.some(r => r.id === slotted.id)) return prev  // already there
+        return prev.map(d => d.date === targetDate ? { ...d, recipes: [...d.recipes, slotted] } : d)
       }
-      console.debug('[CAL] calDays after add:', next.map(d => `${d.date}:${d.recipes.length}`).join(', '))
-      return next
+      return [...prev, { date: targetDate, recipes: [slotted], freeText: '' }]
     })
     setPage('calendar')
   }
@@ -267,6 +262,7 @@ export default function App() {
           days={calDays}
           onChange={handleCalendarChange}
           onExportToShoppingList={handleExportToShoppingList}
+          ui={ui}
         />
       </div>
 

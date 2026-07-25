@@ -39,6 +39,16 @@ class UiStrings:
     shopping_list_share: str = "Udostępnij"
     shopping_list_copied: str = "Skopiowano ✓"
     shopping_list_empty: str = "Lista jest pusta"
+    shopping_list_clear_all: str = "Wyczyść wszystko"
+    shopping_list_clear_all_confirm: str = "Usunąć całą listę zakupów?"
+    # Calendar meal-slot labels (STEP 48). Keys stay English in MealSlot;
+    # only these labels are shown to the user.
+    calendar_notes_label: str = "Notatki"
+    calendar_slot_sniadanie: str = "Śniadanie"
+    calendar_slot_lunch: str = "Lunch"
+    calendar_slot_obiad: str = "Obiad"
+    calendar_slot_kolacja: str = "Kolacja"
+    calendar_export_selected: str = "Utwórz listę zakupów (wybrane dania)"
     frisco_button: str = "Znajdź w Frisco"
     frisco_heading: str = "Produkty w Frisco"
     frisco_not_found: str = "Nie znaleziono"
@@ -148,6 +158,14 @@ _EN = UiStrings(
     shopping_list_share="Share",
     shopping_list_copied="Copied ✓",
     shopping_list_empty="The list is empty",
+    shopping_list_clear_all="Clear all",
+    shopping_list_clear_all_confirm="Delete the entire shopping list?",
+    calendar_notes_label="Notes",
+    calendar_slot_sniadanie="Breakfast",
+    calendar_slot_lunch="Lunch",
+    calendar_slot_obiad="Dinner",
+    calendar_slot_kolacja="Supper",
+    calendar_export_selected="Create shopping list (selected dishes)",
     frisco_button="Find on Frisco",
     frisco_heading="Products on Frisco",
     frisco_not_found="Not found",
