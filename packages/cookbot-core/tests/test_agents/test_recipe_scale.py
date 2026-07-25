@@ -97,6 +97,37 @@ def test_scales_and_records_original_servings() -> None:
     assert out.original_servings == 2
 
 
+def test_scales_up_from_four_to_eight() -> None:
+    """The reported case: page serves 4, user asks for 8 (STEP 49).
+
+    The mirror of `test_url_servings_calendar_live.py`'s no-op assertion, at the
+    hermetic tier. `original_servings` must record 4 so the calendar entry and the
+    UI can say "8 porcji (przeliczone z 4)" — without that anchor the displayed
+    count is unverifiable.
+    """
+    r = _recipe(4, ["4 piersi z kurczaka", "250 ml śmietanki", "1 cebula"])
+    scaled = ["8 piersi z kurczaka", "500 ml śmietanki", "2 cebule"]
+    out = _scale(r, target=8, scaled_output=scaled)
+
+    assert out.ingredients == scaled
+    assert out.servings == 8
+    assert out.original_servings == 4
+    # Provenance survives the doubling.
+    assert out.source_url == "https://www.kwestiasmaku.com/przepis/makaron-ze-szpinakiem"
+    assert out.name == "Makaron ze szpinakiem"
+    assert out.steps == ["Ugotuj makaron.", "Podsmaż szpinak.", "Połącz."]
+
+
+def test_scale_up_keeps_line_count() -> None:
+    """Doubling must not merge or drop lines — the shopping list reads every one."""
+    r = _recipe(4, ["4 piersi z kurczaka", "250 ml śmietanki", "1 cebula", "sól do smaku"])
+    scaled = ["8 piersi z kurczaka", "500 ml śmietanki", "2 cebule", "sól do smaku"]
+    out = _scale(r, target=8, scaled_output=scaled)
+    assert len(out.ingredients) == len(r.ingredients)
+    # Unmeasured lines stay verbatim.
+    assert out.ingredients[-1] == "sól do smaku"
+
+
 def test_scaling_preserves_provenance() -> None:
     r = _recipe(2, ["150 g makaronu", "1 cebula"])
     out = _scale(r, target=6, scaled_output=["450 g makaronu", "3 cebule"])

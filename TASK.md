@@ -18,7 +18,8 @@
 ## Current Step: → STEP 45
 
 **STEP 45** (multi-recipe pages: ask whether to split) is the only unstarted
-feature step. **STEP 48 ✔** (meal slots + drag-and-drop, `9fdb8ba`) ·
+feature step. **STEP 49 ✔** (portion counts visible + trustworthy) ·
+**STEP 48 ✔** (meal slots + drag-and-drop, `9fdb8ba`) ·
 **STEP 47 ✔** (zero-LLM fast path: 11.73s → 3.50s, 2629 tokens → 0, 6 cards,
 `eaa984f`) · **STEP 46 ✔** · **STEP 44 ✔**. Phases 1–3 are otherwise complete —
 the app is deployable (Cloud Run backend + Firebase Hosting frontend, scripted in
@@ -478,6 +479,233 @@ cd packages/cookbot-core && uv run ruff check . --fix && npx -y pyright@latest
 ```
 
 > Note the `npx` invocation — see the pyright item under STEP 43.
+
+---
+
+## STEP 49 ✔ — Make portion counts visible and trustworthy everywhere
+
+**Goal:** The app already rescales a recipe's ingredients to the number of people
+the user asked for — but it never *says* so, and a calendar entry doesn't record
+the number at all. So a user reading "Porcje: 8" cannot tell whether the amounts
+below it were actually adjusted, and a dish sitting on the calendar carries no
+portion count whatsoever. This STEP makes the portion count a first-class,
+visible property of every recipe and every calendar entry, and states plainly
+when quantities were scaled from the source. Nothing about the scaling maths
+changes — this is about the user being able to trust what is already happening.
+
+> **DONE 2026-07-25.** Shipped: `CalendarEntry.servings` / `.source_servings`
+> (both `None`-defaulted for legacy localStorage entries) plus the pure
+> `servings_are_known` / `servings_were_scaled` helpers in `models/calendar.py`;
+> `add_to_calendar` now stamps both counts from `deps.last_recipe` and **prefers
+> the resolved recipe's scaled ingredients over the model's retyped argument**
+> (guarded by `_same_dish`, so a second dish in the same turn can't inherit
+> them); `CalendarAddResult` carries the counts and one prompt rule lets the
+> agent confirm them. Frontend: `lib/servings.ts` (`portionsLabel`, shared by
+> both surfaces), the counts mapped through the WS boundary in `ChatPanel.tsx`,
+> the chat recipe card and calendar modal switched to `portionsLabel`, and a
+> compact portion badge on the calendar chip.
+>
+> Tests: 250 core unit, 91 client, 25 frontend, **6/6 live integration** — all
+> green; ruff + pyright clean.
+>
+> **The live tier earned its keep.** The new 8-person e2e failed on first run:
+> the entry came back `servings=4, source_servings=None` carrying the page's own
+> `4 piersi z kurczaka`. Root cause was pre-existing and NOT introduced by this
+> STEP — `get_recipe_from_url` scaled from `deps.onboarding.servings`, but a
+> pasted link never populates it (proposals are skipped, and the prompt tells the
+> model not to run onboarding for a link), so `target_servings` was 0 and
+> `scale_recipe_to_servings` never ran. The existing 4-person test passed only
+> because 4 coincidentally matched the page. Fix: `get_recipe_from_url` takes an
+> explicit `servings` argument, persists it to onboarding (the STEP 46 pattern),
+> and one prompt rule tells the model to pass it. Pinned hermetically by
+> `test_get_recipe_from_url_scales_to_its_servings_argument` so the paid tier is
+> no longer the only guard.
+>
+> Deviation from the plan: `RecipeModal` now takes the whole `CalendarEntry`
+> rather than just its `Recipe`, because the entry's counts are authoritative and
+> the nested recipe may predate STEP 49. `Recipe.original_servings` was also
+> added to the frontend `Recipe` type — the chat card needs it to show the
+> scaled-from provenance before an entry exists.
+
+### Current state (audited 2026-07-25)
+
+The maths is done and correct. The **communication** is missing.
+
+Already working:
+
+- `Recipe.servings` + `Recipe.original_servings`
+  ([models/recipe.py:29-34](packages/cookbot-core/cookbot/models/recipe.py#L29-L34)) —
+  the latter records the source page's own count before any scaling.
+- **Ingredients are already scaled to the user's requested servings.**
+  `scale_recipe_to_servings` + `RecipeScaleAgent`
+  ([agents/recipe_scale.py](packages/cookbot-core/cookbot/agents/recipe_scale.py))
+  run in **both** resolve paths —
+  `resolve_recipe` ([chat.py:525-535](packages/cookbot-core/cookbot/agents/chat.py#L525-L535))
+  and `get_recipe_from_url` ([chat.py:1085-1097](packages/cookbot-core/cookbot/agents/chat.py#L1085-L1097)) —
+  and no-op safely when the source count is unknown, already matches, or the
+  target is nonsense.
+- `propose_recipes` persists `servings` into `deps.onboarding`
+  ([chat.py:905-906](packages/cookbot-core/cookbot/agents/chat.py#L905-L906)), the
+  STEP 46 fix, so "przepis na X dla 8 osób" reaches the scaler in one turn.
+- **The shopping list needs no changes.** `get_shopping_list`
+  ([chat.py:1158-1195](packages/cookbot-core/cookbot/agents/chat.py#L1158-L1195))
+  and `POST /v1/shopping-list/build` concatenate entry `ingredients` and let the
+  ShoppingListAgent dedupe/sum — those lines are *already* scaled.
+- A live test pins the no-op case (page serves 4, user wants 4):
+  [tests/integration/test_url_servings_calendar_live.py](packages/cookbot-core/tests/integration/test_url_servings_calendar_live.py).
+
+Missing — the trust gap:
+
+- **`CalendarEntry` has no servings field**
+  ([models/calendar.py:22-30](packages/cookbot-core/cookbot/models/calendar.py#L22-L30)).
+  The count survives only inside the optional nested `recipe` dict, and is absent
+  entirely on entries added without a resolved recipe.
+- **`add_to_calendar` takes `ingredients` as a model-generated argument**
+  ([chat.py:1106-1133](packages/cookbot-core/cookbot/agents/chat.py#L1106-L1133)).
+  The LLM retypes the list into the tool call, so it can pass the *pre-scale*
+  amounts while `deps.last_recipe` holds the scaled ones. The entry then silently
+  disagrees with its own nested recipe — the one defect that can make a displayed
+  portion count a lie.
+- **Both portion displays are bare numbers with no provenance.** `Porcje: {n}` in
+  the chat recipe card ([ChatPanel.tsx:424](frontend/src/components/ChatPanel.tsx#L424))
+  and the calendar modal ([CalendarPage.tsx:373](frontend/src/components/CalendarPage.tsx#L373)).
+  Neither says whether the amounts were scaled, nor from what. A `0` or a
+  defaulted `2` renders as confidently as a real, verified count.
+- **The calendar chip shows no portion count at all** — the user must open the
+  modal to learn it.
+- **No unit test asserts the scale-up path.** `test_recipe_scale.py` exists but
+  the "user asks for 8, page serves 4" case is untested at the unit tier.
+- No `ui_strings` copy for portions or scaling provenance.
+
+### Design decisions (settled during planning 2026-07-25)
+
+- **This is a visibility feature, not a scaling feature** (the user's correction).
+  `RecipeScaleAgent` already adjusts amounts on add-to-calendar. No new scaling
+  machinery, no multiplier control, no second source of truth for the number.
+- **No multiplier anywhere.** Explicitly dropped from the earlier draft at the
+  user's request. If a portion count is unknown the app says so; it does not ask
+  the user to correct it by hand.
+- **Servings become first-class on `CalendarEntry`** — `servings: int | None` and
+  `source_servings: int | None`, mirroring `Recipe.servings` /
+  `original_servings`. Both default to `None` so pre-STEP-49 `localStorage`
+  entries keep parsing (the STEP 48 `meal_slot` compatibility pattern).
+- **The tool reads servings and ingredients from `deps.last_recipe`, never from a
+  model argument.** `add_to_calendar` gains no servings parameter. The resolved
+  recipe is the authority; retyped tool arguments are the same corruption class
+  the pinned-URL fix addressed. Falls back to `deps.onboarding.servings` only
+  when there is no resolved recipe. **This is the correctness fix that makes the
+  displayed count true** — a label describing a list it doesn't match is worse
+  than no label.
+- **Provenance is shown, not just the number.** When `source_servings` differs
+  from `servings`, the UI states both — `Porcje: 8 (przeliczone z 4)` — so the
+  user can see the adjustment happened rather than having to trust it silently.
+  When they match, just `Porcje: 4`. When unknown, `Porcje: nieokreślone`.
+- **"Unknown" is** `servings is None or servings <= 0`. The rule lives in one pure
+  helper, not duplicated across two components and a tool.
+- **Both display sites get the same treatment** — the chat recipe card and the
+  calendar modal. A count that reads differently in two places is exactly the
+  inconsistency that erodes trust.
+- **The chip gets a compact portion badge** so a week of meals is readable at a
+  glance without opening modals.
+- **No prompt changes, no new LLM call, zero per-turn token increase** — STEP 42
+  quotas unaffected.
+- **No `TenantConfig` field, no env var.** Portion display is fixed product
+  behaviour, not a per-tenant tunable.
+- **No protocol change.** `WsOutCalendarUpdate` nests the whole `CalendarEntry`
+  (verified), so new fields ride along; no `WsMessageType` member added.
+
+### Tasks
+
+- [x] **Core models** — `models/calendar.py`: add `servings: int | None = None`
+      and `source_servings: int | None = None` to `CalendarEntry`, commented with
+      `None` = unknown and the legacy-entry rationale.
+- [x] **Core models** — a pure, I/O-free helper (`models/calendar.py` beside the
+      model, `models/quota.py` style): `servings_are_known(servings) -> bool` and
+      `servings_were_scaled(servings, source_servings) -> bool`, so the three
+      display states are defined once and unit-tested without a UI.
+- [x] **Agent/tool** — `agents/chat.py`, `add_to_calendar`: populate `servings` /
+      `source_servings` from `ctx.deps.last_recipe.recipe` (fallback
+      `deps.onboarding.servings`), and prefer the resolved recipe's scaled
+      `ingredients` over the model-supplied argument when they refer to the same
+      dish. Add both fields to `CalendarAddResult` so the ChatAgent can mention
+      the portion count naturally in its confirmation ("Dodałem na 26.07, 8 porcji").
+- [x] **Agent/tool (unplanned — found by the live e2e)** — `get_recipe_from_url`
+      takes an explicit `servings: int = 0` argument, persists it to
+      `deps.onboarding.servings` and scales from it. A pasted link populates that
+      field via neither proposals nor onboarding, so scaling silently never ran.
+      One prompt rule tells the model to pass it alongside the URL.
+- [x] **Protocol** — none. Confirmed `WsOutCalendarUpdate` passes the new fields
+      through unchanged (`test_calendar_update_ws_message_round_trips_servings`).
+- [x] **REST API** — none.
+- [x] **Env / config** — none.
+- [x] **Frontend** — `lib/servings.ts` (new): one `portionsLabel(servings,
+      sourceServings, ui)` returning the known / scaled / unknown string, so both
+      components and the tests share it.
+- [x] **Frontend** — `types.ts`: `servings?: number`, `sourceServings?: number`
+      on `CalendarEntry`. Apply `portionsLabel` in the calendar modal **and**
+      the chat recipe card. Add a compact portion badge to `RecipeChip` and
+      include the count in its `title`. Copy through `ui_strings.py` with Polish
+      fallbacks (STEP 48 pattern).
+- [x] **Tests:**
+  - Core unit `tests/test_agents/test_recipe_scale.py` — **scale-up**: page serves
+    4, target 8 → `servings == 8`, `original_servings == 4`, line count preserved,
+    name/steps/`source_url` untouched (`TestModel`). Plus unknown-anchor:
+    `servings == 0` → no agent call, ingredients verbatim.
+  - Core unit `tests/test_agents/test_chat.py` — `add_to_calendar` stamps
+    `servings=8` / `source_servings=4` from `deps.last_recipe`; entry ingredients
+    come from the resolved recipe, **not** from a divergent model-supplied
+    argument; with no `last_recipe`, falls back to onboarding or stays `None`.
+    Plus the two `get_recipe_from_url` scaling guards added after the live failure.
+  - Core unit **`tests/test_calendar_servings.py` (new file, not `test_models.py`
+    as planned)** — `servings_are_known` / `servings_were_scaled` truth tables
+    and legacy `CalendarEntry` parsing. Kept separate because `test_models.py` is
+    a protocol/session module and this is a self-contained concern.
+  - Core unit — the "no second scaling at list-build time" case landed in
+    **`test_agents/test_chat.py`** (where `get_shopping_list` lives) rather than
+    `test_shopping_list.py`, which is prompt-guards-only and sets
+    `ALLOW_MODEL_REQUESTS = False`.
+  - Frontend `frontend/src/lib/servings.test.ts` — `node:test` over the three
+    label states, incl. `0` and `undefined` both reading as "nieokreślone".
+  - Integration (live, extend
+    `tests/integration/test_url_servings_calendar_live.py`) — the mirror of the
+    existing no-op test: **"dodaj do kalendarza dla 8 osób"** against the same
+    4-serving page → `CalendarAddEvent` entry has `servings == 8`,
+    `source_servings == 4`, `source_url` preserved, and the chicken count is
+    visibly larger than the page's `4 piersi`. **This is the test that caught the
+    `get_recipe_from_url` bug.**
+
+### Deferred within this feature
+
+- **Editing portions after an entry is on the calendar** (changing 8→4 in place) —
+  needs a re-run of `RecipeScaleAgent` from a non-chat surface. Separate STEP.
+- **Per-dish portion attribution in the shopping list** ("8 porcji × curry") — the
+  ShoppingListAgent merges across dishes, so tracing a quantity back to one dish
+  is a different output shape.
+- **Portion counts on proposal cards** — `RecipeSummary` has no `servings` field
+  and the zero-LLM fast path (STEP 47) must not gain a model call to invent one.
+  A card's portion count is only knowable after resolve.
+- **Firestore persistence for the calendar** — still `localStorage`; inherited
+  deferral from STEP 48.
+
+### Verify
+
+```bash
+cd packages/cookbot-core && uv run pytest -m "not integration" -q
+cd clients/tastyhub     && uv run pytest -q
+cd frontend             && npm test && npx tsc --noEmit
+cd packages/cookbot-core && uv run ruff check . --fix && npx -y pyright@latest
+
+# Live tier (costs money, occasionally flaky — see the module docstring):
+cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_url_servings_calendar_live.py -v
+```
+
+> Ran 2026-07-25: 250 core unit · 91 client · 25 frontend · **6/6 live** (104s),
+> ruff check + pyright clean. `ruff format --check` reports drift on 37 files
+> repo-wide, but the same files fail at the parent commit — pre-existing, and the
+> CLAUDE.md gate is `ruff check`.
+
+### ⏸ PAUSE 49
+
 
 ---
 

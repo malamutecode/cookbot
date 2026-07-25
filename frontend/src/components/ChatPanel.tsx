@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
 import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay, MealSlot, DEFAULT_MEAL_SLOT } from '../types'
 import { WS_BASE, DEV_MODE, DEV_UID } from '../config'
+import { portionsLabel } from '../lib/servings'
 import { t } from '../theme'
 
 // The calendar grid matches day cells by exact YYYY-MM-DD string. Coerce common
@@ -201,7 +202,10 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopIt
       case 'calendar_update':
         console.debug('[CAL] calendar_update received:', msg.action, JSON.stringify(msg.entry ?? msg.entry_id))
         if (msg.action === 'add' && msg.entry) {
-          const raw = msg.entry as CalendarEntry & { recipe_name?: string; date?: string; recipe?: Recipe; meal_slot?: MealSlot }
+          const raw = msg.entry as CalendarEntry & {
+            recipe_name?: string; date?: string; recipe?: Recipe; meal_slot?: MealSlot
+            servings?: number; source_servings?: number
+          }
           const entry: CalendarEntry = {
             id: raw.id,
             recipeName: raw.recipe_name ?? raw.recipeName ?? '',
@@ -209,6 +213,8 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, ui, shopIt
             date: normalizeIsoDate(raw.date),
             recipe: raw.recipe ?? undefined,
             mealSlot: raw.meal_slot ?? raw.mealSlot ?? DEFAULT_MEAL_SLOT,
+            servings: raw.servings ?? undefined,
+            sourceServings: raw.source_servings ?? raw.sourceServings ?? undefined,
           }
           console.debug('[CAL] mapped entry → date:', entry.date, 'name:', entry.recipeName, 'rawDate:', raw.date)
           onAddToCalendarRef.current(entry)
@@ -402,6 +408,11 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
       recipeName: recipe.name,
       ingredients: recipe.ingredients,
       recipe,
+      // Carry the portion counts onto the calendar entry so the manual
+      // "+ Dodaj do kalendarza" button matches what the agent-driven path
+      // records (STEP 49).
+      servings: recipe.servings || undefined,
+      sourceServings: recipe.original_servings ?? undefined,
     }
     return (
       <div style={styles.recipeCard}>
@@ -421,7 +432,7 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
         <ul style={styles.ul}>{recipe.ingredients.map((ing, i) => <li key={i}>{ing}</li>)}</ul>
         <strong style={{ fontSize: '0.82rem' }}>Kroki</strong>
         <ol style={styles.ul}>{recipe.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
-        <div style={styles.recipeMeta}>⏱ Przygotowanie {recipe.prep_time_minutes} min · Gotowanie {recipe.cook_time_minutes} min · {recipe.difficulty} · Porcje: {recipe.servings}</div>
+        <div style={styles.recipeMeta}>⏱ Przygotowanie {recipe.prep_time_minutes} min · Gotowanie {recipe.cook_time_minutes} min · {recipe.difficulty} · {portionsLabel(recipe.servings, recipe.original_servings, ui)}</div>
         <div style={styles.recipeFooter}>
           <button style={styles.calBtn} onClick={() => onAddToCalendar(calEntry)}>+ Dodaj do kalendarza</button>
           {recipe.source_url && (

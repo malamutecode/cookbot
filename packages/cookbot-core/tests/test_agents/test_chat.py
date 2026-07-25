@@ -351,6 +351,159 @@ def test_calendar_update_ws_message_round_trips_meal_slot() -> None:
     assert payload["entry"]["meal_slot"] == "sniadanie"
 
 
+# ── add_to_calendar: portion bookkeeping (STEP 49) ────────────────────────────
+
+def _scaled_recipe(servings: int, original: int | None, ingredients: list[str]) -> Recipe:
+    """A recipe as it looks AFTER resolve_recipe has scaled it."""
+    return Recipe(
+        name="Curry z kurczaka",
+        description="d",
+        ingredients=ingredients,
+        steps=["Podsmaż.", "Duś."],
+        prep_time_minutes=10,
+        cook_time_minutes=30,
+        difficulty="Medium",
+        servings=servings,
+        tips=[],
+        source_url="https://chilitonka.com/curry",
+        original_servings=original,
+    )
+
+
+async def test_add_to_calendar_stamps_servings_from_last_recipe() -> None:
+    """User asked for 8, the page served 4 → the entry must record BOTH.
+
+    This is what makes "Porcje: 8 (przeliczone z 4)" truthful rather than
+    decorative: the count comes from the recipe the scaler actually produced.
+    """
+    from cookbot.agents.chat import FoundRecipe
+
+    recipe = _scaled_recipe(8, 4, ["8 piersi z kurczaka", "500 ml śmietanki"])
+    deps = _make_deps(last_recipe=FoundRecipe(recipe=recipe, source="web_search"))
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    result = await fn(ctx, recipe_name="Curry z kurczaka",
+                      ingredients=["8 piersi z kurczaka", "500 ml śmietanki"],
+                      target_date="2026-07-26")
+
+    entry = _events_of(deps, CalendarAddEvent)[0].entry
+    assert entry.servings == 8
+    assert entry.source_servings == 4
+    # The tool result carries it too, so the agent can say it in its reply.
+    assert result.servings == 8
+    assert result.source_servings == 4
+
+
+async def test_add_to_calendar_prefers_resolved_ingredients_over_model_argument() -> None:
+    """The correctness fix behind the whole feature.
+
+    `ingredients` is a MODEL-GENERATED argument: the LLM retypes the list into the
+    tool call and can hand over the PRE-scale amounts while deps.last_recipe holds
+    the scaled ones. Labelling that stale list "8 porcji" would be worse than
+    showing nothing, so the resolved recipe wins.
+    """
+    from cookbot.agents.chat import FoundRecipe
+
+    scaled = ["8 piersi z kurczaka", "500 ml śmietanki"]
+    recipe = _scaled_recipe(8, 4, scaled)
+    deps = _make_deps(last_recipe=FoundRecipe(recipe=recipe, source="web_search"))
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    # The model retyped the PAGE's original (4-serving) quantities.
+    stale = ["4 piersi z kurczaka", "250 ml śmietanki"]
+    await fn(ctx, recipe_name="Curry z kurczaka", ingredients=stale,
+             target_date="2026-07-26")
+
+    entry = _events_of(deps, CalendarAddEvent)[0].entry
+    assert entry.ingredients == scaled, (
+        "entry kept the model's pre-scale ingredient list — the portion count "
+        "would then describe amounts it doesn't match"
+    )
+
+
+async def test_add_to_calendar_falls_back_to_onboarding_servings() -> None:
+    """No resolved recipe (a dish typed straight into the calendar) → use the
+    number the user gave during onboarding rather than inventing one."""
+    deps = _make_deps(onboarding=OnboardingState(servings=6))
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    await fn(ctx, recipe_name="Sałatka", ingredients=["sałata", "pomidor"],
+             target_date="2026-07-26")
+
+    entry = _events_of(deps, CalendarAddEvent)[0].entry
+    assert entry.servings == 6
+    # Nothing was scaled from a source page, so there is no source count to show.
+    assert entry.source_servings is None
+
+
+async def test_add_to_calendar_leaves_servings_unknown_when_nothing_known() -> None:
+    """No recipe and no onboarding answer → `None`, which the UI renders as
+    "nieokreślone". Never default to a plausible-looking number."""
+    deps = _make_deps()
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    await fn(ctx, recipe_name="Zupa", ingredients=["woda"], target_date="2026-07-26")
+
+    entry = _events_of(deps, CalendarAddEvent)[0].entry
+    assert entry.servings is None
+    assert entry.source_servings is None
+
+
+async def test_add_to_calendar_unscaled_recipe_reports_no_source_difference() -> None:
+    """Page served 4 and the user wanted 4 → scaling was a no-op.
+
+    `original_servings` is still stamped (the scaler does that for transparency),
+    but servings == source_servings, so the UI must NOT claim a conversion.
+    """
+    from cookbot.agents.chat import FoundRecipe
+    from cookbot.models.calendar import servings_were_scaled
+
+    recipe = _scaled_recipe(4, 4, ["4 piersi z kurczaka"])
+    deps = _make_deps(last_recipe=FoundRecipe(recipe=recipe, source="web_search"))
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "add_to_calendar")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    await fn(ctx, recipe_name="Curry z kurczaka",
+             ingredients=["4 piersi z kurczaka"], target_date="2026-07-26")
+
+    entry = _events_of(deps, CalendarAddEvent)[0].entry
+    assert entry.servings == 4
+    assert not servings_were_scaled(entry.servings, entry.source_servings)
+
+
+def test_calendar_update_ws_message_round_trips_servings() -> None:
+    """The counts reach the browser through the existing calendar_update message —
+    which is why STEP 49 needs no new WsMessageType."""
+    from cookbot.protocols.ws_messages import WsOutCalendarUpdate
+
+    entry = CalendarEntry(
+        id="1", date="2026-07-26", recipe_name="Curry",
+        ingredients=["8 piersi"], servings=8, source_servings=4,
+    )
+    payload = json.loads(WsOutCalendarUpdate(action="add", entry=entry).model_dump_json())
+    assert payload["entry"]["servings"] == 8
+    assert payload["entry"]["source_servings"] == 4
+
+
 # ── remove_from_calendar tool ─────────────────────────────────────────────────
 
 async def test_remove_from_calendar_unknown_id_returns_false() -> None:
@@ -440,6 +593,48 @@ async def test_get_shopping_list_filters_by_date_range() -> None:
     sl_events = _events_of(deps, ShoppingListEvent)
     assert len(sl_events) == 1
     assert sl_events[0].shopping_list == fake_list
+
+
+async def test_get_shopping_list_passes_already_scaled_amounts_through() -> None:
+    """The shopping list must NOT rescale (STEP 49).
+
+    Entry ingredients are already scaled to the entry's serving count by
+    RecipeScaleAgent at resolve time. The list builder's only job is to dedupe and
+    sum what it is given — if it ever tried to apply `servings` again, an 8-portion
+    dish would land on the list as 16.
+    """
+    calendar = CalendarState(entries=[
+        CalendarEntry(
+            id="1", date="2026-07-26", recipe_name="Curry z kurczaka",
+            ingredients=["8 piersi z kurczaka", "500 ml śmietanki"],
+            servings=8, source_servings=4,
+        ),
+    ])
+    deps = _make_deps(calendar=calendar)
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "get_shopping_list")
+
+    ctx = MagicMock()
+    ctx.deps = deps
+
+    fake_list = ShoppingList(
+        items=[ShoppingItem(name="piersi z kurczaka", quantity="8 szt.",
+                            section="mięso/ryby/wędliny")],
+        sections=["mięso/ryby/wędliny"],
+    )
+    stub_factory, captured = _stub_shopping_agent(fake_list)
+    with patch("cookbot.agents.chat.build_shopping_list_agent", stub_factory):
+        await fn(ctx, date_from="2026-07-26", date_to="2026-07-26")
+
+    raw = captured["raw_text"]
+    # The scaled amounts reach the agent verbatim…
+    assert "8 piersi z kurczaka" in raw
+    assert "500 ml śmietanki" in raw
+    # …and the source-page amounts do not reappear.
+    assert "4 piersi" not in raw
+    assert "250 ml" not in raw
+    # The serving count is metadata for display, not an instruction to the agent.
+    assert "16" not in raw
 
 
 async def test_get_shopping_list_empty_range_skips_agent() -> None:
@@ -824,6 +1019,68 @@ async def test_get_recipe_from_url_extracts_and_shows_card() -> None:
     assert len(events) == 1
     # Provenance: source_url backfilled from the pasted URL (the stub recipe had none).
     assert deps.last_recipe.recipe.source_url == "https://kwestiasmaku.com/przepis/x"
+
+
+async def test_get_recipe_from_url_scales_to_its_servings_argument() -> None:
+    """A pasted link carries its own serving count (STEP 49 — found live).
+
+    Regression guard for a real bug: `get_recipe_from_url` scaled from
+    `deps.onboarding.servings`, but a one-shot "dodaj przepis dla 8 osób z <url>"
+    never populates that field — proposals are skipped for a pasted link, and the
+    prompt tells the model not to run onboarding for one. So target_servings was
+    0, the scaler never ran, and the calendar entry showed the user's requested
+    count above the page's own unscaled amounts. Caught by the live e2e; pinned
+    here so the paid tier isn't the only thing standing between us and it.
+    """
+    page = _RECIPE.model_copy(update={
+        "servings": 4,
+        "ingredients": ["4 piersi z kurczaka", "250 ml śmietanki"],
+    })
+    fetch_factory, _ = _stub_agent_factory(page)
+    scaled = ["8 piersi z kurczaka", "500 ml śmietanki"]
+
+    class _ScaleStub:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            return MagicMock(output=MagicMock(ingredients=scaled))
+
+    deps = _make_deps()  # onboarding.servings deliberately EMPTY
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_scale_agent", lambda _c: _ScaleStub()):
+        agent = build_chat_agent(_CONFIG)
+        fn = _get_tool(agent, "get_recipe_from_url")
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        found = await fn(ctx, url="https://chilitonka.com/curry", servings=8)
+
+    assert found.recipe.servings == 8, "the tool's servings argument was ignored"
+    assert found.recipe.original_servings == 4, "page's own count not recorded"
+    assert found.recipe.ingredients == scaled
+    # Persisted, so a later add_to_calendar in the same turn agrees (STEP 46 pattern).
+    assert deps.onboarding.servings == 8
+
+
+async def test_get_recipe_from_url_without_servings_does_not_scale() -> None:
+    """No serving count given → leave the page's amounts exactly as extracted."""
+    page = _RECIPE.model_copy(update={"servings": 4})
+    fetch_factory, _ = _stub_agent_factory(page)
+
+    class _ScaleStub:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            raise AssertionError("scale agent must not run without a target count")
+
+    deps = _make_deps()
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_scale_agent", lambda _c: _ScaleStub()):
+        agent = build_chat_agent(_CONFIG)
+        fn = _get_tool(agent, "get_recipe_from_url")
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        found = await fn(ctx, url="https://chilitonka.com/curry")
+
+    assert found.recipe.servings == 4
+    assert found.recipe.ingredients == page.ingredients
 
 
 async def test_get_recipe_from_url_not_found_emits_no_card() -> None:

@@ -241,3 +241,59 @@ async def test_prompt_adds_scaled_recipe_to_calendar(pl_config) -> None:
     recipe_events = [e for e in events if isinstance(e, FinalRecipeEvent)]
     if recipe_events:
         assert recipe_events[0].recipe.source_url
+
+
+async def test_prompt_for_eight_people_scales_and_records_both_counts(pl_config) -> None:
+    """The mirror of the no-op test: page serves 4, user asks for 8 (STEP 49).
+
+    Where `test_prompt_adds_scaled_recipe_to_calendar` proves we DON'T inflate
+    when the counts already match, this proves we DO scale when they differ — and,
+    crucially, that the entry records both numbers so the UI can say
+    "Porcje: 8 (przeliczone z 4)" instead of an unverifiable "Porcje: 8".
+
+    The ingredient list on the entry is what the shopping list is built from, so
+    the doubled amounts landing here is the whole point of the feature.
+    """
+    agent = build_chat_agent(pl_config)
+    deps = ChatAgentDeps(config=pl_config, allow_ai_generated=False)
+    history: list = []
+
+    reply, events = await _say(
+        agent, deps, history,
+        f"Dodaj przepis do kalendarza dla 8 osób na 26.07 z {_CURRY_URL}",
+    )
+
+    add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
+    assert add_events, (
+        "expected a CalendarAddEvent for the 8-person request; "
+        f"events: {[type(e).__name__ for e in events]} / reply: {reply!r}"
+    )
+    entry = add_events[0].entry
+
+    assert entry.date.endswith("-07-26"), f"expected ...-07-26, got {entry.date!r}"
+
+    # Both counts recorded: what the user gets, and what the page stated.
+    assert entry.servings == 8, (
+        f"entry should record the user's 8 portions, got {entry.servings!r}"
+    )
+    assert entry.source_servings == _PAGE_SERVINGS, (
+        f"entry should record the page's own {_PAGE_SERVINGS} servings as the "
+        f"scaling anchor, got {entry.source_servings!r}"
+    )
+
+    # Provenance survives the doubling (Rule 5).
+    assert entry.recipe is not None, "calendar entry has no recipe payload"
+    assert entry.recipe.get("source_url", "").startswith("http"), (
+        f"provenance lost on the calendar entry: {entry.recipe.get('source_url')!r}"
+    )
+
+    # The amounts actually doubled. The page says "4 piersi z kurczaka"; at 8
+    # portions that must have grown, and must not still read as 4.
+    entry_ingr = " | ".join(entry.ingredients).lower()
+    assert "kurczak" in entry_ingr or "piersi" in entry_ingr, (
+        f"chicken missing from the scaled entry: {entry_ingr[:300]}"
+    )
+    assert "4 piersi z kurczaka" not in entry_ingr, (
+        "entry still carries the page's 4-serving quantities despite servings=8 — "
+        f"the portion count would be describing unscaled amounts: {entry_ingr[:300]}"
+    )

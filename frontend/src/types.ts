@@ -98,6 +98,9 @@ export interface Recipe {
   tips?: string[]
   source_url?: string
   image_url?: string
+  // Serving count the source page stated, before scaling to what the user asked
+  // for (STEP 49). Absent = never scaled / unknown.
+  original_servings?: number
 }
 
 export interface HitlLabels {
@@ -138,6 +141,9 @@ export interface UiStrings {
   calendar_slot_obiad?: string
   calendar_slot_kolacja?: string
   calendar_export_selected?: string
+  portions_label?: string
+  portions_unknown?: string
+  portions_scaled_from?: string
   frisco_button?: string
   frisco_heading?: string
   frisco_not_found?: string
@@ -211,4 +217,8 @@ export interface CalendarEntry {
   date?: string    // ISO YYYY-MM-DD — set when added via agent
   recipe?: Recipe  // full recipe for detail view
   mealSlot?: MealSlot  // undefined on legacy entries → treated as DEFAULT_MEAL_SLOT
+  // How many portions `ingredients` is for, and what the source page stated
+  // (STEP 49). Both undefined on entries saved before STEP 49 → "nieokreślone".
+  servings?: number
+  sourceServings?: number
 }

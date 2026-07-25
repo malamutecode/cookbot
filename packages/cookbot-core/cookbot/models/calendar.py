@@ -28,7 +28,43 @@ class CalendarEntry(BaseModel):
     # Defaulted so entries persisted before STEP 48 still parse; the frontend
     # applies the same fallback when reading slot-less localStorage data.
     meal_slot: MealSlot = MealSlot.OBIAD
+    # How many portions `ingredients` is for (STEP 49). The quantities above are
+    # already scaled to this count by RecipeScaleAgent at resolve time — this
+    # field is what lets the UI SAY so instead of showing a bare, unverifiable
+    # number. `source_servings` is the count the source page stated, kept so the
+    # UI can show "8 porcji (przeliczone z 4)".
+    #
+    # Both default to None ("unknown") so entries persisted before STEP 49 still
+    # parse out of localStorage — the same compatibility contract as meal_slot.
+    servings: int | None = None
+    source_servings: int | None = None
 
 
 class CalendarState(BaseModel):
     entries: list[CalendarEntry] = []
+
+
+# ── Portion-count display rules (pure; no I/O) ────────────────────────────────
+# Kept here rather than in the UI so the tool, the tests and both frontend
+# surfaces agree on what "unknown" and "scaled" mean. Mirrored in
+# frontend/src/lib/servings.ts.
+
+def servings_are_known(servings: int | None) -> bool:
+    """True when a portion count is real and safe to display.
+
+    `0` is the extractor's "the page never said" value — `scale_recipe_to_servings`
+    treats `original <= 0` as having no anchor and skips scaling — so 0 must read
+    as unknown here too, never render as "Porcje: 0".
+    """
+    return servings is not None and servings > 0
+
+
+def servings_were_scaled(servings: int | None, source_servings: int | None) -> bool:
+    """True when quantities were converted from a different source count.
+
+    Requires both counts to be known and to differ. Claiming a conversion without
+    a real anchor would tell the user something we cannot back up.
+    """
+    if not servings_are_known(servings) or not servings_are_known(source_servings):
+        return False
+    return servings != source_servings

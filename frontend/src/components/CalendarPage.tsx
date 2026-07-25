@@ -11,6 +11,7 @@ import {
   moveEntry,
   removeEntry,
 } from '../lib/calendar'
+import { portionsLabel, servingsAreKnown } from '../lib/servings'
 import { t } from '../theme'
 
 const DAYS_PL = ['Poniedziałek', 'Wtorek', 'Środa', 'Czwartek', 'Piątek', 'Sobota', 'Niedziela']
@@ -74,7 +75,9 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList, u
   const [weekOffset, setWeekOffset] = useState(0)
   // Drop target under the cursor, keyed "date|slot" so only one slot highlights.
   const [dragOver, setDragOver] = useState<string | null>(null)
-  const [detailRecipe, setDetailRecipe] = useState<Recipe | null>(null)
+  // The whole entry, not just its recipe: the entry carries the authoritative
+  // portion counts (STEP 49) — the nested recipe may predate them.
+  const [detailEntry, setDetailEntry] = useState<CalendarEntry | null>(null)
   const [exportLoading, setExportLoading] = useState<'days' | 'dishes' | null>(null)
   // Days selected for the shopping list. null = "all days with recipes" (default);
   // once the user touches a checkbox we track an explicit set of ISO dates.
@@ -199,8 +202,9 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList, u
   return (
     <div style={styles.page}>
       {/* Recipe detail modal */}
-      {detailRecipe && (
-        <RecipeModal recipe={detailRecipe} onClose={() => setDetailRecipe(null)} />
+      {detailEntry?.recipe && (
+        <RecipeModal entry={detailEntry} recipe={detailEntry.recipe} ui={ui}
+          onClose={() => setDetailEntry(null)} />
       )}
 
       <div style={styles.toolbar}>
@@ -297,10 +301,11 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList, u
                             entry={entry}
                             date={date}
                             slot={slot}
+                            ui={ui}
                             selected={selectedEntryIds.has(entry.id)}
                             onToggleSelected={() => toggleEntrySelected(entry.id)}
                             onRemove={() => removeRecipe(date, entry.id)}
-                            onOpen={entry.recipe ? () => setDetailRecipe(entry.recipe!) : undefined}
+                            onOpen={entry.recipe ? () => setDetailEntry(entry) : undefined}
                           />
                         ))
                       )}
@@ -316,15 +321,23 @@ export default function CalendarPage({ days, onChange, onExportToShoppingList, u
   )
 }
 
-function RecipeChip({ entry, date, slot, selected, onToggleSelected, onRemove, onOpen }: {
+function RecipeChip({ entry, date, slot, ui, selected, onToggleSelected, onRemove, onOpen }: {
   entry: CalendarEntry
   date: string
   slot: MealSlot
+  ui: UiStrings
   selected: boolean
   onToggleSelected: () => void
   onRemove: () => void
   onOpen?: () => void
 }) {
+  // Compact badge so a week of meals is readable without opening every modal.
+  // Only shown when the count is real — an unknown count is not worth a badge,
+  // the modal explains it.
+  const servings = entry.servings ?? entry.recipe?.servings
+  const sourceServings = entry.sourceServings ?? entry.recipe?.original_servings
+  const showBadge = servingsAreKnown(servings)
+  const portions = portionsLabel(servings, sourceServings, ui)
   // Carry only the identity + origin: the drop is a move, so the target needs to
   // know where to remove the entry from, and the entry data is already in state.
   function onDragStart(e: React.DragEvent) {
@@ -346,16 +359,28 @@ function RecipeChip({ entry, date, slot, selected, onToggleSelected, onRemove, o
       <span
         style={{ ...styles.chipName, ...(onOpen ? styles.chipNameClickable : {}) }}
         onClick={onOpen}
-        title={onOpen ? 'Kliknij, aby zobaczyć przepis' : entry.ingredients.join(', ')}
+        title={`${portions}\n${onOpen ? 'Kliknij, aby zobaczyć przepis' : entry.ingredients.join(', ')}`}
       >
         {entry.recipeName}
       </span>
+      {showBadge && (
+        <span style={styles.chipPortions} title={portions}>{servings}&nbsp;por.</span>
+      )}
       <button style={styles.chipRm} onClick={onRemove} title="Usuń">✕</button>
     </div>
   )
 }
 
-function RecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: () => void }) {
+function RecipeModal({ entry, recipe, ui, onClose }: {
+  entry: CalendarEntry
+  recipe: Recipe
+  ui: UiStrings
+  onClose: () => void
+}) {
+  // Prefer the entry's counts — they were stamped from the recipe the scaler
+  // actually produced. Fall back to the nested recipe for pre-STEP-49 entries.
+  const servings = entry.servings ?? recipe.servings
+  const sourceServings = entry.sourceServings ?? recipe.original_servings
   return (
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={e => e.stopPropagation()}>
@@ -370,7 +395,7 @@ function RecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: () => void 
         <div style={styles.modalBody}>
           <p style={styles.modalDesc}>{recipe.description}</p>
           <div style={styles.modalMeta}>
-            ⏱ Przygotowanie {recipe.prep_time_minutes} min · Gotowanie {recipe.cook_time_minutes} min · {recipe.difficulty} · Porcje: {recipe.servings}
+            ⏱ Przygotowanie {recipe.prep_time_minutes} min · Gotowanie {recipe.cook_time_minutes} min · {recipe.difficulty} · {portionsLabel(servings, sourceServings, ui)}
           </div>
           <h4 style={styles.modalSection}>Składniki</h4>
           <ul style={styles.modalList}>
@@ -480,6 +505,8 @@ const styles: Record<string, React.CSSProperties> = {
   chipCheckbox: { accentColor: t.color.primary, cursor: 'pointer', margin: 0, flexShrink: 0 },
   chipName: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   chipNameClickable: { cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', color: t.color.primary },
+  // Portion badge (STEP 49) — muted, never competing with the dish name.
+  chipPortions: { flexShrink: 0, fontSize: '0.68rem', color: t.color.textMuted, background: t.color.bg, border: `1px solid ${t.color.border}`, borderRadius: t.radius.sm, padding: '1px 5px', lineHeight: 1.4 },
   chipRm: { background: 'none', border: 'none', color: t.color.textFaint, cursor: 'pointer', fontSize: '0.75rem', padding: 0, lineHeight: 1 },
 
   freeText: {

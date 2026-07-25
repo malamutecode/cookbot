@@ -49,6 +49,11 @@ class UiStrings:
     calendar_slot_obiad: str = "Obiad"
     calendar_slot_kolacja: str = "Kolacja"
     calendar_export_selected: str = "Utwórz listę zakupów (wybrane dania)"
+    # Portion counts (STEP 49). `portions_scaled_from` uses {n} = the source
+    # page's own serving count, so the user can see amounts were converted.
+    portions_label: str = "Porcje"
+    portions_unknown: str = "nieokreślone"
+    portions_scaled_from: str = "przeliczone z {n}"
     frisco_button: str = "Znajdź w Frisco"
     frisco_heading: str = "Produkty w Frisco"
     frisco_not_found: str = "Nie znaleziono"

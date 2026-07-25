@@ -164,6 +164,10 @@ class CalendarAddResult(BaseModel):
     date: str
     recipe_name: str
     meal_slot: MealSlot = MealSlot.OBIAD
+    # Portion bookkeeping (STEP 49) — surfaced to the ChatAgent so it can confirm
+    # naturally ("Dodałem na 26.07, 8 porcji"). None = unknown; never invent one.
+    servings: int | None = None
+    source_servings: int | None = None
 
 
 class CalendarRemoveResult(BaseModel):
@@ -353,6 +357,25 @@ def _url_from_user_message(model_url: str, user_message: str) -> str:
 
 
 # ── Date normalisation ────────────────────────────────────────────────────────
+
+def _same_dish(resolved_name: str, entry_name: str) -> bool:
+    """Do the resolved recipe and the calendar entry refer to the same dish?
+
+    Guards the STEP 49 rule that the resolved recipe overrides the model's
+    ingredient argument: that override is only correct when both names describe
+    the same thing. Adding a SECOND dish in the same turn ("dodaj też sałatkę")
+    must not inherit the previous recipe's ingredients and portion count.
+
+    Deliberately lenient — the model paraphrases its own tool arguments ("Curry z
+    kurczaka" vs "curry"), so exact equality would disable the override in the
+    common case. Compared case-insensitively with one name containing the other.
+    """
+    a = (resolved_name or "").strip().casefold()
+    b = (entry_name or "").strip().casefold()
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
 
 def _normalize_date(raw: str) -> str:
     """Coerce a date string into strict YYYY-MM-DD.
@@ -726,6 +749,10 @@ You MUST respond exclusively in {config.language}. Never use another language.
   meal sections; pass meal_slot when the user names one — "śniadanie" → sniadanie,
   "lunch" → lunch, "obiad" → obiad, "kolacja" → kolacja. If they do not say,
   omit it (it defaults to obiad); never ask just to fill this in.
+  When the tool result has a `servings` value, mention it in your confirmation
+  ("Dodałem na 26.07 — 8 porcji"), and if `source_servings` differs, say the
+  amounts were converted from it. Never state a portion count the result did not
+  give you; if `servings` is null, simply don't mention portions.
 - Remove a meal from the calendar → call remove_from_calendar.
 - Build a shopping list for a date range → call get_shopping_list.
 - Answer general cooking questions directly.
@@ -733,7 +760,10 @@ You MUST respond exclusively in {config.language}. Never use another language.
 ## Recipe flow
 0a. If the user PASTES A RECIPE LINK (a URL) and wants that recipe or to add it,
    call get_recipe_from_url with the link — do NOT call propose_recipes or run
-   onboarding. The recipe card is shown automatically; then offer to add it to the
+   onboarding. If the same message says how many people it is for ("dla 8 osób"),
+   pass that number as the `servings` argument in the SAME call — it is the only
+   place the count is recorded for a pasted link, and the quantities are rescaled
+   to it. The recipe card is shown automatically; then offer to add it to the
    calendar. If it returns source="not_found" or "error", no card is shown —
    explain briefly (the page had no readable recipe / a temporary problem).
 0b. If the user's message already names a SPECIFIC dish (e.g. "przepis na halloumi
@@ -1029,12 +1059,16 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
     async def get_recipe_from_url(
         ctx: RunContext[ChatAgentDeps],
         url: str,
+        servings: int = 0,
     ) -> FoundRecipe:
         """Extract the recipe from a URL the user pasted, then show its card.
 
         Use this when the user provides a recipe LINK (not one of the proposals).
         After it returns the recipe card is shown; the user can then add it to the
         calendar. Do not call propose_recipes or run onboarding for a pasted link.
+
+        Pass `servings` whenever the user says how many people it is for ("dla 8
+        osób") — the quantities are rescaled to it. Omit it (0) if they didn't say.
         """
         cfg: TenantConfig = ctx.deps.config
         # The model retypes the URL into this argument and can corrupt long slugs,
@@ -1084,7 +1118,16 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # number ("dla 4 osób"). Only when the two differ do we rescale — and
         # original_servings records what the page said, so the recipe card and the
         # shopping list can tell "this recipe is for N" from "you asked for M".
-        target_servings = ctx.deps.onboarding.servings or 0
+        # A pasted link skips BOTH paths that normally record the serving count:
+        # proposals never happen, and the prompt tells the model not to run
+        # onboarding for a link. So a one-shot "dodaj dla 8 osób z <url>" left
+        # onboarding.servings empty and scaling silently never ran — the entry
+        # then carried the page's own amounts under the user's requested count.
+        # Take the tool argument as the primary source and persist it, the same
+        # way propose_recipes does (STEP 46).
+        if servings > 0 and not ctx.deps.onboarding.servings:
+            ctx.deps.onboarding.servings = servings
+        target_servings = servings or ctx.deps.onboarding.servings or 0
         if target_servings > 0:
             scale_agent = _cached_agent(sub_agents, "recipe_scale", build_recipe_scale_agent, cfg)
             before = recipe.servings
@@ -1121,15 +1164,43 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # Attach the full recipe from the last find_recipe call so the frontend
         # can show a detail modal when the user clicks the calendar entry.
         recipe_dict: dict | None = None
-        if ctx.deps.last_recipe is not None:
-            recipe_dict = ctx.deps.last_recipe.recipe.model_dump()
+        entry_ingredients = ingredients
+        servings: int | None = None
+        source_servings: int | None = None
+
+        resolved = ctx.deps.last_recipe
+        if resolved is not None:
+            recipe_dict = resolved.recipe.model_dump()
+
+        if resolved is not None and _same_dish(resolved.recipe.name, recipe_name):
+            # STEP 49: the resolved recipe is the authority for BOTH the amounts
+            # and the portion count.
+            #
+            # `ingredients` above is a MODEL-GENERATED argument — the LLM retypes
+            # the list into the tool call and can hand back the pre-scale amounts
+            # while `last_recipe` holds the ones RecipeScaleAgent actually
+            # produced. Stamping a portion count onto that stale list would make
+            # the number describe quantities it doesn't match, which is worse for
+            # the user than showing no number at all.
+            if resolved.recipe.ingredients:
+                entry_ingredients = list(resolved.recipe.ingredients)
+            servings = resolved.recipe.servings or None
+            source_servings = resolved.recipe.original_servings
+        else:
+            # No resolved recipe for this dish (e.g. typed straight into the
+            # calendar): fall back to what the user told us during onboarding.
+            # Nothing was scaled from a page, so there is no source count.
+            servings = ctx.deps.onboarding.servings or None
+
         entry = CalendarEntry(
             id=str(uuid.uuid4()),
             date=norm_date,
             recipe_name=recipe_name,
-            ingredients=ingredients,
+            ingredients=entry_ingredients,
             recipe=recipe_dict,
             meal_slot=meal_slot,
+            servings=servings,
+            source_servings=source_servings,
         )
         # Guard against emitting the same entry id twice in one turn.
         already = {
@@ -1142,6 +1213,8 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             date=norm_date,
             recipe_name=recipe_name,
             meal_slot=meal_slot,
+            servings=entry.servings,
+            source_servings=entry.source_servings,
         )
 
     @agent.tool
