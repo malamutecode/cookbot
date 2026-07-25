@@ -57,11 +57,17 @@ cookbot/
 │
 ├── frontend/                  # widget.js (product) + Vite/React test site → frontend/CLAUDE.md
 │
-├── infrastructure/
-│   └── terraform/             # Phase 2 — do not touch yet
+├── infra/                     # deploy scripts (bash) → infra/README.md
+│   ├── bootstrap.sh           # one-time GCP project setup (APIs, secrets, IAM)
+│   ├── deploy-backend.sh      # Cloud Build → Artifact Registry → Cloud Run
+│   ├── deploy-frontend.sh     # npm build → Firebase Hosting
+│   └── deploy.env             # local deploy config (from deploy.env.example; not committed)
 │
+├── docs/                      # flow write-ups + requirements
 ├── docker-compose.yml         # local dev: firestore emulator only
 ├── .env.example
+├── DEPLOY.md                  # deployment runbook
+├── README.md
 └── TASK.md                    # incremental build tasks — read before coding
 ```
 
@@ -126,13 +132,13 @@ Key invariants (full detail, catalogue, state model, and the 8 hard rules live i
 | Web framework | FastAPI 0.115+ | Use lifespan context managers, not `@app.on_event` |
 | AI agents | PydanticAI 1.x (`pydantic-ai-slim`) | Typed `output_type=`, `instructions=`, `agent.run_stream()` for streaming |
 | LLM | OpenAI, per-agent | `TenantConfig.model_*` fields pick the model per agent (cost vs quality) |
-| Web search | PydanticAI common tools | `duckduckgo_search_tool()` + `web_fetch_tool()` — recipe lookup before AI generation |
+| Web search | `duckduckgo_search_tool()` + own `recipe_web_fetch_tool()` | Recipe lookup before AI generation. Plain "przepis na X" takes a zero-LLM `DDGS()` fast path (`agents/recipe_search_fast.py`) |
 | Session store | Firestore (native async SDK) | `google-cloud-firestore` with `AsyncClient` |
 | Vector search | pgvector via `asyncpg` | Phase 2 — client-specific recipe KB |
 | Config | `pydantic-settings` | All config from ENV, validated at startup |
 | Linting | `ruff` | Run before every commit |
 | Type checking | `pyright` (strict) | All public functions must have type annotations |
-| Testing | `pytest` + `pytest-asyncio` | `asyncio_mode = "auto"` in pytest.ini |
+| Testing | `pytest` + `pytest-asyncio` | `asyncio_mode = "auto"` + the `integration` marker, both in `pyproject.toml` |
 
 ---
 
@@ -163,8 +169,8 @@ DEV_UID=                              # dev-only: accept x-dev-uid header as ide
 
 # User management + per-user token quotas (STEP 42)
 ADMIN_UIDS=                          # comma-separated Firebase uids seeded as admins (bootstrap)
-DEFAULT_DAILY_TOKEN_LIMIT=0          # per-user daily token budget a new user inherits; 0 = unlimited
-DEFAULT_MONTHLY_TOKEN_LIMIT=0        # per-user monthly token budget; 0 = unlimited
+DEFAULT_DAILY_TOKEN_LIMIT=1000000    # per-user daily token budget a new user inherits; 0 = unlimited
+DEFAULT_MONTHLY_TOKEN_LIMIT=10000000 # per-user monthly token budget; 0 = unlimited
 QUOTA_TIMEZONE=Europe/Warsaw         # day/month boundaries for quota resets
 
 # Access whitelist + CORS
@@ -204,7 +210,8 @@ pydantic-settings loads that file at app startup (docker-compose only runs the e
 docker-compose up -d firestore-emulator
 
 # 2. Install (from repo root)
-cd packages/cookbot-core && uv sync
+cd packages/cookbot-core  && uv sync
+cd ../delivery-shops      && uv sync
 cd ../../clients/tastyhub && uv sync
 
 # 3. Run the client app
@@ -326,23 +333,22 @@ from cookbot.exceptions import (
 
 ## GCP Deployment
 
-```bash
-# Build and deploy tastyhub client
-cd clients/tastyhub
-gcloud builds submit --config cloudbuild.yaml
+Deployment is scripted — do not hand-roll `gcloud` commands. All config comes from
+`infra/deploy.env` (gitignored; copy from `deploy.env.example`). Every script takes
+`--dry-run` and `--help`.
 
-# Manual Cloud Run deploy (first time)
-gcloud run deploy cookbot-tastyhub \
-  --image gcr.io/$PROJECT_ID/cookbot-tastyhub:latest \
-  --region europe-west1 \
-  --platform managed \
-  --no-allow-unauthenticated \   # widget.js adds Authorization header
-  --set-secrets OPENAI_API_KEY=openai-key:latest \
-  --set-env-vars TENANT_ID=tastyhub \
-  --labels client_id=tastyhub,app=cookbot
+```bash
+./infra/bootstrap.sh          # once per GCP project: APIs, Firestore, secrets, IAM
+./infra/deploy-backend.sh     # Cloud Build → Artifact Registry → Cloud Run + /health smoke test
+./infra/deploy-frontend.sh    # npm run build → Firebase Hosting
 ```
 
-**Important:** Always include `--labels client_id={name}` for cost attribution.
+Backend and frontend deploy independently. Details, flags and the guardrails the
+scripts enforce (service-name vs `firebase.json` rewrites, `VITE_WS_BASE` vs the
+live service) are in [`infra/README.md`](infra/README.md) and [DEPLOY.md](DEPLOY.md).
+
+**Important:** Cloud Run services carry `--labels client_id={name}` for cost
+attribution — `deploy-backend.sh` sets this; preserve it in any manual override.
 
 ---
 
@@ -370,7 +376,7 @@ gcloud run deploy cookbot-tastyhub \
 # Format + lint (run before every commit)
 uv run ruff format .
 uv run ruff check . --fix
-uv run pyright
+npx -y pyright@latest      # NOT `uv run pyright` — not installed as a dev dep yet
 
 # Check dependency graph (verify no circular imports)
 uv run pydeps cookbot --max-bacon=3 --noshow

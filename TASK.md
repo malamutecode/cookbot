@@ -15,7 +15,14 @@
 
 ---
 
-## Current Step: → STEP 48 (meal slots in the calendar + shopping-list button row). STEP 47 ✔ (fast path: zero-LLM DuckDuckGo search for plain recipe requests — measured 11.73s → 3.50s, 2629 tokens → 0, 6 cards); STEP 46 ✔; STEP 44 COMPLETE (admin-created user accounts). Phases 1–3 otherwise complete (app is deployable: Cloud Run backend + Firebase Hosting frontend); STEP 43 deployment polish still open.
+## Current Step: → STEP 45
+
+**STEP 45** (multi-recipe pages: ask whether to split) is the only unstarted
+feature step. **STEP 48 ✔** (meal slots + drag-and-drop, `9fdb8ba`) ·
+**STEP 47 ✔** (zero-LLM fast path: 11.73s → 3.50s, 2629 tokens → 0, 6 cards,
+`eaa984f`) · **STEP 46 ✔** · **STEP 44 ✔**. Phases 1–3 are otherwise complete —
+the app is deployable (Cloud Run backend + Firebase Hosting frontend, scripted in
+`infra/`). **STEP 43** has two small loose ends left.
 
 ---
 
@@ -59,11 +66,19 @@ Done and shipped. Kept as a one-line index only — do not re-implement. The cod
       emulator so the whole stack runs with one `docker-compose up --build`
       (today compose only starts the emulator; the container is only exercised
       via Cloud Build).
-- [ ] `README.md` — add a deployment section pointing at `DEPLOY.md` (README
-      currently says nothing about deploying).
-- [ ] `infrastructure/scripts/setup_gcp.sh` — one-time GCP project setup
-      (enable APIs, create secrets, service accounts). Currently these steps
-      only exist as prose in `DEPLOY.md`.
+- [ ] `README.md` — add a deployment section pointing at `DEPLOY.md` +
+      `infra/README.md` (README currently says nothing about deploying).
+- [ ] `pyright` as a dev dependency — it is in neither `pyproject.toml`, so the
+      `uv run pyright` that CLAUDE.md and several steps call for fails with
+      "program not found" and everyone falls back to `npx -y pyright@latest`.
+      Baseline when last measured (2026-07-25): **10 pre-existing errors**, in
+      `test_recipe_search_fast.py`, `test_url_servings_calendar_live.py` and
+      `test_chat.py` — pin the config so that baseline is enforced, not just known.
+- [x] ~~`infrastructure/scripts/setup_gcp.sh` — one-time GCP project setup~~ —
+      **done differently** (`6fc298f`): `infra/bootstrap.sh` enables APIs and
+      creates Firestore, Artifact Registry, secrets and IAM, idempotently, with
+      `infra/deploy-backend.sh` + `deploy-frontend.sh` for releases. There is no
+      `infrastructure/` directory; `infra/README.md` documents all three.
 
 ### Verify
 
@@ -76,45 +91,19 @@ curl http://localhost:8000/health
 
 ---
 
-## STEP 44 ★ — Admin-created user accounts (invite by email + temp password)
+## STEP 44 ✔ — Admin-created user accounts (invite by email + temp password)
 
-**Goal:** An admin can create a new account straight from the admin panel by
-typing an email — the backend creates the Firebase user with a generated
-temporary password, shows that password **once** to the admin, and forces the
-new user to set their own password on first login. Today there is no way to
-onboard a user at all: accounts must be hand-created in the Firebase console
-*and* their email added to the `ALLOWED_EMAILS` env var, which needs a redeploy.
-
-### Current state (as audited 2026-07-25 — BEFORE this step; historical)
-
-> Kept as the record of why this step existed. Everything under "Does NOT exist"
-> was closed by STEP 44 itself — the code + `CLAUDE.md` are the source of truth.
-
-Exists (at audit time):
-- `app/api/admin.py` — `require_admin`-gated routes: `GET /v1/admin/users`,
-  `PUT /v1/admin/users/{uid}/quota|role|disabled`, plus `GET /v1/me` (`MeView`).
-  There is **no create and no delete** route.
-- `models/user.py` — `UserRecord` (uid, email, role, quota, disabled) and
-  `TokenQuota` (0 ⇒ unlimited). No `display_name`, no password-state field.
-- `services/firestore.py` — `get_user_record` (creates a default on first sight,
-  seeds admins from `ADMIN_UIDS`), `save_user_record`, `list_user_records`.
-  Records live on the `users/{uid}` **parent doc** so the stream sees them.
-- `middleware/auth.py` — `get_current_user` verifies the Firebase ID token, then
-  gates on `email_allowed(email, settings.allowed_emails)`; `get_user_record` /
-  `require_admin` build on it. `firebase_admin` app is initialised lazily via
-  `_get_firebase_app()`.
-- `auth_policy.py` — pure `email_allowed(email, allowed)`; empty list ⇒ open.
-- `frontend/src/components/AdminPage.tsx` — the user table with inline quota
-  editing + role/disable buttons. `App.tsx` resolves `/v1/me` into `isAdmin` and
-  only renders the Admin tab for admins. `Login.tsx` does
-  `signInWithEmailAndPassword` (with a `DEV_MODE` bypass).
-- `firebase-admin>=6.5` is already a dependency — `auth.create_user()`,
-  `auth.update_user()` and `auth.delete_user()` are available with no new package.
-
-Did NOT exist (all three closed by this step):
-- Any user-creation, password-set or user-delete endpoint.
-- Any notion of "must change password" anywhere in the stack.
-- Any Firestore-backed authorization — the whitelist was env-only.
+> **DONE 2026-07-25** (`95895fc`). An admin creates an account from the admin
+> panel by typing an email; the backend creates the Firebase user with a
+> generated temp password, shows it **once**, and forces a password change on
+> first login. Before this, onboarding a user meant hand-creating them in the
+> Firebase console *and* adding their email to `ALLOWED_EMAILS` — a redeploy.
+>
+> Shipped: `models/password.py`, `UserRecord.display_name` +
+> `must_change_password`, `POST /v1/admin/users`, `DELETE /v1/admin/users/{uid}`,
+> `POST /v1/me/password`, `require_password_set` (423), a Firestore-record
+> fallback in `get_current_user`, the `AdminPage.tsx` create form and
+> `ChangePassword.tsx`. Protocol and agents untouched.
 
 ### Design decisions (settled during planning 2026-07-25)
 
@@ -160,73 +149,6 @@ Did NOT exist (all three closed by this step):
   panel. `DELETE /v1/admin/users/{uid}` removes the Firebase user and the
   Firestore record; refuses (409) when the target is the calling admin.
 
-### Tasks
-
-- [x] **Core models** — `models/password.py`: `generate_temp_password(length=12)`
-      (pure, `secrets`-backed, unambiguous alphabet) and
-      `validate_password(pw) -> str | None` returning a Polish error or `None`
-      (min 8 chars). `models/user.py`: add `display_name: str | None = None` and
-      `must_change_password: bool = False` to `UserRecord` (both defaulted, so
-      existing Firestore docs deserialize unchanged).
-- [x] **Firestore service** — `services/firestore.py`: `delete_user_record(uid)`
-      (deletes `users/{uid}`); extend `get_user_record` to accept/persist
-      `display_name`. Doc path is unchanged: `users/{uid}` parent doc.
-- [x] **Agent/tool** — **untouched.** This is CRUD; no LLM call, no new agent, no
-      per-turn token cost.
-- [x] **Protocol** — `protocols/ws_messages.py` **untouched**. No new push to the
-      browser; the only WS change is the handshake rejecting a locked account
-      (reuse the existing `error` message + close).
-- [x] **REST API** — `app/api/admin.py`:
-      - `POST /v1/admin/users` (`require_admin`) — body
-        `{email, display_name?, role, daily_limit, monthly_limit}`; calls
-        `auth.create_user(email=…, password=<generated>, display_name=…)` via
-        `asyncio.to_thread`, writes the `UserRecord` with
-        `must_change_password=True`, returns `CreatedUserView {record,
-        temp_password}`. 409 on `EmailAlreadyExistsError`, 422 on invalid email.
-      - `DELETE /v1/admin/users/{uid}` (`require_admin`) — `auth.delete_user` +
-        `delete_user_record`; 409 if `uid == caller.uid`.
-      - `POST /v1/me/password` (`get_user_record`, **not** `require_password_set`
-        — this is the one route a locked user may call) — body `{new_password}`;
-        validates, `auth.update_user(uid, password=…)`, clears
-        `must_change_password`, returns the updated `UserRecord`.
-      - `MeView`: add `must_change_password` and `display_name`.
-- [x] **Auth middleware** — `middleware/auth.py`: `get_current_user` takes
-      `request: Request` and, when `email_allowed` is `False`, falls back to an
-      existing non-disabled `UserRecord`; add `require_password_set` (423 when
-      the flag is set) and apply it to the product routes (`sessions`,
-      `spizarnia`, `search_prefs`, `shopping_list`, `grocery`) and the WS
-      handshake in `api/websocket.py`.
-- [x] **Env / config** — **no new env vars.** `ADMIN_UIDS`,
-      `DEFAULT_DAILY_TOKEN_LIMIT`, `DEFAULT_MONTHLY_TOKEN_LIMIT` and
-      `ALLOWED_EMAILS` all keep their meaning; document in root `CLAUDE.md` that
-      `ALLOWED_EMAILS` is now a *bootstrap* whitelist and an existing
-      `UserRecord` also grants access.
-- [x] **Frontend** — `AdminPage.tsx`: "Dodaj użytkownika" form (email, display
-      name, role select, two quota inputs) + a one-time result panel showing the
-      temp password with a copy button and an explicit "nie zobaczysz go
-      ponownie" warning; a delete button per row with a confirm. New
-      `ChangePassword.tsx` screen rendered by `App.tsx` **instead of** the main
-      shell while `me.must_change_password` is true. `types.ts`: extend
-      `UserRecord`/`MeView`, add `CreatedUserView`. Polish copy for the new
-      screen goes in `models/ui_strings.py` and flows through `/v1/ui`.
-- [x] **Tests:**
-  - Core unit `packages/cookbot-core/tests/test_password.py` — generated
-    passwords hit the length/charset/digit contract over many draws and are not
-    repeated; `validate_password` accepts/rejects the boundary cases.
-  - Core unit — `UserRecord` round-trips with the new fields defaulted from a
-    legacy dict (no `display_name` / `must_change_password` keys).
-  - Client unit `clients/tastyhub/tests/test_admin_create_user.py` — with
-    `firebase_admin.auth` patched and the Firestore service an `AsyncMock`:
-    create returns a temp password + a record with the flag set; duplicate email
-    ⇒ 409; non-admin ⇒ 403; self-delete ⇒ 409.
-  - Client unit `test_password_change.py` — `POST /v1/me/password` clears the
-    flag and calls `update_user`; a too-short password ⇒ 422; a locked user gets
-    423 from a product route but **not** from `/v1/me/password`.
-  - Client unit `test_auth_firestore_fallback.py` — an email off
-    `ALLOWED_EMAILS` with an existing record is allowed; with a `disabled`
-    record is 403; with no record is 403.
-  - Integration — **none needed**; everything here is mockable.
-
 ### Implementation notes (deviations from the plan, decided during the build)
 
 - **`require_password_set` was NOT applied to `shopping_list` / `grocery`.** Both
@@ -268,17 +190,6 @@ Did NOT exist (all three closed by this step):
   retention after an account is deleted. Fix = delete the known subcollection
   paths in `delete_user_record`, or a sweep job. See the docstring on
   `FirestoreService.delete_user_record`.
-
-### Verify
-
-```bash
-cd packages/cookbot-core && uv run pytest -m "not integration" -q
-cd clients/tastyhub     && uv run pytest -q
-uv run ruff check . --fix && uv run ruff format . && uv run pyright
-cd frontend && npx tsc --noEmit && npm test
-```
-
-### ⏸ PAUSE 44
 
 ---
 
@@ -362,7 +273,7 @@ is what the user wants, which only the user can answer.
 cd packages/cookbot-core && uv run pytest -m "not integration" -q
 cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_url_servings_calendar_live.py -q
 cd clients/tastyhub     && uv run pytest -q
-uv run ruff check . --fix && uv run pyright
+uv run ruff check . --fix && npx -y pyright@latest
 ```
 
 ---
@@ -392,57 +303,6 @@ test is wrong about what the product should do.
 > Verified: target test green on 3 consecutive runs; all 3 chat e2e tests pass
 > (incl. `test_full_onboarding_to_web_recipe`, the guided-path regression);
 > 194 core + 91 client unit tests; extraction + STEP 45 e2e unaffected.
-
-### Current state (verified 2026-07-25)
-
-`tests/integration/test_chat_e2e_live.py::test_direct_recipe_request_skips_onboarding`
-fails on `assert deps.onboarding.dish_type` — the field is `None` after the turn.
-**Pre-existing, not caused by the STEP 45 work**: confirmed by stashing all local
-changes and re-running against a clean tree, where it fails identically.
-
-What actually happens on "Przepis na halloumi dla 2 osób":
-- The agent **does** skip onboarding and go straight to proposals — 4 real
-  `web_search` proposals come back, which is the behaviour the test is named for.
-- But it reaches them **without calling `update_onboarding`**, so
-  `deps.onboarding` stays entirely empty (`dish_type`, `servings` both `None`).
-
-So the routing works and the *state recording* does not.
-
-### The real question to settle first
-
-Is the empty `onboarding` a bug, or is the assertion too strict?
-
-It matters beyond this test: `deps.onboarding.servings` is what
-`get_recipe_from_url` and `resolve_recipe` scale to. If a direct request never
-records `servings=2`, a later "dodaj do kalendarza" for that dish scales to the
-`or 2` default by luck rather than by the user's stated "dla 2 osób" — ask for 6
-and the recipe silently stays at 2. Check that path before weakening the test.
-
-Likely fix: make the system prompt require `update_onboarding` alongside
-`propose_recipes` on a direct request (§0b currently tells the model to skip the
-*questions*, which gpt-4o-mini reads as "skip the tool"). Prefer a prompt fix to
-a code workaround, but if the model stays unreliable, extracting dish/servings
-from the request into `deps` in the `propose_recipes` tool is a legitimate
-deterministic fallback.
-
-### Acceptance criteria
-
-- [ ] Root cause stated in one line in the commit message: prompt, tool wiring,
-      or over-strict assertion.
-- [ ] A direct "dla N osób" request results in `deps.onboarding.servings == N`,
-      **or** the test is changed with a comment explaining why that is not
-      required and the scaling path is shown to be unaffected.
-- [ ] `test_direct_recipe_request_skips_onboarding` passes on 3 consecutive runs
-      (live tests are flaky by nature — one green run proves nothing).
-- [ ] No regression in `test_full_onboarding_to_web_recipe`, which depends on the
-      guided path still filling the same fields turn by turn.
-
-### Verify
-
-```bash
-cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_chat_e2e_live.py -q
-cd packages/cookbot-core && uv run pytest -m "not integration" -q
-```
 
 ---
 
@@ -486,54 +346,6 @@ chips become optional, because a zero-LLM card cannot invent difficulty or
 cooking time. Vague or constrained requests keep today's RecipeOptionsAgent path
 unchanged.
 
-### Current state (audited 2026-07-25)
-
-**The latency chain for "znajdź przepis na jagodzianki" today** — four sequential
-stages, three of which are LLM round-trips:
-
-1. **ChatAgent turn** (`chat.py:836`) — the model reads the DIRECT RECIPE REQUEST
-   prompt (`onboarding_status_prompt`, `chat.py:596-621`) which instructs it to
-   call `update_onboarding` *then* `propose_recipes`. That is two tool
-   round-trips before the search even starts.
-2. **`propose_recipes` → RecipeOptionsAgent** (`recipe_options.py:71-125`) — the
-   dominant cost. It is a full agentic loop: LLM call → `duckduckgo_search` tool
-   → second LLM call that *writes* 4 proposals, each with a name, a 1–2 sentence
-   Polish description, difficulty, `total_time_minutes`, and 3–5
-   `key_ingredients`. That is ~4×80 tokens of generated prose on `gpt-4o-mini`.
-3. **`populate_proposal_images`** (`recipe_options.py:44-64`) — concurrent
-   best-effort og:image scrape, `_OG_FETCH_TIMEOUT = 6.0`. Already fast and
-   already deterministic; **this is the piece to reuse verbatim.**
-4. **ChatAgent streams a closing sentence** — one more LLM round-trip.
-
-**What already exists and can be reused:**
-- `populate_proposal_images()` — concurrent og:image fetch, in-place,
-  best-effort. Works on any `list[RecipeSummary]`; needs no change.
-- `RecipeSummary` (`models/recipe.py:37-45`) — already has every field the fast
-  path needs, including `source_url` and `image_url`.
-- `_select_proposal` (`chat.py:376-396`) — maps "2" or a name onto a proposal and
-  is already length-agnostic (`0 <= idx < len(proposals)`), so **6 cards need no
-  change here.**
-- `WsMessageType.RECIPE_OPTIONS` + `ws_send_recipe_options`
-  (`protocols/ws_messages.py:23,186`) — already carries `list[RecipeSummary]`,
-  any length. **No protocol change needed.**
-- `RecipeOptionsEvent` + the `_emit_event` arm — unchanged.
-- `resolve_recipe` (`chat.py:416`) — the pick path (`get_recipe_details`) is
-  untouched; a fast-path card carries a real `source_url`, so picking one goes
-  straight to `build_web_fetch_agent(pinned_url=...)` exactly as today.
-- `ddgs.DDGS().text()` — reachable directly from Python. PydanticAI's
-  `duckduckgo_search_tool` is only a thin `anyio.to_thread` wrapper around it
-  (verified in `pydantic_ai/common_tools/duckduckgo.py`), so calling `DDGS`
-  ourselves needs no new dependency.
-
-**What does NOT exist:**
-- Any code path that produces proposals without an LLM call.
-- Any deterministic recipe-URL filter — the "prefer `/przepis/`, avoid forums and
-  listicles" logic currently lives **only as prose in the RecipeOptionsAgent
-  prompt** (`recipe_options.py:88-99`) and must be ported to Python.
-- Conditional rendering of the metadata chips. `ChatPanel.tsx:455-456` renders
-  `⏱ {p.total_time_minutes} min · {p.difficulty}` and the `key_ingredients` line
-  unconditionally, so empty values would show as "⏱ 0 min · ".
-
 ### Design decisions (settled during planning 2026-07-25)
 
 - **Zero-LLM cards:** `name` and `description` come verbatim from the DDG result
@@ -573,67 +385,6 @@ stages, three of which are LLM round-trips:
   ChatAgent turn. Benchmark `model_chat` separately; do not bundle a model
   migration into this STEP or the latency measurement becomes unattributable.
 
-### Tasks
-
-- [ ] **Core config** — `models/tenant.py`: `proposal_count: int = 4`,
-      `proposal_count_fast: int = 6`, `proposal_min_fast: int = 3`. Mirror in
-      `clients/tastyhub/app/config/settings.py` + `tenant.py`, `.env.example`,
-      and the root CLAUDE.md env table.
-- [ ] **Deterministic URL filter** — new `agents/recipe_search_fast.py`, pure and
-      I/O-free so it unit-tests without network (the `models/quota.py` pattern):
-  - `_RECIPE_URL_HINTS` (`/przepis/`, `/przepisy/<slug>`, `/recipe/`) → rank first.
-  - `_BLOCKED_PATTERNS` — forums, `/tag/`, `/kategoria/`, `/search`, bare
-      homepages, and the listicle/lifestyle domains named in the current prompt
-      (`ofeminin.pl` etc.). Port the prose rules from `recipe_options.py:88-99`.
-  - Dedupe by domain so 6 cards are 6 different sites where possible.
-  - `score_and_rank(results, limit) -> list[DuckDuckGoResult]`.
-- [ ] **Fast search function** — same module:
-      `async def fast_recipe_proposals(query, *, limit, site_filter) -> list[RecipeSummary]`.
-      Calls `DDGS().text()` via `asyncio.to_thread` (Architecture Rule 4 —
-      `ddgs` is a blocking client), ranks, maps title/body → `name`/`description`,
-      sets `source="web_search"`, `source_url=href`, leaves the metadata fields
-      empty. **No `Agent`, no model call anywhere in this module.**
-- [ ] **Wire into `propose_recipes`** — `agents/chat.py`: before building the
-      RecipeOptionsAgent, evaluate the trigger predicate; on a hit call
-      `fast_recipe_proposals`, then reuse `populate_proposal_images` unchanged.
-      Fall through to the existing path when the trigger misses **or** fewer than
-      `proposal_min_fast` results survive. Log `propose_recipes_fast_path` with
-      `hit`/`count`/`elapsed_ms` so the speedup is measurable in Cloud Logging.
-      Keep the whole thing inside the existing `try/except` — Hard Rule 7.
-- [ ] **Trim the ChatAgent prompt** — `agents/chat.py`: in the DIRECT RECIPE
-      REQUEST branch of `onboarding_status_prompt` and §0b of the agent
-      instructions, drop the mandatory separate `update_onboarding` step and tell
-      the model to call `propose_recipes` directly with every detail the message
-      gave (`dish_type`, `servings`, …).
-- [ ] **Protocol** — **untouched.** `WsMessageType.RECIPE_OPTIONS` already carries
-      a variable-length `list[RecipeSummary]`.
-- [ ] **REST API** — **untouched.** This is a chat-turn feature only.
-- [ ] **Firestore** — **untouched.** Proposals live in `deps.last_proposals` and
-      the existing `ChatState` snapshot, which is already a list.
-- [ ] **Frontend** — `frontend/src/components/ChatPanel.tsx`: render the
-      `⏱ … · difficulty` line only when `total_time_minutes > 0 || difficulty`,
-      and the `key_ingredients` line only when non-empty. Confirm
-      `styles.optionsGrid` reflows to 6 cards without overflow.
-- [ ] **Tests:**
-  - Core unit `tests/test_agents/test_recipe_search_fast.py` — ranking puts
-      `/przepis/` URLs first; forum/tag/homepage/listicle URLs are dropped;
-      domain dedupe; fewer-than-min returns a short list; title/body map onto
-      `name`/`description`; metadata fields stay empty. All pure, no network.
-  - Core unit — `propose_recipes` trigger matrix with a stubbed
-      `fast_recipe_proposals`: concrete dish + no constraints → fast path taken
-      and RecipeOptionsAgent **never built**; each constraint present → slow path;
-      `dish_type="any"` → slow path; fast path returning 2 → falls back to slow.
-      Use `TestModel` for the ChatAgent, per the house rule.
-  - Core unit — 6 proposals round-trip through `_select_proposal` ("6" and a name
-      both resolve) and `dump_chat_state`/`restore_chat_state`.
-  - Integration (live, `-m integration`) — extend
-      `tests/integration/test_recipe_options_live.py`: "znajdź przepis na
-      jagodzianki" yields ≥3 proposals, every one with a real `source_url`, and
-      **asserts wall-clock elapsed < 5s** — the acceptance criterion of this STEP
-      is latency, so it needs a real assertion, not a vibe.
-  - Integration (live) — the STEP 46 guarantee still holds: a direct "dla 4 osób"
-      request ends with `deps.onboarding.servings == 4` after the prompt trim.
-
 ### Deferred within this feature
 
 - **Streaming enrichment** (send bare cards, then patch in metadata via a second
@@ -657,14 +408,12 @@ cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_
 cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_chat_e2e_live.py -q
 cd clients/tastyhub     && uv run pytest -q
 cd frontend             && npx tsc --noEmit
-uv run ruff check . --fix && uv run pyright
+uv run ruff check . --fix && npx -y pyright@latest
 ```
-
-### ⏸ PAUSE 47
 
 ---
 
-## STEP 48 ★ — Meal slots in the calendar + shopping-list button row
+## STEP 48 ✔ — Meal slots in the calendar + shopping-list button row
 
 **Goal:** Split every calendar day into `Notatki` + 4 meal sections (Śniadanie,
 Lunch, Obiad, Kolacja) so a week reads as a real meal plan, and let the user drag
@@ -672,31 +421,16 @@ dishes between slots and days. Add per-dish selection so a shopping list can be
 built from chosen meals rather than whole days, and add a "clear the whole list"
 button to the shopping-list panel with the button row rearranged.
 
-### Current state (audited 2026-07-25)
-
-- `CalendarEntry` (`packages/cookbot-core/cookbot/models/calendar.py`) has
-  `id/date/recipe_name/ingredients/recipe` — **no meal-slot field**.
-- The calendar is **client-only state in `localStorage`** (`frontend/src/App.tsx:17-25`,
-  `CAL_KEY = 'tastyhub_calendar'`). Firestore stores **no** calendar; the backend
-  only emits `calendar_update` events. So slots need **no persistence work**.
-- `CalendarPage.tsx` renders one flat `dayBody` per day: all `day.recipes` chips
-  followed by a single `freeText` textarea (`:202-219`).
-- **Day-level shopping-list selection already exists** — `selectedDays`
-  (`CalendarPage.tsx:43-74`), a checkbox in each day header, and the toolbar button
-  `Utwórz listę zakupów (N dni)` (`:158-167`). This STEP keeps it and adds a second,
-  independent per-dish selection.
-- Drag-and-drop today is **copy, not move**: `effectAllowed = 'copy'` (`:239`) and
-  `onDrop` (`:93-103`) appends to the target day, deduping by `entry.id`, so the
-  source copy is never removed.
-- `WsOutCalendarUpdate` (`protocols/ws_messages.py:84-88`) embeds the whole
-  `CalendarEntry`, so a new model field reaches the browser with **no new
-  `WsMessageType`, no new event class, and no `_emit_event` arm**.
-- `add_to_calendar` (`agents/chat.py:1102-1130`) takes `recipe_name`,
-  `ingredients`, `target_date` — no slot argument.
-- `ShoppingList.tsx` has three separate `styles.actions` rows (`:165-187`):
-  organize / copy+share / clear-checked+frisco. `clearChecked` exists (`:56-58`);
-  **no clear-all**. `Udostępnij` renders only when `navigator.share` exists (`:109`).
-- Shopping-list copy lives in `models/ui_strings.py:32-41` (PL) and `:141-150` (EN).
+> **DONE 2026-07-25** (`9fdb8ba`). Shipped: `MealSlot` StrEnum +
+> `CalendarEntry.meal_slot` (defaulting to `obiad`, so slot-less `localStorage`
+> entries keep working), a `meal_slot` arg on `add_to_calendar`, the new
+> `ui_strings` copy, `frontend/src/lib/calendar.ts` (move/selection reducers,
+> unit-tested under `node:test`), slot sections + move-on-drop + per-dish
+> checkboxes in `CalendarPage.tsx`, and `clearAll()` in `ShoppingList.tsx`.
+>
+> The audit shrank the feature twice: the calendar is `localStorage`-only, so no
+> persistence work was needed; and `WsOutCalendarUpdate` already nests the whole
+> `CalendarEntry`, so protocol and REST were untouched.
 
 ### Design decisions (settled during planning 2026-07-25)
 
@@ -722,58 +456,6 @@ button to the shopping-list panel with the button row rearranged.
 - **No `TenantConfig` field** — the 4 slots are a fixed product concept, not a
   per-tenant tunable. Revisit only if a client needs different meal structure.
 
-### Tasks
-
-- [ ] **Core models** — `models/calendar.py`: add `MealSlot(StrEnum)` with
-      `SNIADANIE/LUNCH/OBIAD/KOLACJA` (values `sniadanie|lunch|obiad|kolacja`) and
-      `CalendarEntry.meal_slot: MealSlot = MealSlot.OBIAD`. Default keeps every
-      existing payload valid.
-- [ ] **Firestore service** — **untouched.** The calendar is `localStorage`-only;
-      making it durable is a separate feature, not a rider on this one.
-- [ ] **Agent/tool** — `agents/chat.py`: `add_to_calendar` takes
-      `meal_slot: MealSlot = MealSlot.OBIAD`, passes it into `CalendarEntry`, and
-      returns it on `CalendarAddResult`. Add one prompt line under "Recipe flow":
-      map śniadanie/lunch/obiad/kolacja from the user's words, default obiad.
-- [ ] **Protocol** — **untouched.** `WsOutCalendarUpdate` already nests the full
-      `CalendarEntry`; the new field serialises automatically.
-- [ ] **REST API** — **untouched.** Both buttons reuse `POST /v1/shopping-list/build`.
-- [ ] **Env / config** — **untouched.** No new tunables.
-- [ ] **Copy** — `models/ui_strings.py`: add `shopping_list_clear_all`
-      ("Wyczyść wszystko" / "Clear all") and
-      `shopping_list_clear_all_confirm` ("Usunąć całą listę zakupów?"), plus
-      `calendar_export_selected` ("Utwórz listę zakupów (wybrane dania)") and
-      `calendar_notes_label` ("Notatki"). Keep PL defaults and EN overrides in sync.
-- [ ] **Frontend — types** — `frontend/src/types.ts`: `MealSlot` union type;
-      `CalendarEntry.mealSlot?: MealSlot`.
-- [ ] **Frontend — ShoppingList** — `ShoppingList.tsx`: add `clearAll()` guarded by
-      `window.confirm`; restructure the action rows to
-      `[Poukładaj listę zakupów]` full-width, then `[Kopiuj][Udostępnij]`, then
-      `[Wyczyść zaznaczone][Znajdź w Frisco][Wyczyść wszystko]`. Let the third row
-      wrap (`flexWrap`) — it is 3 buttons in a narrow panel.
-- [ ] **Frontend — CalendarPage** — `CalendarPage.tsx`:
-      render `Notatki` (the existing textarea) then the 4 slot sections per day;
-      each slot is its own drop target; empty slots collapse to a thin labelled
-      drop strip so a 1/7-width column stays readable; chips carry a selection
-      checkbox; move-on-drop replaces copy-on-drop; add the second toolbar button
-      whose label counts selected dishes and which is disabled at zero.
-- [ ] **Frontend — App** — `App.tsx`: `handleAddToCalendar` must respect
-      `entry.mealSlot` from the WS payload (currently appends slot-blind).
-- [ ] **Tests:**
-  - Core unit `tests/test_agents/` — `add_to_calendar` with an explicit
-      `meal_slot` sets it on the emitted `CalendarAddEvent`; omitting it yields
-      `obiad`; a `CalendarEntry` parsed from slot-less JSON defaults to `obiad`
-      (the legacy-payload guarantee). `TestModel` for the ChatAgent, per house rule.
-  - Core unit — `WsOutCalendarUpdate(action="add", entry=…).model_dump_json()`
-      round-trips `meal_slot`, proving the protocol needs no change.
-  - Frontend unit (`node:test` via `tsx` — NOT Vitest; `frontend/CLAUDE.md` says
-      Vitest but `package.json` is the authority and uses `node:test`) — extract the
-      slot/move reducers into `frontend/src/lib/calendar.ts` so they are testable
-      without React: moving an entry between slots removes it from the source;
-      moving onto its own slot is a no-op; per-dish selection collects ingredients
-      from only the ticked chips. Widen the `test` script glob to `src/lib/*.test.ts`
-      so new lib tests actually run (it hardcoded the one shopping-list file).
-  - Integration — **none needed.** No emulator, no new live-LLM behaviour.
-
 ### Deferred within this feature
 
 - **Reordering chips within a slot** — drag targets the slot; order stays
@@ -795,13 +477,7 @@ cd frontend             && npm test && npx tsc --noEmit
 cd packages/cookbot-core && uv run ruff check . --fix && npx -y pyright@latest
 ```
 
-> `pyright` is not installed in the core venv (`uv run pyright` fails with
-> "program not found"); run it via `npx` until it is added as a dev dependency.
-> Baseline on this branch is **10 pre-existing errors**, all in
-> `test_recipe_search_fast.py`, `test_url_servings_calendar_live.py` and
-> `test_chat.py:826` — STEP 48 adds none.
-
-### ⏸ PAUSE 48
+> Note the `npx` invocation — see the pyright item under STEP 43.
 
 ---
 
