@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     model_recipe_options: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
 
+    # Recipe proposal counts. The zero-LLM fast path (STEP 47) can afford more
+    # cards because search results are free; every LLM-written proposal costs
+    # tokens against the user's quota. Below proposal_min_fast usable results the
+    # fast path defers to the reasoning agent.
+    proposal_count: int = 4
+    proposal_count_fast: int = 6
+    proposal_min_fast: int = 3
+
     # Optional
     log_level: str = "INFO"
     max_hitl_rounds: int = 3

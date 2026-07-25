@@ -170,9 +170,18 @@ async def test_direct_recipe_request_skips_onboarding(pl_config) -> None:
         f"got events: {[type(e).__name__ for e in events]} / reply: {reply!r}"
     )
     proposals = opt_events[0].proposals
+    # A direct request takes the zero-LLM fast path (STEP 47), which returns up to
+    # 6 cards built straight from search results.
     assert len(proposals) >= 2, f"expected >=2 proposals, got {len(proposals)}"
     for p in proposals:
-        assert p.name and p.key_ingredients
+        # `key_ingredients` is deliberately NOT asserted here. Fast-path cards carry
+        # only what the page itself published (schema.org/Recipe JSON-LD), so most
+        # have an empty list — that is the design, not a defect: a model asked to
+        # fill in missing ingredients would invent them. What must hold is that the
+        # card is real and clickable.
+        assert p.name, f"proposal has no name: {p!r}"
+        assert p.source == "web_search", f"direct request should yield web results, got {p.source!r}"
+        assert p.source_url and p.source_url.startswith("http"), f"bad source_url: {p.source_url!r}"
 
 
 async def test_paste_url_then_add_to_calendar(pl_config) -> None:

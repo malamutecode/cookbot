@@ -451,8 +451,17 @@ function MessageBubble({ msg, ui, sendWS, addToShop, onAddToCalendar, onPickReci
                   <span style={{ ...styles.badge, background: p.source === 'web_search' ? t.color.accent : t.color.textMuted }}>{p.source === 'web_search' ? 'web' : 'AI'}</span>
                 </div>
                 <p style={styles.optionDesc}>{p.description}</p>
-                <div style={styles.optionMeta}>⏱ {p.total_time_minutes} min · {p.difficulty}</div>
-                <div style={styles.optionIngr}>{p.key_ingredients.slice(0, 4).join(', ')}</div>
+                {/* Fast-path cards (STEP 47) carry no invented metadata — only render
+                    what the page itself supplied, so empty chips never show as "0 min · ". */}
+                {(p.total_time_minutes > 0 || p.difficulty) && (
+                  <div style={styles.optionMeta}>
+                    {[p.total_time_minutes > 0 ? `⏱ ${p.total_time_minutes} min` : null, p.difficulty || null]
+                      .filter(Boolean).join(' · ')}
+                  </div>
+                )}
+                {p.key_ingredients.length > 0 && (
+                  <div style={styles.optionIngr}>{p.key_ingredients.slice(0, 4).join(', ')}</div>
+                )}
                 {p.source === 'web_search' && p.source_url && (
                   <a href={p.source_url} target="_blank" rel="noopener noreferrer" style={styles.sourceLink}>
                     Źródło ↗

@@ -1162,3 +1162,105 @@ async def test_propose_recipes_does_not_overwrite_existing_answers() -> None:
 
     assert deps.onboarding.servings == 6, "user's stated servings was overwritten"
     assert deps.onboarding.dish_type == "zupa", "user's stated dish was overwritten"
+
+
+# ── Fast path routing (STEP 47) ───────────────────────────────────────────────
+# A plain "przepis na X" must reach the zero-LLM DDG path and must NOT build the
+# RecipeOptionsAgent at all. The negative assertion is the important one: the
+# whole point of the fast path is that no model call happens inside the tool.
+
+async def _run_propose_routed(deps, fast_result, **kwargs):
+    """Run propose_recipes with both paths stubbed, reporting which one ran."""
+    agent = build_chat_agent(_CONFIG)
+    fn = _get_tool(agent, "propose_recipes")
+    ctx = MagicMock()
+    ctx.deps = deps
+    built: list[str] = []
+
+    class _Opts:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            return MagicMock(output=MagicMock(proposals=[
+                _proposal(f"llm-{i}") for i in range(4)
+            ]))
+
+    def _build_opts(_c):
+        built.append("recipe_options")
+        return _Opts()
+
+    async def _fake_fast(_query, limit):  # noqa: ANN202
+        return fast_result[:limit]
+
+    with patch("cookbot.agents.chat.build_recipe_options_agent", _build_opts), \
+         patch("cookbot.agents.chat.build_fast_proposals", _fake_fast), \
+         patch("cookbot.agents.chat.populate_proposal_images", _noop_images):
+        result = await fn(ctx, **kwargs)
+    return result, built
+
+
+async def _noop_images(_proposals):  # noqa: ANN202
+    return None
+
+
+def _proposal(name: str) -> RecipeSummary:
+    return RecipeSummary(
+        name=name, description="d", difficulty="", total_time_minutes=0,
+        key_ingredients=[], source="web_search", source_url=f"https://s.test/{name}",
+    )
+
+
+async def test_plain_request_uses_fast_path_and_never_builds_llm_agent() -> None:
+    deps = _make_deps(current_user_message="znajdź przepis na jagodzianki")
+    fast = [_proposal(f"fast-{i}") for i in range(6)]
+
+    result, built = await _run_propose_routed(deps, fast, dish_type="jagodzianki", ingredients=[])
+
+    assert built == [], "RecipeOptionsAgent was built — the LLM path ran"
+    assert result.count == 6
+    assert [p.name for p in deps.last_proposals] == [f"fast-{i}" for i in range(6)]
+
+
+async def test_constrained_request_uses_llm_path() -> None:
+    deps = _make_deps(current_user_message="przepis na jagodzianki bez cukru")
+    fast = [_proposal(f"fast-{i}") for i in range(6)]
+
+    result, built = await _run_propose_routed(
+        deps, fast, dish_type="jagodzianki", ingredients=[], free_notes="bez cukru",
+    )
+
+    assert built == ["recipe_options"], "constrained request skipped the reasoning agent"
+    assert result.count == 4
+
+
+async def test_fast_path_below_minimum_falls_back_to_llm_path() -> None:
+    """Two good pages is a thin result — fall through rather than show it."""
+    deps = _make_deps(current_user_message="znajdź przepis na jagodzianki")
+    fast = [_proposal("fast-0"), _proposal("fast-1")]
+
+    result, built = await _run_propose_routed(deps, fast, dish_type="jagodzianki", ingredients=[])
+
+    assert built == ["recipe_options"]
+    assert result.count == 4
+    assert all(p.name.startswith("llm-") for p in deps.last_proposals)
+
+
+async def test_fast_path_still_records_servings_for_scaling() -> None:
+    """STEP 46's guarantee must survive the prompt trim: a direct "dla 4 osób"
+    request ends with servings recorded, because that is what the chosen recipe
+    is later scaled to."""
+    deps = _make_deps(current_user_message="przepis na jagodzianki dla 4 osób")
+    fast = [_proposal(f"fast-{i}") for i in range(6)]
+
+    await _run_propose_routed(deps, fast, dish_type="jagodzianki", ingredients=[], servings=4)
+
+    assert deps.onboarding.servings == 4
+    assert deps.onboarding.dish_type == "jagodzianki"
+
+
+async def test_six_proposals_are_selectable_by_number_and_name() -> None:
+    """_select_proposal must handle a 6-card list — "6" is only valid on the fast path."""
+    from cookbot.agents.chat import _select_proposal
+
+    proposals = [_proposal(f"fast-{i}") for i in range(6)]
+    assert _select_proposal(proposals, "6") is proposals[5]
+    assert _select_proposal(proposals, "fast-4") is proposals[4]
+    assert _select_proposal(proposals, "9") is None

@@ -25,9 +25,11 @@ This replaced the original rigid 5-step pipeline (see [TASK.md](../../../../TASK
   propose_recipes  get_recipe_  add_to_calendar  get_shopping_list  update_onboarding
         │           details      remove_from_…    │                  (state only)
         ▼              ▼                           ▼
-  RecipeOptions   WebSearch / WebFetch        ShoppingList
-     Agent         / RecipeGen Agent             Agent
-  (4 summaries)   (full Recipe extract/gen)   (dedup + sections)
+  fast path OR    WebSearch / WebFetch        ShoppingList
+  RecipeOptions    / RecipeGen Agent             Agent
+     Agent        (full Recipe extract/gen)   (dedup + sections)
+  (6 zero-LLM /
+   4 summaries)
 ```
 
 **ChatAgent is the only stateful, conversational agent.** Every sub-agent is a
@@ -41,7 +43,7 @@ the ChatAgent coordinates them.
 |---|---|
 | Intent recognition / routing | LLM picks which tool to call from the user's message |
 | Guided (non-rigid) onboarding | `update_onboarding` tool fills 5 fields; dynamic system prompt drives the next question; user can skip/fill many at once |
-| Propose options, not one result | `propose_recipes` → 4 `RecipeSummary` cards |
+| Propose options, not one result | `propose_recipes` → `RecipeSummary` cards: 6 via the zero-LLM fast path, 4 via RecipeOptionsAgent (`proposal_count*` on `TenantConfig`) |
 | Compose / extract full recipe | `get_recipe_details` → WebFetch (known URL) or WebSearch, RecipeGen fallback |
 | Adapt to servings / ingredients | servings & onboarding context passed into fetch/gen prompts |
 | Calendar / meal planning | `add_to_calendar` / `remove_from_calendar` |
@@ -61,6 +63,32 @@ the ChatAgent coordinates them.
 | RecipeScaleAgent | `recipe_scale.py` / `build_recipe_scale_agent` | `ScaledIngredients` | Scale a web recipe's quantities to the user's servings — SEPARATE from extraction |
 | ShoppingListAgent | `shopping_list.py` / `build_shopping_list_agent` | `ShoppingList` | Dedup, sum quantities, group by shop section |
 | ProductReRankAgent | `product_rerank.py` / `build_product_rerank_agent` | `ReRankChoice` | Pick the best delivery-shop product from a lexical shortlist, or decline (adapts the `delivery-shops` `ReRanker` seam to a PydanticAI call — see [delivery-shops/CLAUDE.md](../../../delivery-shops/CLAUDE.md)) |
+
+`recipe_search_fast.py` is **not an agent either** — it is the zero-LLM fast path
+for `propose_recipes` (STEP 47). When the user names a concrete dish with no extra
+requirements ("znajdź przepis na jagodzianki") there is nothing to reason about,
+so the RecipeOptionsAgent is skipped entirely: DuckDuckGo search → deterministic
+URL ranking → page-`<head>` scrape → `RecipeSummary` cards, with **no model call**.
+Measured live: 3.50s / 6 cards / 0 tokens, vs 11.73s / 4 cards / ~2600 tokens for
+the agent path (3.35x).
+
+Three invariants to preserve:
+
+- **Never add an `Agent` to that module.** Asked to fill a missing cooking time a
+  model will invent one — the fabrication Rule 5 exists to prevent. Cards carry
+  only what the page itself supplied (`difficulty=""`, `total_time_minutes=0`,
+  `key_ingredients=[]` when absent) and the frontend hides empty chips.
+- **The trigger is deliberately narrow** — concrete dish AND no constraint fields
+  AND no constraint keyword in the raw message. A constraint appended to a DDG
+  query is a keyword, not an honoured requirement, so "jagodzianki bez cukru"
+  must reach the reasoning agent. It also fails closed on an empty message.
+- **Both stages are time-boxed.** DDG is a ~1.9-2.8s floor we do not control;
+  enrichment is capped as a whole (`_ENRICH_TOTAL_BUDGET_SECONDS`) because six
+  concurrent fetches are bounded by the slowest host — one stalling site was
+  measured pushing a turn from 2.9s to 6.2s. A card without its photo still works.
+
+The unit tier must never reach the network: `tests/test_agents/conftest.py` has an
+autouse fixture that neuters the fast path unless a test stubs it explicitly.
 
 `measures.py` is **not an agent** — it is a deterministic Polish cooking-measure
 converter (szklanka/łyżka/łyżeczka → ml/g) exposed to the ShoppingListAgent as a

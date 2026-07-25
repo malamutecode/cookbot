@@ -15,7 +15,7 @@
 
 ---
 
-## Current Step: → STEP 44 COMPLETE (admin-created user accounts — invite by email + temp password, forced first-login password change, delete user, Firestore-record access fallback). Phases 1–3 otherwise complete (app is deployable: Cloud Run backend + Firebase Hosting frontend); STEP 43 deployment polish still open.
+## Current Step: → STEP 47 ✔ (fast path: zero-LLM DuckDuckGo search for plain recipe requests — measured 11.73s → 3.50s, 2629 tokens → 0, 6 cards). STEP 46 ✔; STEP 44 COMPLETE (admin-created user accounts). Phases 1–3 otherwise complete (app is deployable: Cloud Run backend + Firebase Hosting frontend); STEP 43 deployment polish still open.
 
 ---
 
@@ -443,6 +443,224 @@ deterministic fallback.
 cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_chat_e2e_live.py -q
 cd packages/cookbot-core && uv run pytest -m "not integration" -q
 ```
+
+---
+
+## STEP 47 ✔ — Fast path: zero-LLM web search for plain recipe requests
+
+> **DONE 2026-07-25.** Measured A/B on "jagodzianki" (live, same machine):
+> **11.73s → 3.50s (3.35x), ~2629 tokens → 0, 4 cards → 6.** Per-dish live runs:
+> jagodzianki 3.44s, pierogi ruskie 4.85s, żurek 5.50s; image coverage a
+> consistent 5/6 (the miss is przepisy.pl, which hard-blocks bots with a 403).
+>
+> Four deviations from the plan, all driven by what the live runs showed:
+> 1. **`og:description` + JSON-LD enrichment was added** (the plan deferred all
+>    metadata). Both come from bytes already fetched for `og:image`, so they are
+>    free — where a page ships schema.org/Recipe the chips fill with REAL page
+>    data instead of staying empty.
+> 2. **`enrich_from_page_head` streams and aborts** at `_HEAD_MAX_BYTES` instead
+>    of awaiting `resp.text`. Recipe pages are 125-158 kB while the metadata sits
+>    at offsets 1.6k-17.5k; the full download was costing image coverage (3/6 →
+>    5/6 after the fix) and most of the enrichment budget.
+> 3. **The enrichment stage is capped as a whole** (`_ENRICH_TOTAL_BUDGET_SECONDS`),
+>    not just per-request — six concurrent fetches are bounded by the slowest
+>    host, which pushed "żurek" from 2.9s to 6.2s once.
+> 4. **HTML entities are decoded** (`html.unescape`) in card text and image URLs.
+>    Observed live: "Ponad 10 najlepszych przepis&#243;w na żurek", and `&amp;`
+>    in an og:image query string breaking the `<img src>`.
+>
+> Also added `tests/test_agents/conftest.py`: an autouse fixture that neuters the
+> fast path in the unit tier. Without it a test that stubs only the LLM path makes
+> REAL DuckDuckGo calls — `test_propose_recipes_failure_returns_structured_error`
+> was fetching 20 live results before the guard existed.
+>
+> The live latency test's budget is deliberately loose (8s): DDG itself is a
+> ~1.9-2.8s floor outside our control, so a tight bound would be flaky. It guards
+> against the fast path silently not engaging (~12s), not against search jitter.
+
+**Goal:** When the user just names a dish with no extra requirements ("znajdź
+przepis na jagodzianki"), return **6 recipe cards straight from DuckDuckGo with
+no LLM call inside the tool** — target ~2s instead of today's ~8–15s. The card
+layout stays exactly as it is (rectangle + og:image photo); only the metadata
+chips become optional, because a zero-LLM card cannot invent difficulty or
+cooking time. Vague or constrained requests keep today's RecipeOptionsAgent path
+unchanged.
+
+### Current state (audited 2026-07-25)
+
+**The latency chain for "znajdź przepis na jagodzianki" today** — four sequential
+stages, three of which are LLM round-trips:
+
+1. **ChatAgent turn** (`chat.py:836`) — the model reads the DIRECT RECIPE REQUEST
+   prompt (`onboarding_status_prompt`, `chat.py:596-621`) which instructs it to
+   call `update_onboarding` *then* `propose_recipes`. That is two tool
+   round-trips before the search even starts.
+2. **`propose_recipes` → RecipeOptionsAgent** (`recipe_options.py:71-125`) — the
+   dominant cost. It is a full agentic loop: LLM call → `duckduckgo_search` tool
+   → second LLM call that *writes* 4 proposals, each with a name, a 1–2 sentence
+   Polish description, difficulty, `total_time_minutes`, and 3–5
+   `key_ingredients`. That is ~4×80 tokens of generated prose on `gpt-4o-mini`.
+3. **`populate_proposal_images`** (`recipe_options.py:44-64`) — concurrent
+   best-effort og:image scrape, `_OG_FETCH_TIMEOUT = 6.0`. Already fast and
+   already deterministic; **this is the piece to reuse verbatim.**
+4. **ChatAgent streams a closing sentence** — one more LLM round-trip.
+
+**What already exists and can be reused:**
+- `populate_proposal_images()` — concurrent og:image fetch, in-place,
+  best-effort. Works on any `list[RecipeSummary]`; needs no change.
+- `RecipeSummary` (`models/recipe.py:37-45`) — already has every field the fast
+  path needs, including `source_url` and `image_url`.
+- `_select_proposal` (`chat.py:376-396`) — maps "2" or a name onto a proposal and
+  is already length-agnostic (`0 <= idx < len(proposals)`), so **6 cards need no
+  change here.**
+- `WsMessageType.RECIPE_OPTIONS` + `ws_send_recipe_options`
+  (`protocols/ws_messages.py:23,186`) — already carries `list[RecipeSummary]`,
+  any length. **No protocol change needed.**
+- `RecipeOptionsEvent` + the `_emit_event` arm — unchanged.
+- `resolve_recipe` (`chat.py:416`) — the pick path (`get_recipe_details`) is
+  untouched; a fast-path card carries a real `source_url`, so picking one goes
+  straight to `build_web_fetch_agent(pinned_url=...)` exactly as today.
+- `ddgs.DDGS().text()` — reachable directly from Python. PydanticAI's
+  `duckduckgo_search_tool` is only a thin `anyio.to_thread` wrapper around it
+  (verified in `pydantic_ai/common_tools/duckduckgo.py`), so calling `DDGS`
+  ourselves needs no new dependency.
+
+**What does NOT exist:**
+- Any code path that produces proposals without an LLM call.
+- Any deterministic recipe-URL filter — the "prefer `/przepis/`, avoid forums and
+  listicles" logic currently lives **only as prose in the RecipeOptionsAgent
+  prompt** (`recipe_options.py:88-99`) and must be ported to Python.
+- Conditional rendering of the metadata chips. `ChatPanel.tsx:455-456` renders
+  `⏱ {p.total_time_minutes} min · {p.difficulty}` and the `key_ingredients` line
+  unconditionally, so empty values would show as "⏱ 0 min · ".
+
+### Design decisions (settled during planning 2026-07-25)
+
+- **Zero-LLM cards:** `name` and `description` come verbatim from the DDG result
+  `title` / `body`; `difficulty=""`, `total_time_minutes=0`, `key_ingredients=[]`
+  — and the frontend hides those chips when empty. Chosen over a cheap enrichment
+  pass because the enrichment call is exactly the round-trip this STEP exists to
+  remove, and a title+photo card is honest: everything on it came from a real
+  page. **Never let a model fill these in later** — that reintroduces the
+  fabrication risk the verbatim-extraction rule exists to prevent.
+- **Trigger = concrete dish AND no constraints.** The fast path runs only when
+  `dish_type` is concrete (reuse `OnboardingState.has_concrete_dish()`) **and**
+  `ingredients`, `dietary_hints`, `max_time_minutes`, and `free_notes` are all
+  empty. Anything else — including "jagodzianki bez cukru" — falls through to the
+  RecipeOptionsAgent, which can actually reason about the constraint. A search
+  keyword is not the same as an honoured requirement.
+- **6 on the fast path, 4 on the LLM path.** Search results are free, so 6 costs
+  nothing extra; each LLM-written proposal costs tokens, so the slow path stays
+  at 4. Both counts become `TenantConfig` fields rather than literals, so they
+  are tunable per tenant without a code change.
+- **Fallback is silent and automatic.** If the deterministic filter yields fewer
+  than `proposal_min_fast` (3) usable URLs, fall through to the RecipeOptionsAgent
+  in the same tool call. The user sees a slower-but-normal result, never an
+  error. This also covers a DDG outage or rate-limit.
+- **Trim the ChatAgent prompt, keep the agent orchestrating.** Hard Rule 1 stands:
+  no bypassing the ChatAgent. But §0b of the instructions
+  (`chat.py:706-712`) and the DIRECT RECIPE REQUEST branch currently mandate a
+  *separate* `update_onboarding` call before `propose_recipes`. Since STEP 46,
+  `propose_recipes` already records dish/servings into `deps.onboarding` itself
+  (`chat.py:869-878`), so that first round-trip is now redundant — fold it into a
+  single `propose_recipes` call. **STEP 46's guarantee must survive**: a direct
+  "dla N osób" request must still end with `deps.onboarding.servings == N`.
+- **`source="web_search"` on fast-path cards.** They are real web pages, so the
+  existing "web" badge and `Źródło ↗` link are correct as-is.
+- **Model choice is out of scope, but recorded:** the user raised trying a newer
+  OpenAI model than `gpt-4o-mini`. The fast path removes the LLM from the search
+  entirely, so the model no longer affects *this* latency — it still affects the
+  ChatAgent turn. Benchmark `model_chat` separately; do not bundle a model
+  migration into this STEP or the latency measurement becomes unattributable.
+
+### Tasks
+
+- [ ] **Core config** — `models/tenant.py`: `proposal_count: int = 4`,
+      `proposal_count_fast: int = 6`, `proposal_min_fast: int = 3`. Mirror in
+      `clients/tastyhub/app/config/settings.py` + `tenant.py`, `.env.example`,
+      and the root CLAUDE.md env table.
+- [ ] **Deterministic URL filter** — new `agents/recipe_search_fast.py`, pure and
+      I/O-free so it unit-tests without network (the `models/quota.py` pattern):
+  - `_RECIPE_URL_HINTS` (`/przepis/`, `/przepisy/<slug>`, `/recipe/`) → rank first.
+  - `_BLOCKED_PATTERNS` — forums, `/tag/`, `/kategoria/`, `/search`, bare
+      homepages, and the listicle/lifestyle domains named in the current prompt
+      (`ofeminin.pl` etc.). Port the prose rules from `recipe_options.py:88-99`.
+  - Dedupe by domain so 6 cards are 6 different sites where possible.
+  - `score_and_rank(results, limit) -> list[DuckDuckGoResult]`.
+- [ ] **Fast search function** — same module:
+      `async def fast_recipe_proposals(query, *, limit, site_filter) -> list[RecipeSummary]`.
+      Calls `DDGS().text()` via `asyncio.to_thread` (Architecture Rule 4 —
+      `ddgs` is a blocking client), ranks, maps title/body → `name`/`description`,
+      sets `source="web_search"`, `source_url=href`, leaves the metadata fields
+      empty. **No `Agent`, no model call anywhere in this module.**
+- [ ] **Wire into `propose_recipes`** — `agents/chat.py`: before building the
+      RecipeOptionsAgent, evaluate the trigger predicate; on a hit call
+      `fast_recipe_proposals`, then reuse `populate_proposal_images` unchanged.
+      Fall through to the existing path when the trigger misses **or** fewer than
+      `proposal_min_fast` results survive. Log `propose_recipes_fast_path` with
+      `hit`/`count`/`elapsed_ms` so the speedup is measurable in Cloud Logging.
+      Keep the whole thing inside the existing `try/except` — Hard Rule 7.
+- [ ] **Trim the ChatAgent prompt** — `agents/chat.py`: in the DIRECT RECIPE
+      REQUEST branch of `onboarding_status_prompt` and §0b of the agent
+      instructions, drop the mandatory separate `update_onboarding` step and tell
+      the model to call `propose_recipes` directly with every detail the message
+      gave (`dish_type`, `servings`, …).
+- [ ] **Protocol** — **untouched.** `WsMessageType.RECIPE_OPTIONS` already carries
+      a variable-length `list[RecipeSummary]`.
+- [ ] **REST API** — **untouched.** This is a chat-turn feature only.
+- [ ] **Firestore** — **untouched.** Proposals live in `deps.last_proposals` and
+      the existing `ChatState` snapshot, which is already a list.
+- [ ] **Frontend** — `frontend/src/components/ChatPanel.tsx`: render the
+      `⏱ … · difficulty` line only when `total_time_minutes > 0 || difficulty`,
+      and the `key_ingredients` line only when non-empty. Confirm
+      `styles.optionsGrid` reflows to 6 cards without overflow.
+- [ ] **Tests:**
+  - Core unit `tests/test_agents/test_recipe_search_fast.py` — ranking puts
+      `/przepis/` URLs first; forum/tag/homepage/listicle URLs are dropped;
+      domain dedupe; fewer-than-min returns a short list; title/body map onto
+      `name`/`description`; metadata fields stay empty. All pure, no network.
+  - Core unit — `propose_recipes` trigger matrix with a stubbed
+      `fast_recipe_proposals`: concrete dish + no constraints → fast path taken
+      and RecipeOptionsAgent **never built**; each constraint present → slow path;
+      `dish_type="any"` → slow path; fast path returning 2 → falls back to slow.
+      Use `TestModel` for the ChatAgent, per the house rule.
+  - Core unit — 6 proposals round-trip through `_select_proposal` ("6" and a name
+      both resolve) and `dump_chat_state`/`restore_chat_state`.
+  - Integration (live, `-m integration`) — extend
+      `tests/integration/test_recipe_options_live.py`: "znajdź przepis na
+      jagodzianki" yields ≥3 proposals, every one with a real `source_url`, and
+      **asserts wall-clock elapsed < 5s** — the acceptance criterion of this STEP
+      is latency, so it needs a real assertion, not a vibe.
+  - Integration (live) — the STEP 46 guarantee still holds: a direct "dla 4 osób"
+      request ends with `deps.onboarding.servings == 4` after the prompt trim.
+
+### Deferred within this feature
+
+- **Streaming enrichment** (send bare cards, then patch in metadata via a second
+  WS message) — rejected for now: needs a new `WsMessageType` plus merge-by-index
+  logic in `ChatPanel`, and reintroduces the LLM call this STEP removes.
+- **Applying the fast path to constrained requests** ("jagodzianki bez cukru") —
+  a constraint appended to a DDG query is a keyword, not an honoured requirement.
+  Revisit only with evidence that DDG respects it.
+- **Bumping the LLM path to 6 proposals** — costs tokens against every user's
+  quota (STEP 42) for no latency win.
+- **Newer OpenAI model for `model_chat`** — benchmark separately, so this STEP's
+  latency improvement stays attributable.
+- **Caching DDG results per dish** — worth doing if repeat queries turn out to be
+  common, but needs Firestore/GCS and belongs with the Phase 4 blob-cache work.
+
+### Verify
+
+```bash
+cd packages/cookbot-core && uv run pytest -m "not integration" -q
+cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_recipe_options_live.py -q
+cd packages/cookbot-core && uv run pytest -m integration tests/integration/test_chat_e2e_live.py -q
+cd clients/tastyhub     && uv run pytest -q
+cd frontend             && npx tsc --noEmit
+uv run ruff check . --fix && uv run pyright
+```
+
+### ⏸ PAUSE 47
 
 ---
 

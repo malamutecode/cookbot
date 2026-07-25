@@ -43,7 +43,7 @@ in `cookbot/protocols/ws_messages.py`):
 
 ```python
 await ws_send_token(websocket, content="Let me check...")
-await ws_send_recipe_options(websocket, proposals)                    # 4 cards
+await ws_send_recipe_options(websocket, proposals)                    # 4-6 cards
 await ws_send_final_recipe(websocket, recipe, RecipeSource.WEB_SEARCH)
 await ws_send_hitl_checkpoint(websocket, checkpoint, ui.hitl)         # labels from TenantConfig.ui
 await ws_send_error(websocket, message="Something went wrong.")

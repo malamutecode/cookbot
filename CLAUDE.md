@@ -181,6 +181,11 @@ MODEL_RECIPE_GEN=gpt-4o-mini
 MODEL_WEB_SEARCH=gpt-4o-mini
 MODEL_RECIPE_OPTIONS=gpt-4o-mini
 
+# Recipe proposal counts (STEP 47 fast path)
+PROPOSAL_COUNT=4          # cards from the LLM (RecipeOptionsAgent) path
+PROPOSAL_COUNT_FAST=6     # cards from the zero-LLM DuckDuckGo fast path
+PROPOSAL_MIN_FAST=3       # below this many usable results, fall back to the LLM path
+
 # Phase 2 only — not required for MVP
 # DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/cookbot
 # EMBEDDING_MODEL=text-embedding-3-small

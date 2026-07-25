@@ -24,6 +24,7 @@ Sub-agents (stateless, one LLM call each)
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -44,6 +45,11 @@ from cookbot.agents.recipe_options import (
     recipe_options_prompt,
 )
 from cookbot.agents.recipe_scale import build_recipe_scale_agent, scale_recipe_to_servings
+from cookbot.agents.recipe_search_fast import (
+    build_fast_proposals,
+    fast_path_query,
+    is_fast_path_request,
+)
 from cookbot.agents.shopping_list import build_shopping_list_agent
 from cookbot.agents.web_search import build_web_fetch_agent, build_web_search_agent, web_fetch_prompt, web_search_prompt
 from cookbot.models.calendar import CalendarEntry, CalendarState
@@ -52,6 +58,20 @@ from cookbot.models.shopping import ShoppingList
 from cookbot.models.tenant import TenantConfig
 
 log = structlog.get_logger()
+
+# dish_type values that mean "the user has NOT named a dish yet". The prompt asks
+# for the literal "any", but the model paraphrases into the tenant's language
+# ("jakiekolwiek", "cokolwiek", "obiad"), and a vague value here is what decides
+# whether onboarding continues or a web search fires. Compared lowercased.
+_VAGUE_DISH_SENTINELS = frozenset({
+    "", "any", "anything", "whatever",
+    # Polish paraphrases of "any / whatever / doesn't matter"
+    "jakiekolwiek", "jakikolwiek", "jakakolwiek", "cokolwiek", "coś", "cos",
+    "wszystko", "dowolne", "dowolny", "obojętnie", "obojetnie", "nie wiem",
+    # Meal slots are a COURSE, not a dish — "obiad" alone is not searchable.
+    "obiad", "kolacja", "śniadanie", "sniadanie", "lunch", "dinner", "breakfast",
+    "supper", "przekąska", "przekaska", "deser", "dessert",
+})
 
 
 # ── Onboarding state ─────────────────────────────────────────────────────────
@@ -86,8 +106,16 @@ class OnboardingState(BaseModel):
 
     def has_concrete_dish(self) -> bool:
         """True when the user named a specific dish (not the "any" sentinel used
-        for "zaproponuj coś"). This is the signal for a direct recipe request."""
-        return bool(self.dish_type) and self.dish_type.strip().lower() not in {"any", ""}
+        for "zaproponuj coś"). This is the signal for a direct recipe request.
+
+        The sentinel set is not just {"any"}: the prompt asks the model to record
+        a vague answer as dish_type="any", but it paraphrases in the tenant's
+        language instead. Observed live on "Obiad" → dish_type="jakiekolwiek",
+        which passed this gate, fired the fast path, and searched DuckDuckGo for
+        "jakiekolwiek przepis" — returning basketball rules and a TikTok video as
+        recipe cards. Treat every vague placeholder as "no dish named yet".
+        """
+        return bool(self.dish_type) and self.dish_type.strip().lower() not in _VAGUE_DISH_SENTINELS
 
     def ready_to_search(self) -> bool:
         """The agent may propose recipes when onboarding is complete OR when the
@@ -611,13 +639,14 @@ Already known from the conversation:
 {known_str}
 
 The user knows what they want — DO NOT ask the onboarding questions (servings,
-time, ingredients, extra notes). Instead, this turn:
-1. If the latest message contains any details you haven't recorded yet (servings,
-   a time limit, specific ingredients, notes), call update_onboarding ONCE to
-   capture them. Skip this if there is nothing new to record.
-2. Then call propose_recipes immediately for the named dish, passing whatever is
-   known (dish_type is required; use collected servings/time/ingredients if
-   present, otherwise the defaults). Do NOT ask any further questions first.
+time, ingredients, extra notes).
+
+Call propose_recipes IMMEDIATELY — one single tool call, this turn. Pass every
+detail the message gives, as arguments to that call: dish_type (required), plus
+servings / max_time_minutes / ingredients / free_notes when the user stated them.
+propose_recipes records them itself, so do NOT call update_onboarding first —
+that extra round-trip only makes the user wait longer.
+Do NOT ask any further questions before calling it.
 """
 
     # ── Guided onboarding (vague request) ────────────────────────────────────
@@ -705,11 +734,12 @@ You MUST respond exclusively in {config.language}. Never use another language.
    explain briefly (the page had no readable recipe / a temporary problem).
 0b. If the user's message already names a SPECIFIC dish (e.g. "przepis na halloumi
    dla 2 osób"), they know what they want — do NOT ask the onboarding questions.
-   Skip the QUESTIONS, not the recording: first call update_onboarding with every
-   detail the message already gives (here dish_type="halloumi", servings=2), then
-   call propose_recipes straight away for that dish. Recording the serving count
-   matters — it is what the recipe is later scaled to. Only ask the guided
-   questions when the request is vague ("coś na obiad", "zaproponuj coś").
+   Call propose_recipes straight away in a SINGLE tool call, passing every detail
+   the message gives as arguments (here dish_type="halloumi", servings=2).
+   propose_recipes records those itself, so do not call update_onboarding first.
+   Passing the serving count matters — it is what the recipe is later scaled to.
+   Only ask the guided questions when the request is vague ("coś na obiad",
+   "zaproponuj coś").
 1. When the user wants a recipe, call propose_recipes — this shows 4 options.
 2. Tell the user to pick one (e.g. "Który przepis Cię interesuje?").
 3. When the user picks (says a number or name), call get_recipe_details with their choice.
@@ -843,8 +873,8 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         dietary_hints: list[str] | None = None,
         free_notes: str = "",
     ) -> ProposeRecipesResult:
-        """Propose 4 recipe options. Call after onboarding is complete or on explicit user
-        request. The options are sent to the frontend automatically."""
+        """Propose recipe options (4-6 cards). Call after onboarding is complete or on
+        explicit user request. The options are sent to the frontend automatically."""
         cfg: TenantConfig = ctx.deps.config
         ob = ctx.deps.onboarding
         intent = UserIntent(
@@ -882,21 +912,43 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             dietary_hints=dietary_hints or [],
             missing_staples=[],
         )
-        opts_agent = _cached_agent(sub_agents, "recipe_options", build_recipe_options_agent, cfg)
         try:
-            result = await opts_agent.run(
-                recipe_options_prompt(
-                    parsed, intent,
-                    site_filter=ctx.deps.search_site_filter,
-                    allow_ai_generated=ctx.deps.allow_ai_generated,
-                    preferred_sites=ctx.deps.preferred_sites,
-                ),
-                usage=ctx.usage,
-            )
-            proposals = result.output.proposals[:4]
-            # Best-effort: fill dish images from each web page's og:image (concurrent,
-            # never blocks the result — failures leave image_url=None for a placeholder).
-            await populate_proposal_images(proposals)
+            proposals: list[RecipeSummary] = []
+            # ── Fast path (STEP 47) ──────────────────────────────────────────
+            # A plain "przepis na X" has nothing for a model to reason about, so
+            # skip the RecipeOptionsAgent entirely: DDG + deterministic ranking
+            # produce the cards with zero LLM calls (~2s vs ~8-15s). Images and
+            # metadata come from each page's <head> in the same fetch.
+            if is_fast_path_request(ob, ctx.deps.current_user_message):
+                started = time.monotonic()
+                fast = await build_fast_proposals(
+                    fast_path_query(ob, site_filter=ctx.deps.search_site_filter),
+                    limit=cfg.proposal_count_fast,
+                )
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                # Too few good pages ⇒ fall through; the user gets a slower but
+                # normal result rather than a thin set of cards.
+                hit = len(fast) >= cfg.proposal_min_fast
+                log.info("propose_recipes_fast_path", hit=hit, count=len(fast),
+                         elapsed_ms=elapsed_ms, dish=ob.dish_type)
+                if hit:
+                    proposals = fast
+
+            if not proposals:
+                opts_agent = _cached_agent(sub_agents, "recipe_options", build_recipe_options_agent, cfg)
+                result = await opts_agent.run(
+                    recipe_options_prompt(
+                        parsed, intent,
+                        site_filter=ctx.deps.search_site_filter,
+                        allow_ai_generated=ctx.deps.allow_ai_generated,
+                        preferred_sites=ctx.deps.preferred_sites,
+                    ),
+                    usage=ctx.usage,
+                )
+                proposals = result.output.proposals[:cfg.proposal_count]
+                # Best-effort: fill dish images from each web page's og:image (concurrent,
+                # never blocks the result — failures leave image_url=None for a placeholder).
+                await populate_proposal_images(proposals)
         except Exception as exc:
             # Contain the failure at the tool boundary: the turn survives and the
             # agent explains instead of the connection dying mid-stream.
@@ -920,7 +972,7 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         ctx: RunContext[ChatAgentDeps],
         choice: str,
     ) -> FoundRecipe:
-        """Get the full recipe for the option the user chose. choice is a number (1-4) or the recipe name."""
+        """Get the full recipe for the option the user chose. choice is a number (1-6) or the recipe name."""
         selected = _select_proposal(ctx.deps.last_proposals, choice)
         if selected is None and ctx.deps.last_proposals:
             # Never resolve a guess — silently delivering the wrong card is worse

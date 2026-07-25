@@ -27,6 +27,14 @@ class TenantConfig:
     # on already-extracted text — a cheap model is adequate and keeps cost/TPM low.
     model_recipe_scale: str = "gpt-4o-mini"
     embedding_model: str = "text-embedding-3-small"
+    # How many recipe cards a proposal turn shows. The zero-LLM fast path can
+    # afford more (search results are free); every LLM-written proposal costs
+    # tokens against the user's quota, so the reasoning path stays smaller.
+    proposal_count: int = 4
+    proposal_count_fast: int = 6
+    # Below this many usable fast-path results, fall back to the RecipeOptionsAgent
+    # rather than show a thin set of cards.
+    proposal_min_fast: int = 3
     max_hitl_rounds: int = 3
     feature_nutrition: bool = False
     # Delivery shops (from the delivery-shops package) whose product feeds this
