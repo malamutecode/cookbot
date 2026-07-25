@@ -1,6 +1,6 @@
 ---
 name: pre-commit-check
-description: Run the right tests before committing, chosen from the current diff. Inspects staged/unstaged changes and runs the matching tier — static (ruff/pyright/tsc) for docs, +unit pytest for Python, frontend checks for TS, and offers the live e2e integration tier when agent/chat code changed. Use before committing, when the user asks to "test before commit", "check my changes", "is this safe to commit", or to verify a change is green.
+description: Run the right tests before committing, chosen from the current diff, then check the docs still match the code. Inspects staged/unstaged changes and runs the matching tier — static (ruff/pyright/tsc) for docs, +unit pytest for Python, frontend checks for TS, and offers the live e2e integration tier when agent/chat code changed. Also updates the owning CLAUDE.md when the change moved architecture, a boundary, config, or a stated rule. Use before committing, when the user asks to "test before commit", "check my changes", "is this safe to commit", or to verify a change is green.
 ---
 
 # pre-commit-check
@@ -103,7 +103,49 @@ Frontend unit tests:
 cd frontend && npm test
 ```
 
-## Step 4 — Live e2e tier (only for agent-behavior changes, only on confirm)
+## Step 4 — Docs sync: did this change outdate a `CLAUDE.md`?
+
+Tests only prove the code works — they can't tell you the docs still describe it.
+The repo's `CLAUDE.md` files are the contract every future agent reads, so a diff
+that changes architecture and leaves them stale is a defect, not a follow-up.
+
+Map each changed path to the `CLAUDE.md` that owns it:
+
+| Changed paths | Owning doc |
+|---|---|
+| `packages/cookbot-core/cookbot/agents/**` | `packages/cookbot-core/cookbot/agents/CLAUDE.md` |
+| `packages/delivery-shops/**` | `packages/delivery-shops/CLAUDE.md` |
+| `clients/tastyhub/app/**` | `clients/tastyhub/app/CLAUDE.md` |
+| `frontend/**` | `frontend/CLAUDE.md` |
+| Repo layout, cross-package rules, env vars, tooling/test commands | root `CLAUDE.md` |
+
+Read the owning doc(s) and check the diff against them. Update the doc **in the
+same commit** when the change did any of these:
+
+- **Added, renamed, moved, or deleted** a module, agent, sub-agent, ChatAgent tool,
+  service, or package — anything named in a doc's catalogue or the root repo-layout tree.
+- **Changed a boundary**: a WS message type or send helper, a REST route, a Firestore
+  key/collection layout, a Pydantic model crossing modules.
+- **Changed config**: a new/renamed/removed env var or `TenantConfig` field (root
+  CLAUDE.md's env block **and** `.env.example` both list these).
+- **Changed a stated rule or invariant** — e.g. the agents doc's hard rules, the
+  one-way dependency rule, "extraction is verbatim, scaling is separate".
+- **Changed how you run or test things**: commands, test tiers/markers, deploy scripts,
+  the pyright baseline story.
+
+Do **not** touch the docs for pure refactors, bug fixes, or added tests that leave
+every name, boundary, rule, and command above unchanged. Silence is the correct
+outcome most of the time; don't invent churn to look thorough.
+
+When an update is needed, make it yourself — match the surrounding voice (terse,
+imperative, table-driven), edit the specific stale lines rather than appending a
+changelog, and keep it to what the diff actually changed. Then report it in the
+Step 6 verdict as its own row: which doc, which lines, why.
+
+Note in the verdict when the change touches `TASK.md`'s current step but its
+acceptance criteria weren't updated — flag it, don't rewrite TASK.md unprompted.
+
+## Step 5 — Live e2e tier (only for agent-behavior changes, only on confirm)
 
 The integration tier hits **real OpenAI + DuckDuckGo** (and, for firestore tests,
 the emulator). It is slow, costs money, and is occasionally flaky. Trigger it
@@ -121,16 +163,18 @@ The Firestore emulator tests (`tests/test_firestore.py`) need
 only run them if the change touches `services/` or Firestore persistence, and only
 if the emulator is already up — otherwise note they were skipped.
 
-## Step 5 — Report a verdict, don't auto-commit
+## Step 6 — Report a verdict, don't auto-commit
 
-Summarize as a short table: tier → ran? → pass/fail. On any failure, **show the
-failing test name + traceback** and stop so it can be fixed here — do not paper
-over it. Only when every run tier is green, tell the user it's safe to commit.
-**Never commit or push from this skill** unless the user explicitly asks.
+Summarize as a short table: tier → ran? → pass/fail, with a **docs sync** row
+(updated / checked, no drift). On any failure, **show the failing test name +
+traceback** and stop so it can be fixed here — do not paper over it. Only when
+every run tier is green *and* the docs match the code, tell the user it's safe to
+commit. **Never commit or push from this skill** unless the user explicitly asks.
 
 ## Overrides
 
 Honor explicit user intent over the heuristic:
-- "static only" / "I'm in a hurry" → Steps 1–2 only.
+- "static only" / "I'm in a hurry" → Steps 1–2, then Step 4 (the docs check is free — never skip it).
 - "run everything" / "full check" → run every tier including e2e (still confirm the cost once).
-- "skip e2e" → never offer Step 4.
+- "skip e2e" → never offer Step 5.
+- "don't touch the docs" → still *report* the drift in Step 6, just don't edit.
