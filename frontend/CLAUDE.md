@@ -19,10 +19,11 @@ frontend/
     ├── components/     # ChatPanel, CalendarPage, ShoppingList, FriscoPanel,
     │                   # SpizarniaPanel, SourcesPage, AdminPage, ChangePassword,
     │                   # Login, NavBar
-    ├── hooks/          # useSpizarnia
+    ├── hooks/          # useSpizarnia · useCalendar (server-side plan, STEP 52)
     └── lib/            # pure logic, each with a sibling .test.ts:
                         #   shoppingList.ts · calendar.ts (slot move/selection
-                        #   reducers) · servings.ts (portionsLabel)
+                        #   reducers + daysFromServer/daysToServer) ·
+                        #   servings.ts (portionsLabel)
 ```
 
 ## Conventions

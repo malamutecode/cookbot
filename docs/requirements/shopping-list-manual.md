@@ -68,9 +68,10 @@ ShoppingListAgent, and **export** as clean text to paste anywhere.
   `SECTION_ORDER` for display ordering.
 
 ### FR5 — Persistence
-- The shopping list persists to **localStorage** (key `tastyhub_shopping`), matching
-  how the calendar persists (`tastyhub_calendar`). It survives reload. It is
-  per-browser (no server sync in this iteration).
+- The shopping list persists to **localStorage** (key `tastyhub_shopping`). It
+  survives reload and is per-browser (no server sync in this iteration). The
+  calendar used to work the same way; since STEP 52 it is server-side in
+  Firestore, and the shopping list is now the only localStorage-backed surface.
 
 ## Non-functional / constraints
 

@@ -240,27 +240,50 @@ differs per path — three traps, each of which shipped as a bug:
   stamped on a list it doesn't describe is worse than no number.
 
 `CalendarEntry.servings` / `.source_servings` are `None`-defaulted so pre-STEP-49
-`localStorage` entries still parse; the three display states are defined once by
+entries still parse; the three display states are defined once by
 `servings_are_known` / `servings_were_scaled` in `models/calendar.py` and rendered
 by `frontend/src/lib/servings.ts`.
 
-> **The calendar is `localStorage`-only — every new `CalendarEntry` field must be
-> optional.** There is no migration step and no server-side store, so a required
-> field would make every previously-saved meal plan unparseable. Both additions so
-> far follow this: `meal_slot` defaults to `obiad` and `servings`/`source_servings`
+> **Every new `CalendarEntry` field must be optional.** The calendar now lives in
+> Firestore (STEP 52, `users/{uid}/calendar/entries`) rather than `localStorage`,
+> but the contract is unchanged: there is no migration step, so a required field
+> would make every previously-saved meal plan unparseable. All additions so far
+> follow this: `meal_slot` defaults to `obiad` and `servings`/`source_servings`
 > to `None`, each read defensively (`entry.mealSlot ?? DEFAULT_MEAL_SLOT`) rather
 > than by rewriting stored data. `MealSlot` values are **stable English keys**
 > (`sniadanie`/`lunch`/`obiad`/`kolacja`) precisely because they are persisted —
 > Polish display labels live in `ui_strings.py`, so changing copy can never
 > invalidate a saved plan.
 
+## The calendar is server-owned (STEP 52) — the tool still writes nothing
+
+`add_to_calendar` / `remove_from_calendar` **emit events and persist nothing**,
+exactly as Rule 4 requires. The WS handler's `_emit_event` performs the Firestore
+write in the same arm that sends the WS message. Three consequences to preserve:
+
+- **`ChatAgentDeps` gets no Firestore handle.** `dump_chat_state` serializes deps
+  fields straight into a Firestore doc, so a service object there would be a
+  non-serializable field inside the snapshot contract — and the tools stay
+  testable with no Firestore mock. `deps.pantry` is the same pattern: the handler
+  does the I/O and passes data in.
+- **`deps.calendar` is loaded ONCE at the handshake, not per turn.** The server is
+  the only writer on this path, so `_emit_event` keeps that same object current in
+  memory instead of costing a read per message. It is read-only to the tools.
+- **A stale copy is bounded and harmless.** Another device or a REST write during
+  an open chat leaves the in-memory copy behind. The chat reads the calendar only
+  to avoid proposing duplicates, so the cost is at most a repeated suggestion —
+  never a lost entry, since every mutation is a targeted add/remove-by-id and
+  never a whole-state overwrite from deps.
+
 ## State model
 
 - **`ChatAgentDeps`** — a dataclass, one instance per WebSocket connection.
   - `onboarding` (`OnboardingState`) **accumulates across turns** until complete.
-  - `calendar`, `search_site_filter`, `allow_ai_generated`, `pantry`,
-    `subtract_pantry` — **refreshed each turn** by the WS handler from the message
-    payload / user's Firestore prefs.
+  - `search_site_filter`, `allow_ai_generated`, `pantry`, `subtract_pantry` —
+    **refreshed each turn** by the WS handler from the message payload / user's
+    Firestore prefs.
+  - `calendar` — loaded **once per connection** from Firestore and kept current
+    in memory by `_emit_event` (STEP 52); never sent up by the client.
   - `last_recipe`, `last_proposals` — carry selection context between turns.
   - `events` (`list[TurnEvent]`) — **ordered per-turn side-effect collector,
     reset each turn** via `deps.reset_turn()`, then drained into typed WS

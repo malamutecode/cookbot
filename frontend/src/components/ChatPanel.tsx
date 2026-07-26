@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react'
-import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, CalendarDay, MealSlot, DEFAULT_MEAL_SLOT } from '../types'
+import { Recipe, RecipeSummary, HitlLabels, UiStrings, ShopItem, WsOutMessage, CalendarEntry, MealSlot, DEFAULT_MEAL_SLOT } from '../types'
 import { WS_BASE, DEV_MODE, DEV_UID } from '../config'
 import { portionsLabel } from '../lib/servings'
 import { OrganizedItem, mergeOrganized } from '../lib/shoppingList'
@@ -35,7 +35,6 @@ interface Props {
   onShopItemsChange: (items: ShopItem[]) => void
   onAddToCalendar: (entry: CalendarEntry) => void
   onCalendarRemove: (entryId: string) => void
-  calDays: CalendarDay[]
   onProcessingChange: (v: boolean) => void
 }
 
@@ -48,22 +47,11 @@ type ChatMsg =
   | { kind: 'hitl'; recipe: Recipe; round: number; labels: HitlLabels }
   | { kind: 'spizarnia_offer'; missing: string[]; used: string[] }
 
-// Convert CalendarDay[] to the flat entries format the backend expects
-function calendarToWsPayload(calDays: CalendarDay[]) {
-  return {
-    entries: calDays.flatMap(day =>
-      day.recipes.map(r => ({
-        id: r.id,
-        date: day.date,
-        recipe_name: r.recipeName,
-        ingredients: r.ingredients,
-        meal_slot: r.mealSlot ?? DEFAULT_MEAL_SLOT,
-      }))
-    ),
-  }
-}
+// The calendar is NOT sent up any more (STEP 52) — the server loads it from
+// Firestore at the handshake and owns every write, so a client-uploaded copy
+// would be unvalidated state the server has no reason to trust.
 
-export default function ChatPanel({ sessionId, idToken, useSpizarnia, subtractPantry, ui, shopItems, onShopItemsChange, onAddToCalendar, onCalendarRemove, calDays, onProcessingChange }: Props) {
+export default function ChatPanel({ sessionId, idToken, useSpizarnia, subtractPantry, ui, shopItems, onShopItemsChange, onAddToCalendar, onCalendarRemove, onProcessingChange }: Props) {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [inputEnabled, setInputEnabled] = useState(false)
@@ -287,8 +275,7 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, subtractPa
     const text = input.trim()
     if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     addMsg({ kind: 'user', text })
-    // Include current calendar state so agent can read/write it
-    sendWS({ type: 'message', content: text, calendar: calendarToWsPayload(calDays), subtract_pantry: subtractPantry })
+    sendWS({ type: 'message', content: text, subtract_pantry: subtractPantry })
     setInput('')
     setInputEnabled(false)
     streamingRef.current = true
@@ -299,7 +286,7 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, subtractPa
   function pickRecipe(choice: number) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || streamingRef.current) return
     addMsg({ kind: 'user', text: `wybieram ${choice}` })
-    sendWS({ type: 'message', content: `wybieram ${choice}`, calendar: calendarToWsPayload(calDays), subtract_pantry: subtractPantry })
+    sendWS({ type: 'message', content: `wybieram ${choice}`, subtract_pantry: subtractPantry })
     setInputEnabled(false)
     streamingRef.current = true
     setIsTyping(true)

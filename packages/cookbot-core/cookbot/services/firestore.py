@@ -4,6 +4,7 @@ import structlog
 from google.cloud.firestore_v1.async_client import AsyncClient
 
 from cookbot.hitl.models import HITLCheckpoint
+from cookbot.models.calendar import CalendarEntry, CalendarState
 from cookbot.models.session import Message, Session
 from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
 from cookbot.models.user import (
@@ -131,6 +132,40 @@ class FirestoreService:
         spizarnia.updated_at = datetime.now(UTC)
         await self.save_spizarnia(spizarnia)
 
+    # ── Calendar (STEP 52) ───────────────────────────────────────────────────
+    # One doc per user holding the whole CalendarState, mirroring the spizarnia
+    # shape above: every surface reads and writes a meal plan whole, so a
+    # doc-per-entry would buy partial writes nobody needs at N reads per load.
+
+    def _calendar_ref(self, uid: str):  # type: ignore[return]
+        return self._client.collection("users").document(uid).collection("calendar").document("entries")
+
+    async def get_calendar(self, uid: str) -> CalendarState:
+        """The user's meal plan. A missing doc is an empty plan, never an error —
+        the WS handshake reads this on every authenticated connection."""
+        doc = await self._calendar_ref(uid).get()
+        if not doc.exists:
+            return CalendarState(uid=uid)
+        return CalendarState.model_validate({**doc.to_dict(), "uid": uid})
+
+    async def save_calendar(self, calendar: CalendarState) -> None:
+        await self._calendar_ref(calendar.uid).set(calendar.model_dump(mode="json"))
+
+    async def add_calendar_entry(self, uid: str, entry: CalendarEntry) -> None:
+        """Append one entry, idempotent on `entry.id` — a re-sent add replaces the
+        stored entry rather than duplicating it."""
+        calendar = await self.get_calendar(uid)
+        calendar.entries = [e for e in calendar.entries if e.id != entry.id]
+        calendar.entries.append(entry)
+        calendar.updated_at = datetime.now(UTC)
+        await self.save_calendar(calendar)
+
+    async def remove_calendar_entry(self, uid: str, entry_id: str) -> None:
+        calendar = await self.get_calendar(uid)
+        calendar.entries = [e for e in calendar.entries if e.id != entry_id]
+        calendar.updated_at = datetime.now(UTC)
+        await self.save_calendar(calendar)
+
     def _search_prefs_ref(self, uid: str):  # type: ignore[return]
         return self._client.collection("users").document(uid).collection("prefs").document("search")
 
@@ -222,7 +257,8 @@ class FirestoreService:
         """Remove a user's account record document (`users/{uid}`).
 
         Deleting the parent doc drops the record, profile and any other fields
-        stored on it. Firestore subcollections (`spizarnia`, `prefs`, `usage`)
+        stored on it. Firestore subcollections (`spizarnia`, `calendar`, `prefs`,
+        `usage`)
         are NOT cascaded by a parent delete — they are orphaned, which is
         harmless: nothing reads them without a record, and a re-created uid is
         never reused by Firebase."""

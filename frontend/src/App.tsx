@@ -10,19 +10,14 @@ import SourcesPage from './components/SourcesPage'
 import AdminPage from './components/AdminPage'
 import ChangePassword from './components/ChangePassword'
 import { useSpizarnia, authHeaders } from './hooks/useSpizarnia'
-import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView, DEFAULT_MEAL_SLOT } from './types'
+import { useCalendar } from './hooks/useCalendar'
+import { Page, UiStrings, ShopItem, CalendarDay, CalendarEntry, MeView } from './types'
 import { API_BASE, TEST_USER, DEV_MODE } from './config'
 import { t } from './theme'
 
-const CAL_KEY = 'tastyhub_calendar'
+// The calendar is server-side (STEP 52) — no CAL_KEY here. The shopping list is
+// still local: it is a scratchpad, not a plan that has to follow the user.
 const SHOP_KEY = 'tastyhub_shopping'
-
-function loadCalendar(): CalendarDay[] {
-  try { return JSON.parse(localStorage.getItem(CAL_KEY) ?? '[]') } catch { return [] }
-}
-function saveCalendar(days: CalendarDay[]) {
-  localStorage.setItem(CAL_KEY, JSON.stringify(days))
-}
 
 function loadShopItems(): ShopItem[] {
   try { return JSON.parse(localStorage.getItem(SHOP_KEY) ?? '[]') } catch { return [] }
@@ -43,7 +38,6 @@ export default function App() {
   // list builder, so toggling it takes effect without reconnecting.
   const [spizSubtract, setSpizSubtract] = useState(false)
   const [shopItems, setShopItems] = useState<ShopItem[]>(loadShopItems)
-  const [calDays, setCalDays]     = useState<CalendarDay[]>(loadCalendar)
   const [chatProcessing, setChatProcessing] = useState(false)
   const [isAdmin, setIsAdmin]     = useState(false)
   // Admin-created accounts start with a temp password and must replace it
@@ -51,6 +45,13 @@ export default function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false)
 
   const { items: spizItems, load: loadSpiz, add: addSpiz, remove: removeSpiz } = useSpizarnia(idToken)
+  const {
+    days: calDays,
+    load: loadCal,
+    save: saveCal,
+    addEntry: addCalEntry,
+    removeEntry: removeCalEntry,
+  } = useCalendar(idToken)
 
   useEffect(() => {
     fetch(`${API_BASE}/v1/ui-strings`)
@@ -86,6 +87,7 @@ export default function App() {
     if (!locked) {
       await createSession(token)
       await loadSpiz()
+      await loadCal()
     }
     setLoggedIn(true)
   }
@@ -97,8 +99,9 @@ export default function App() {
     try {
       await createSession(idToken)
       await loadSpiz()
+      await loadCal()
     } catch { /* the user can reload; the account is no longer locked */ }
-  }, [idToken, createSession, loadSpiz])
+  }, [idToken, createSession, loadSpiz, loadCal])
 
   // Dev convenience: when VITE_TEST_USER=true, auto-login as the dev user so the
   // login screen is skipped during local smoke-testing. Runs once on mount.
@@ -142,41 +145,15 @@ export default function App() {
   }
 
   function handleCalendarChange(days: CalendarDay[]) {
-    setCalDays(days)
-    saveCalendar(days)
+    void saveCal(days)
   }
 
-  // Functional-updater variant — safe to call from the WS message closure in
-  // ChatPanel, which may hold a stale `calDays` snapshot. Always works off the
-  // latest state, then persists it.
-  function updateCalendar(fn: (prev: CalendarDay[]) => CalendarDay[]) {
-    setCalDays(prev => {
-      const next = fn(prev)
-      saveCalendar(next)
-      return next
-    })
-  }
-
+  // The server has already persisted an agent-driven add by the time the WS
+  // message arrives (STEP 52) — the hook's PUT here reconciles the day buckets
+  // the grid renders, and is what makes the entry appear without a reload.
   function handleAddToCalendar(entry: CalendarEntry) {
-    const targetDate = entry.date ?? new Date().toISOString().slice(0, 10)
-    // The agent may name a meal section; anything without one lands in obiad,
-    // which is also how legacy slot-less entries are read.
-    const slotted: CalendarEntry = { ...entry, mealSlot: entry.mealSlot ?? DEFAULT_MEAL_SLOT }
-    updateCalendar(prev => {
-      const existing = prev.find(d => d.date === targetDate)
-      if (existing) {
-        if (existing.recipes.some(r => r.id === slotted.id)) return prev  // already there
-        return prev.map(d => d.date === targetDate ? { ...d, recipes: [...d.recipes, slotted] } : d)
-      }
-      return [...prev, { date: targetDate, recipes: [slotted], freeText: '' }]
-    })
+    addCalEntry(entry)
     setPage('calendar')
-  }
-
-  function handleCalendarRemove(entryId: string) {
-    updateCalendar(prev =>
-      prev.map(d => ({ ...d, recipes: d.recipes.filter(r => r.id !== entryId) }))
-    )
   }
 
   function handleExportToShoppingList(newItems: ShopItem[]) {
@@ -249,8 +226,7 @@ export default function App() {
                 shopItems={shopItems}
                 onShopItemsChange={setShopItems}
                 onAddToCalendar={handleAddToCalendar}
-                onCalendarRemove={handleCalendarRemove}
-                calDays={calDays}
+                onCalendarRemove={removeCalEntry}
                 onProcessingChange={setChatProcessing}
               />
             </Panel>

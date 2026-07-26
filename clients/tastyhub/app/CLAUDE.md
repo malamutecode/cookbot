@@ -9,8 +9,8 @@
 ```
 app/
 ├── main.py        # FastAPI entry point — all routers mounted under /v1
-├── api/           # sessions, admin, spizarnia, search_prefs, shopping_list,
-│                  # grocery, ui, websocket
+├── api/           # sessions, admin, spizarnia, calendar, search_prefs,
+│                  # shopping_list, grocery, ui, websocket
 ├── config/        # Settings (env) + the TastyHub TenantConfig instance
 ├── middleware/    # API key auth + Firebase token auth
 └── indexer/       # Phase 2 stub — empty
@@ -30,6 +30,7 @@ sessions/{tenant_id}/sessions/{session_id}       # subcollection, one doc per se
 
 users/{uid}                                      # UserRecord lives on the parent doc
 users/{uid}/spizarnia/items                      # pantry
+users/{uid}/calendar/entries                     # CalendarState — whole meal plan, one doc
 users/{uid}/prefs/search                         # UserSearchPrefs (sources, allow_ai_generated)
 ```
 
@@ -101,6 +102,28 @@ Two **independent** user-facing flags, and conflating them is the mistake to avo
 
 Details and the Frisco licensing blocker:
 [delivery-shops/CLAUDE.md](../../../packages/delivery-shops/CLAUDE.md).
+
+## Server-side calendar (`api/calendar.py`, STEP 52)
+
+The meal plan lives in Firestore, not the browser. `GET` / `PUT` (whole-state) /
+`DELETE /v1/calendar/entries/{id}`, all behind `require_password_set`.
+
+- **Login required, by decision.** There is no anonymous/localStorage tier — the
+  calendar has no `widget.js` UI, so this removed a code path rather than a
+  feature. Putting a calendar in the licensed widget later means either requiring
+  login or reopening that decision.
+- **The WS handler writes, not the tool.** `_emit_event` persists in the same arm
+  that sends `calendar_add`/`calendar_remove`, and mutates the connection's
+  in-memory `CalendarState` so later turns see it. A Firestore failure logs and
+  **still sends the WS message** — losing the write costs a re-add, losing the
+  message costs the user their entry. Rationale in
+  [agents/CLAUDE.md](../../../packages/cookbot-core/cookbot/agents/CLAUDE.md).
+- **The calendar is read once per connection**, beside the pantry load — not per
+  turn, because the server is the only writer on that path.
+- **`WsInbound` has no `calendar` field.** The client no longer uploads state;
+  before STEP 52 the server trusted an unvalidated client calendar every turn.
+- **`PUT` takes `uid` from the verified token, never the body**, so a client
+  cannot write into another user's plan.
 
 ## Auth
 

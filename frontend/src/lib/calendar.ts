@@ -1,5 +1,63 @@
 import { CalendarDay, CalendarEntry, DEFAULT_MEAL_SLOT, MealSlot, MEAL_SLOTS } from '../types'
 
+/** One entry as the server stores it (`cookbot.models.calendar.CalendarEntry`):
+ *  flat, snake_case, and carrying its own date. */
+export interface ServerCalendarEntry {
+  id: string
+  date: string
+  recipe_name: string
+  ingredients: string[]
+  recipe?: unknown
+  meal_slot?: MealSlot
+  servings?: number | null
+  source_servings?: number | null
+}
+
+/**
+ * Server `CalendarState.entries` → the nested `CalendarDay[]` the UI renders.
+ *
+ * The two shapes differ on purpose: the server keeps a flat list (one document,
+ * trivially appended to), the grid needs day buckets. Entries are grouped by
+ * date in first-seen order, and `freeText` starts empty because the server does
+ * not store day notes.
+ */
+export function daysFromServer(entries: ServerCalendarEntry[]): CalendarDay[] {
+  const byDate = new Map<string, CalendarDay>()
+  for (const e of entries) {
+    const day = byDate.get(e.date) ?? { date: e.date, recipes: [], freeText: '' }
+    day.recipes.push({
+      id: e.id,
+      recipeName: e.recipe_name,
+      ingredients: e.ingredients ?? [],
+      date: e.date,
+      recipe: (e.recipe ?? undefined) as CalendarEntry['recipe'],
+      mealSlot: e.meal_slot ?? DEFAULT_MEAL_SLOT,
+      servings: e.servings ?? undefined,
+      sourceServings: e.source_servings ?? undefined,
+    })
+    byDate.set(e.date, day)
+  }
+  return [...byDate.values()]
+}
+
+/** The inverse: `CalendarDay[]` → the flat entries a PUT /v1/calendar body needs.
+ *  The day's own date wins over any stale `entry.date` — a drag moves the entry
+ *  between day buckets, and this is what makes that move persist. */
+export function daysToServer(days: CalendarDay[]): ServerCalendarEntry[] {
+  return days.flatMap(day =>
+    day.recipes.map(r => ({
+      id: r.id,
+      date: day.date,
+      recipe_name: r.recipeName,
+      ingredients: r.ingredients,
+      recipe: r.recipe,
+      meal_slot: slotOf(r),
+      servings: r.servings ?? null,
+      source_servings: r.sourceServings ?? null,
+    })),
+  )
+}
+
 /** Payload carried by a chip drag. Identifies the entry AND where it came from,
  *  so the drop can remove it from its source before inserting it at the target. */
 export interface DragPayload {

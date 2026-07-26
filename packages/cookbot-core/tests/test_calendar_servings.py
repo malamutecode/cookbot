@@ -89,8 +89,9 @@ def test_entry_records_servings_and_source() -> None:
 def test_legacy_entry_without_servings_parses() -> None:
     """Entries persisted before STEP 49 carry neither field.
 
-    The calendar lives in localStorage, so old payloads keep arriving after a
-    deploy. They must parse and read as "unknown" rather than raising — the same
+    There is no migration step, so entries stored before the field existed keep
+    being read after a deploy (localStorage until STEP 52, Firestore since).
+    They must parse and read as "unknown" rather than raising — the same
     compatibility contract meal_slot got in STEP 48.
     """
     e = CalendarEntry.model_validate({

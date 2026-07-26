@@ -205,6 +205,83 @@ async def test_add_usage_increments_and_lazy_resets() -> None:
     assert same_month.tokens_used == 390  # month kept accumulating
 
 
+# ── Calendar (STEP 52) ───────────────────────────────────────────────────────
+
+def _cal_entry(entry_id: str, date: str = "2026-07-26"):
+    from cookbot.models.calendar import CalendarEntry, MealSlot
+
+    return CalendarEntry(
+        id=entry_id,
+        date=date,
+        recipe_name=f"Dish {entry_id}",
+        ingredients=["pasta"],
+        meal_slot=MealSlot.OBIAD,
+        servings=4,
+    )
+
+
+@emulator_available
+async def test_get_calendar_missing_doc_is_empty_not_an_error() -> None:
+    svc = _make_service()
+    cal = await svc.get_calendar("cal-user-never-saved")
+    assert cal.entries == []
+    assert cal.uid == "cal-user-never-saved"
+
+
+@emulator_available
+async def test_calendar_add_remove_round_trip() -> None:
+    import uuid
+
+    svc = _make_service()
+    uid = f"cal-user-{uuid.uuid4().hex[:8]}"
+
+    await svc.add_calendar_entry(uid, _cal_entry("e1"))
+    await svc.add_calendar_entry(uid, _cal_entry("e2", date="2026-07-27"))
+    cal = await svc.get_calendar(uid)
+    assert [e.id for e in cal.entries] == ["e1", "e2"]
+    # Fields survive the JSON round-trip through Firestore.
+    assert cal.entries[0].servings == 4
+    assert cal.entries[1].date == "2026-07-27"
+
+    await svc.remove_calendar_entry(uid, "e1")
+    assert [e.id for e in (await svc.get_calendar(uid)).entries] == ["e2"]
+
+
+@emulator_available
+async def test_add_calendar_entry_is_idempotent_on_id() -> None:
+    """A re-sent add replaces the stored entry rather than duplicating it."""
+    import uuid
+
+    svc = _make_service()
+    uid = f"cal-idem-{uuid.uuid4().hex[:8]}"
+
+    await svc.add_calendar_entry(uid, _cal_entry("dup"))
+    updated = _cal_entry("dup")
+    updated.recipe_name = "Renamed"
+    await svc.add_calendar_entry(uid, updated)
+
+    cal = await svc.get_calendar(uid)
+    assert len(cal.entries) == 1
+    assert cal.entries[0].recipe_name == "Renamed"
+
+
+@emulator_available
+async def test_save_calendar_replaces_whole_state() -> None:
+    """The shape PUT /v1/calendar relies on — drag/drop rewrites everything."""
+    import uuid
+
+    from cookbot.models.calendar import CalendarState
+
+    svc = _make_service()
+    uid = f"cal-save-{uuid.uuid4().hex[:8]}"
+
+    await svc.add_calendar_entry(uid, _cal_entry("old"))
+    await svc.save_calendar(CalendarState(uid=uid, entries=[_cal_entry("new")]))
+
+    cal = await svc.get_calendar(uid)
+    assert [e.id for e in cal.entries] == ["new"]
+
+
 @emulator_available
 async def test_list_user_records_returns_saved() -> None:
     from cookbot.models.user import TokenQuota, UserRecord

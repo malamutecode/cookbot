@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { CalendarDay, CalendarEntry } from '../types'
 import {
+  daysFromServer,
+  daysToServer,
   entriesForSlot,
   entryIdsForDates,
   ingredientsForDates,
@@ -103,4 +105,59 @@ test('ingredientsForDates takes every dish on the given days regardless of slot'
 
 test('entryIdsForDates collects the ids visible on the given dates', () => {
   assert.deepEqual(entryIdsForDates(days(), [MON]), new Set(['a', 'b', 'c']))
+})
+
+// ── Server ↔ UI mapping (STEP 52) ────────────────────────────────────────────
+
+test('daysFromServer groups flat server entries into day buckets', () => {
+  const grid = daysFromServer([
+    { id: 'a', date: MON, recipe_name: 'Curry', ingredients: ['ryż'], meal_slot: 'kolacja' },
+    { id: 'b', date: TUE, recipe_name: 'Zupa', ingredients: [] },
+    { id: 'c', date: MON, recipe_name: 'Naan', ingredients: ['mąka'] },
+  ])
+  assert.deepEqual(grid.map(d => d.date), [MON, TUE])
+  assert.deepEqual(grid[0].recipes.map(r => r.id), ['a', 'c'])
+  assert.equal(grid[0].recipes[0].mealSlot, 'kolacja')
+  assert.equal(grid[0].recipes[0].recipeName, 'Curry')
+})
+
+test('daysFromServer applies the obiad fallback to slot-less entries', () => {
+  const grid = daysFromServer([
+    { id: 'a', date: MON, recipe_name: 'Curry', ingredients: [] },
+  ])
+  assert.equal(grid[0].recipes[0].mealSlot, 'obiad')
+})
+
+test('daysFromServer maps null portion counts to undefined, not null', () => {
+  const grid = daysFromServer([
+    { id: 'a', date: MON, recipe_name: 'x', ingredients: [], servings: null, source_servings: null },
+  ])
+  assert.equal(grid[0].recipes[0].servings, undefined)
+  assert.equal(grid[0].recipes[0].sourceServings, undefined)
+})
+
+test('daysToServer flattens the grid back to snake_case entries', () => {
+  const flat = daysToServer(days())
+  assert.deepEqual(flat.map(e => e.id), ['a', 'b', 'c', 'd'])
+  assert.equal(flat[0].recipe_name, 'dish-a')
+  assert.equal(flat[0].meal_slot, 'sniadanie')
+  assert.equal(flat[2].meal_slot, 'obiad')  // legacy entry gets the fallback
+})
+
+test("daysToServer stamps the day's own date, so a move persists", () => {
+  // moveEntry puts 'a' in Tuesday's bucket; its stale entry.date must not win.
+  const moved = moveEntry(days(), { entryId: 'a', fromDate: MON, fromSlot: 'sniadanie' }, TUE, 'lunch')
+  const flat = daysToServer(moved)
+  const a = flat.find(e => e.id === 'a')!
+  assert.equal(a.date, TUE)
+  assert.equal(a.meal_slot, 'lunch')
+})
+
+test('daysFromServer ∘ daysToServer round-trips the grid', () => {
+  const grid = days()
+  const back = daysFromServer(daysToServer(grid))
+  assert.deepEqual(
+    back.map(d => d.recipes.map(r => r.id)),
+    grid.map(d => d.recipes.map(r => r.id)),
+  )
 })

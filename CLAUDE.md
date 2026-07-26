@@ -120,6 +120,7 @@ Key invariants (full detail, catalogue, state model, and the 8 hard rules live i
 - **Source URL is sacred** — provenance survives serving adaptation.
 - **AI generation is gated** by `allow_ai_generated`; respect the `not_found` fallback.
 - **Tools contain their failures** — return a structured failure, never crash the turn.
+- **The calendar is server-owned** (Firestore, `users/{uid}/calendar/entries`): the tool emits events, the WS handler persists them, and the client never uploads calendar state.
 - **All turn state flows through `ChatAgentDeps`**; the Firestore `ChatState` snapshot is the source of truth (Architecture Rule 3).
 
 ---

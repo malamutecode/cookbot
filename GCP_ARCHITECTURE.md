@@ -93,20 +93,20 @@ WebSocket connect
 │
 ├── build_chat_agent(config)      ← one agent instance per connection
 ├── deps = ChatAgentDeps(config)  ← holds onboarding state + history
+├── deps.calendar = await firestore.get_calendar(uid)  ← ONCE per connection
 ├── message_history = []          ← grows each turn via result.new_messages()
 │
 └── while True:
     │   msg = await receive()
-    │   deps.calendar = msg.calendar      ← refreshed from frontend each turn
-    │   deps.calendar_adds = []           ← reset per-turn
-    │   deps.calendar_removes = []
-    │   deps.shopping_list_items = None
+    │   deps.subtract_pantry = msg.subtract_pantry   ← per-turn flag
+    │   deps.reset_turn()                            ← clears deps.events
     │
     │   async with stream_chat_response(agent, deps, history, text) as tokens:
     │       stream tokens to WS client
     │   ← history updated in-place after block
     │
-    └── emit calendar/shopping-list side-effects to WS client
+    └── for ev in deps.events: _emit_event(...)   ← WS message + Firestore write
+                                                     (calendar add/remove)
 ```
 
 **Why per-connection deps matters:**
@@ -158,7 +158,9 @@ find_recipe immediately.
 {"type": "error",            "message": "..."}
 
 # Client → Server
-{"type": "message",          "content": "...", "calendar": {...}}
+# NB: no "calendar" field — the server loads it from Firestore at the handshake
+# and owns every write (STEP 52); a client-uploaded copy would be untrusted state.
+{"type": "message",          "content": "...", "subtract_pantry": bool}
 {"type": "hitl_response",    "approved": true}
 {"type": "hitl_response",    "approved": false, "modification": "make it vegan"}
 {"type": "spizarnia_response", "add_missing": true, "remove_used": false}

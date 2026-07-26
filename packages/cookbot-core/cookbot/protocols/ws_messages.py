@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from cookbot.hitl.models import HITLCheckpoint
-from cookbot.models.calendar import CalendarEntry, CalendarState
+from cookbot.models.calendar import CalendarEntry
 from cookbot.models.recipe import Recipe, RecipeSource, RecipeSummary
 from cookbot.models.shopping import ShoppingList
 from cookbot.models.ui_strings import HitlLabels
@@ -36,11 +36,13 @@ class WsInbound(BaseModel):
     modification: str | None = None
     add_missing: bool | None = None       # for spizarnia_response
     remove_used: bool | None = None       # for spizarnia_response
-    calendar: CalendarState | None = None  # current calendar state sent by frontend
-    # STEP 51 — deduct the pantry from a generated shopping list. Sent PER TURN
-    # (like `calendar`), deliberately NOT as a connect-time query param the way
-    # `use_spizarnia` is: a mid-session toggle must reach the server without a
-    # reconnect. Defaults to False so an older client's payload still parses.
+    # NOTE (STEP 52): there is deliberately no `calendar` field. The server owns
+    # the calendar (Firestore, loaded at the handshake); accepting a client copy
+    # would mean trusting unvalidated state on every turn.
+    # STEP 51 — deduct the pantry from a generated shopping list. Sent PER TURN,
+    # deliberately NOT as a connect-time query param the way `use_spizarnia` is:
+    # a mid-session toggle must reach the server without a reconnect. Defaults
+    # to False so an older client's payload still parses.
     subtract_pantry: bool = False
 
 

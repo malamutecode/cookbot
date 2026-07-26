@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cookbot.models.calendar import CalendarEntry, CalendarState, MealSlot
 from cookbot.models.session import Session, SessionStatus
 from cookbot.models.spizarnia import Spizarnia, SpizarniaItem
 from cookbot.models.tenant import TenantConfig
@@ -41,6 +42,7 @@ def _make_mock_firestore(session: Session | None = None) -> AsyncMock:
     from cookbot.models.user import UsageCounter, UserRecord
 
     mock = AsyncMock()
+    uid = session.uid if session else None
     mock.save_session = AsyncMock(return_value=None)
     mock.get_session = AsyncMock(return_value=session)
     mock.save_message = AsyncMock(return_value=None)
@@ -49,9 +51,13 @@ def _make_mock_firestore(session: Session | None = None) -> AsyncMock:
     mock.get_hitl_checkpoint = AsyncMock(return_value=None)
     mock.get_chat_state = AsyncMock(return_value=None)
     mock.save_chat_state = AsyncMock(return_value=None)
+    # Calendar (STEP 52) — a real CalendarState, not the bare AsyncMock stub: the
+    # handshake assigns this straight to deps.calendar, and the tools iterate it.
+    mock.get_calendar = AsyncMock(return_value=CalendarState(uid=uid or ""))
+    mock.add_calendar_entry = AsyncMock(return_value=None)
+    mock.remove_calendar_entry = AsyncMock(return_value=None)
     # Quota defaults (STEP 42): unlimited record + zero usage so the gate is a
     # no-op unless a test overrides these.
-    uid = session.uid if session else None
     mock.get_user_record = AsyncMock(return_value=UserRecord(uid=uid or "test-uid"))
     # Temp-password gate (STEP 44): no record ⇒ not locked. Without this the bare
     # AsyncMock returns a truthy stub whose .must_change_password is also truthy,
@@ -544,6 +550,217 @@ def test_ws_subtract_pantry_flag_reaches_deps_per_turn(
 
     assert [flag for flag, _ in seen] == [True, False]
     assert seen[0][1] == ["kurczak", "szpinak"]
+
+
+# ── Server-side calendar persistence (STEP 52) ────────────────────────────────
+
+def _cal_entry(entry_id: str = "e1", date: str = "2026-07-26") -> CalendarEntry:
+    return CalendarEntry(
+        id=entry_id,
+        date=date,
+        recipe_name="Curry",
+        ingredients=["ryż"],
+        meal_slot=MealSlot.OBIAD,
+    )
+
+
+def _stream_emitting(*events):
+    """A fake stream whose turn appends `events` to deps.events, one per turn."""
+    from contextlib import asynccontextmanager
+
+    queue = list(events)
+
+    @asynccontextmanager
+    async def _fake_stream(_agent, deps, *_a, **_kw):
+        if queue:
+            deps.events.append(queue.pop(0))
+
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    return _fake_stream
+
+
+def test_ws_calendar_add_persists_and_updates_deps(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """A CalendarAddEvent is written to Firestore by the handler (not the tool),
+    and the in-memory copy is updated so the NEXT turn's tools see the entry."""
+    from cookbot.agents.chat import CalendarAddEvent
+
+    fs = app.state.firestore
+    seen: list[list[str]] = []
+    entry = _cal_entry()
+
+    from contextlib import asynccontextmanager
+
+    turn = {"n": 0}
+
+    @asynccontextmanager
+    async def _fake_stream(_agent, deps, *_a, **_kw):
+        seen.append([e.id for e in deps.calendar.entries])
+        turn["n"] += 1
+        if turn["n"] == 1:
+            deps.events.append(CalendarAddEvent(entry=entry))
+
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(
+            f"/v1/ws/{valid_session_id}", headers=headers
+        ) as ws:
+            ws.receive_json()  # greeting
+            ws.send_json({"type": "message", "content": "dodaj do kalendarza"})
+            ws.receive_json()  # token
+            update = ws.receive_json()
+            assert update["type"] == WsMessageType.CALENDAR_UPDATE
+            assert update["action"] == "add"
+            # Second turn — its deps.calendar must already carry the entry.
+            ws.send_json({"type": "message", "content": "i co dalej"})
+            ws.receive_json()
+
+    assert fs.add_calendar_entry.await_args.args == (_SPIZ_UID, entry)
+    assert seen == [[], ["e1"]]
+
+
+def test_ws_calendar_remove_persists_and_updates_deps(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """The remove arm mirrors the add arm: Firestore write + in-memory drop."""
+    from cookbot.agents.chat import CalendarRemoveEvent
+
+    fs = app.state.firestore
+    fs.get_calendar = AsyncMock(
+        return_value=CalendarState(uid=_SPIZ_UID, entries=[_cal_entry()])
+    )
+    seen: list[list[str]] = []
+
+    from contextlib import asynccontextmanager
+
+    turn = {"n": 0}
+
+    @asynccontextmanager
+    async def _fake_stream(_agent, deps, *_a, **_kw):
+        seen.append([e.id for e in deps.calendar.entries])
+        turn["n"] += 1
+        if turn["n"] == 1:
+            deps.events.append(CalendarRemoveEvent(entry_id="e1"))
+
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(
+            f"/v1/ws/{valid_session_id}", headers=headers
+        ) as ws:
+            ws.receive_json()
+            ws.send_json({"type": "message", "content": "usuń"})
+            ws.receive_json()
+            update = ws.receive_json()
+            assert update["action"] == "remove"
+            ws.send_json({"type": "message", "content": "i co dalej"})
+            ws.receive_json()
+
+    assert fs.remove_calendar_entry.await_args.args == (_SPIZ_UID, "e1")
+    assert seen == [["e1"], []]
+
+
+def test_ws_calendar_write_failure_still_sends_the_message(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """A Firestore hiccup must not cost the user the WS message (and with it the
+    entry in the browser), nor break the turn."""
+    from cookbot.agents.chat import CalendarAddEvent
+
+    fs = app.state.firestore
+    fs.add_calendar_entry = AsyncMock(side_effect=RuntimeError("firestore down"))
+
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch(
+            "app.api.websocket.stream_chat_response",
+            new=_stream_emitting(CalendarAddEvent(entry=_cal_entry())),
+        ),
+    ):
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(
+            f"/v1/ws/{valid_session_id}", headers=headers
+        ) as ws:
+            ws.receive_json()
+            ws.send_json({"type": "message", "content": "dodaj"})
+            ws.receive_json()  # token
+            update = ws.receive_json()
+
+    assert update["type"] == WsMessageType.CALENDAR_UPDATE
+    assert update["entry"]["id"] == "e1"
+
+
+def test_ws_calendar_read_once_per_connection(
+    client_spiz_session: TestClient, valid_session_id: str
+) -> None:
+    """The calendar is loaded at the handshake, NOT per turn — the server is the
+    only writer, so re-reading would buy a read per message for nothing."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_stream(*_a, **_kw):
+        async def _tokens():
+            yield "ok"
+        yield _tokens()
+
+    fs = app.state.firestore
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch("app.api.websocket.stream_chat_response", new=_fake_stream),
+    ):
+        headers = {"authorization": f"Bearer token-for-{_SPIZ_UID}"}
+        with client_spiz_session.websocket_connect(
+            f"/v1/ws/{valid_session_id}", headers=headers
+        ) as ws:
+            ws.receive_json()
+            for _ in range(3):
+                ws.send_json({"type": "message", "content": "hej"})
+                ws.receive_json()
+
+    assert fs.get_calendar.await_count == 1
+
+
+def test_ws_anonymous_connection_writes_no_calendar(
+    client_with_session: TestClient, valid_session_id: str
+) -> None:
+    """Anonymous (uid-less) connections own no document — the event still reaches
+    the browser, but nothing is persisted (the login-required auth decision)."""
+    from cookbot.agents.chat import CalendarAddEvent
+
+    fs = app.state.firestore
+    with (
+        patch("app.api.websocket.build_chat_agent", return_value=MagicMock()),
+        patch(
+            "app.api.websocket.stream_chat_response",
+            new=_stream_emitting(CalendarAddEvent(entry=_cal_entry())),
+        ),
+    ):
+        with client_with_session.websocket_connect(f"/v1/ws/{valid_session_id}") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "message", "content": "dodaj"})
+            ws.receive_json()  # token
+            update = ws.receive_json()
+
+    assert update["type"] == WsMessageType.CALENDAR_UPDATE
+    fs.get_calendar.assert_not_awaited()
+    fs.add_calendar_entry.assert_not_awaited()
 
 
 def test_ws_subtract_pantry_defaults_to_false_for_an_older_client(

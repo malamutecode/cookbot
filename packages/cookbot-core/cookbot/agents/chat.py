@@ -307,7 +307,11 @@ class ChatAgentDeps:
     pending_split: PendingSplit | None = None
 
     # ── 2. Per-turn input (refreshed each turn by the WS handler) ─────────────
-    calendar: CalendarState = field(default_factory=CalendarState)  # current calendar from the WS payload
+    # Loaded from Firestore ONCE at the handshake (STEP 52), not re-sent per turn:
+    # the server is the only writer on this path, so `_emit_event` keeps this same
+    # object current in memory as it persists each add/remove. Read-only here —
+    # the tools mutate the calendar by emitting events, never by editing this.
+    calendar: CalendarState = field(default_factory=CalendarState)
     search_site_filter: str = ""                       # hard site: restriction (sites_only mode only)
     preferred_sites: list[str] = field(default_factory=list)  # soft-prefer domains (sites_and_internet mode)
     allow_ai_generated: bool = True                    # when False, skip RecipeGenAgent fallback

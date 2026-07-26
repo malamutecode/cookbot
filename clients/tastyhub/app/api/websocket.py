@@ -51,8 +51,35 @@ log = structlog.get_logger()
 router = APIRouter()
 
 
-async def _emit_event(websocket: WebSocket, ev: TurnEvent) -> None:
-    """Translate one ordered TurnEvent into its WebSocket message."""
+async def _persist_calendar(coro, uid: str) -> None:
+    """Await a calendar write, swallowing failures.
+
+    A Firestore hiccup must never cost the user the WS message (and with it the
+    entry in the browser) — the turn continues and the loss is one persisted
+    write, recoverable by re-adding.
+    """
+    try:
+        await coro
+    except Exception as exc:
+        log.warning("ws_calendar_persist_failed", uid=uid, error=str(exc))
+
+
+async def _emit_event(
+    websocket: WebSocket,
+    ev: TurnEvent,
+    firestore=None,
+    uid: str | None = None,
+    calendar: CalendarState | None = None,
+) -> None:
+    """Translate one ordered TurnEvent into its WebSocket message.
+
+    Calendar events are also *persisted* here rather than in the tool that
+    emitted them (STEP 52): `add_to_calendar` stays pure and Firestore-free, and
+    the handler — which already owns the I/O — performs the side-effect. The
+    same arm mutates the in-memory `calendar` so later turns on this connection
+    see the change without a re-read. Anonymous (uid-less) connections own no
+    document and skip the write entirely.
+    """
     match ev:
         case FinalRecipeEvent():
             source_enum = (
@@ -64,8 +91,19 @@ async def _emit_event(websocket: WebSocket, ev: TurnEvent) -> None:
         case RecipeOptionsEvent():
             await ws_send_recipe_options(websocket, ev.proposals)
         case CalendarAddEvent():
+            if firestore is not None and uid is not None:
+                await _persist_calendar(firestore.add_calendar_entry(uid, ev.entry), uid)
+            if calendar is not None:
+                calendar.entries = [e for e in calendar.entries if e.id != ev.entry.id]
+                calendar.entries.append(ev.entry)
             await ws_send_calendar_add(websocket, ev.entry)
         case CalendarRemoveEvent():
+            if firestore is not None and uid is not None:
+                await _persist_calendar(
+                    firestore.remove_calendar_entry(uid, ev.entry_id), uid
+                )
+            if calendar is not None:
+                calendar.entries = [e for e in calendar.entries if e.id != ev.entry_id]
             await ws_send_calendar_remove(websocket, ev.entry_id)
         case ShoppingListEvent():
             flat = [i.name for i in ev.shopping_list.items]
@@ -222,6 +260,12 @@ async def websocket_endpoint(
         spizarnia = await firestore.get_spizarnia(uid)
         spizarnia_items = spizarnia.items
 
+    # Load the calendar ONCE per connection (STEP 52). The server is the only
+    # writer on this path, so `_emit_event` keeps this copy current in memory
+    # instead of re-reading per turn. Anonymous connections get an empty plan
+    # they can read but never persist.
+    calendar = await firestore.get_calendar(uid) if uid is not None else CalendarState()
+
     # Load search prefs — use user's saved prefs if authenticated, else fall back to defaults
     if uid is not None:
         prefs = await firestore.get_search_prefs(uid)
@@ -247,11 +291,15 @@ async def websocket_endpoint(
         # These live for the entire WebSocket connection lifetime.
         # deps.onboarding accumulates across turns; message_history grows each turn.
         agent = build_chat_agent(config)
+        # `deps.calendar` is the SAME object as the connection-scoped `calendar`,
+        # not a copy — that aliasing is what lets `_emit_event`'s in-memory
+        # mutation be visible to the next turn's tools.
         deps = ChatAgentDeps(
             config=config,
             search_site_filter=search_site_filter,
             preferred_sites=preferred_sites,
             allow_ai_generated=allow_ai_generated,
+            calendar=calendar,
         )
 
         # Resume a previous conversation if one was persisted (Cloud Run
@@ -288,8 +336,6 @@ async def websocket_endpoint(
             if not user_text:
                 continue
 
-            # Per-turn input: refresh calendar from this message (frontend sends current state)
-            deps.calendar = msg.calendar or CalendarState()
             # Per-turn input: pantry subtraction (STEP 51). Refreshed from THIS
             # message so toggling the checkbox mid-session takes effect on the
             # next turn, without a reconnect.
@@ -363,7 +409,7 @@ async def websocket_endpoint(
             log.info("ws_turn_end", event_count=len(deps.events),
                      events=[ev.kind for ev in deps.events])
             for ev in deps.events:
-                await _emit_event(websocket, ev)
+                await _emit_event(websocket, ev, firestore, uid, calendar)
 
             # Persist the resumable conversation snapshot (best-effort — a
             # Firestore hiccup must not break the live chat).
