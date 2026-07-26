@@ -286,7 +286,16 @@ export default function ChatPanel({ sessionId, idToken, useSpizarnia, subtractPa
   function pickRecipe(choice: number) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || streamingRef.current) return
     addMsg({ kind: 'user', text: `wybieram ${choice}` })
-    sendWS({ type: 'message', content: `wybieram ${choice}`, subtract_pantry: subtractPantry })
+    // Send the index as DATA, not as free text: a click is already an
+    // unambiguous pick, and making the server's LLM re-derive it from
+    // "wybieram 2" resolved the wrong card. `content` stays as the fallback the
+    // server uses if the proposals went stale (e.g. after a reconnect).
+    sendWS({
+      type: 'pick_recipe',
+      index: choice,
+      content: `wybieram ${choice}`,
+      subtract_pantry: subtractPantry,
+    })
     setInputEnabled(false)
     streamingRef.current = true
     setIsTyping(true)

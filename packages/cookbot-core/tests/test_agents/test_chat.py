@@ -874,6 +874,117 @@ def test_select_proposal_none_when_empty() -> None:
     assert _select_proposal([], "1") is None
 
 
+def test_select_proposal_similar_names_do_not_collapse_to_first() -> None:
+    """Regression: picking card #2 must never resolve to card #1.
+
+    Substring matching returned the FIRST overlapping proposal, so with
+    similarly-named cards a pick of #2 silently delivered #1 — and the calendar
+    then stored #1, because add_to_calendar trusts deps.last_recipe.
+    """
+    from cookbot.agents.chat import _select_proposal
+    props = [_summary("Kotlet schabowy"), _summary("Kotlet schabowy tradycyjny")]
+    # By number — the unambiguous path.
+    assert _select_proposal(props, "2") is props[1]
+    # The exact name of #2 must win over the #1 prefix that it contains.
+    assert _select_proposal(props, "Kotlet schabowy tradycyjny") is props[1]
+    # A bare prefix matches BOTH cards → ambiguous → ask, never guess #1.
+    assert _select_proposal(props, "kotlet") is None
+
+
+def test_select_proposal_number_inside_phrasing() -> None:
+    """`choice` is model-generated, so the number may arrive wrapped in words."""
+    from cookbot.agents.chat import _select_proposal
+    props = [_summary("A"), _summary("B"), _summary("C")]
+    assert _select_proposal(props, "wybieram 2") is props[1]
+    # Two numbers is a guess, not a pick.
+    assert _select_proposal(props, "between 1 and 3") is None
+    # Out of range stays unresolved rather than clamping to an edge card.
+    assert _select_proposal(props, "wybieram 9") is None
+
+
+def test_prompt_selection_branch_fires_with_incomplete_onboarding() -> None:
+    """Regression: the pick prompt must not be gated on complete onboarding.
+
+    "znajdź przepis na X" searches via has_concrete_dish() and leaves four
+    onboarding fields unset, so nesting this branch under `ob.complete` meant it
+    never fired on exactly the path that shows proposals.
+    """
+    ob = OnboardingState(dish_type="schabowy")   # deliberately incomplete
+    assert not ob.complete
+    text = onboarding_status_prompt(
+        ob, _QUESTIONS,
+        last_proposals=[_summary("Kotlet schabowy"), _summary("Kotlet schabowy tradycyjny")],
+        last_recipe=None,
+    )
+    assert "RECIPE SELECTION IN PROGRESS" in text
+    # It must list the options numbered, and ask for the NUMBER back.
+    assert "1. Kotlet schabowy" in text
+    assert "2. Kotlet schabowy tradycyjny" in text
+    assert "NUMBER" in text
+    # Must not fall through to the search/onboarding branches.
+    assert "DIRECT RECIPE REQUEST" not in text
+    assert "ONBOARDING IN PROGRESS" not in text
+
+
+# ── pick_proposal (structured pick — no LLM in the selection path) ────────────
+
+async def test_pick_proposal_resolves_the_clicked_card() -> None:
+    """The reported bug, end to end: clicking card #2 must yield card #2.
+
+    Covers the whole chain the calendar depends on — a click resolves the second
+    proposal's URL and lands in deps.last_recipe, which add_to_calendar trusts.
+    """
+    from cookbot.agents.chat import pick_proposal
+    props = [
+        _summary("Kotlet schabowy", source="web_search", url="https://x.test/one"),
+        _summary("Kotlet schabowy tradycyjny", source="web_search", url="https://x.test/two"),
+    ]
+    deps = _make_deps(last_proposals=props, onboarding=OnboardingState(servings=2))
+    seen: list[str] = []
+
+    def _factory(_config, **kw):
+        seen.append(kw.get("pinned_url", ""))
+        class _Stub:
+            async def run(self, *_a, **_k):  # noqa: ANN202
+                # A fresh copy per call: resolve_recipe backfills source_url onto
+                # the returned Recipe in place, so sharing the module-level
+                # _RECIPE would leak this URL into later tests.
+                return MagicMock(output=_RECIPE.model_copy(deep=True))
+        return _Stub()
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", _factory):
+        found = await pick_proposal(deps, 2)
+
+    assert found is not None
+    # The SECOND card's URL was fetched — not the first's.
+    assert seen == ["https://x.test/two"]
+    # last_recipe is what add_to_calendar will stamp onto the entry.
+    assert deps.last_recipe is found
+    # Proposals are consumed so the selection prompt doesn't repeat.
+    assert deps.last_proposals == []
+    cards = _events_of(deps, FinalRecipeEvent)
+    assert len(cards) == 1
+
+
+async def test_pick_proposal_out_of_range_returns_none_without_touching_state() -> None:
+    """A stale index (e.g. proposals lost on reconnect) must not guess a card."""
+    from cookbot.agents.chat import pick_proposal
+    props = [_summary("A"), _summary("B")]
+    deps = _make_deps(last_proposals=props)
+
+    assert await pick_proposal(deps, 5) is None
+    assert await pick_proposal(deps, 0) is None
+    # Untouched, so the conversational fallback can still resolve the pick.
+    assert deps.last_proposals == props
+    assert deps.last_recipe is None
+    assert deps.events == []
+
+
+async def test_pick_proposal_none_when_no_proposals() -> None:
+    from cookbot.agents.chat import pick_proposal
+    assert await pick_proposal(_make_deps(), 1) is None
+
+
 # ── resolve_recipe (extracted decision tree) ──────────────────────────────────
 
 def _stub_agent_factory(output):

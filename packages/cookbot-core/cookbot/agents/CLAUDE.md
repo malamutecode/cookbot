@@ -39,6 +39,10 @@ This replaced the original rigid 5-step pipeline (see [TASK.md](../../../../TASK
 explicit `servings` argument — see "Servings" below for why it cannot read the
 count from onboarding.
 
+**A card CLICK does not go through the ChatAgent at all** — see "Picking a
+proposal" below. `get_recipe_details` remains the path for a *typed* pick
+("wybieram 2", "ten schabowy").
+
 **ChatAgent is the only stateful, conversational agent.** Every sub-agent is a
 single-LLM-call, stateless function built by a `build_*_agent(config)` factory
 and invoked from inside a ChatAgent tool. Sub-agents never talk to each other —
@@ -214,6 +218,34 @@ across three layers, and the split is the point:
   *later* turn, so a `return` that skips the write silently drops the count — live,
   "dodaj dla 8 osób" landed a calendar entry stamped 4. Any new early return in
   that tool has to keep the write above it (STEP 46's rule, one layer deeper).
+
+## Picking a proposal — a click is data, never a sentence
+
+Clicking card #2 used to be sent as the free text `"wybieram 2"`, leaving an LLM
+to turn it back into `choice="2"`. That round-trip resolved the **wrong card**:
+the chat described recipe #1, and `add_to_calendar` then saved #1, because it
+trusts `deps.last_recipe` (STEP 49). Four invariants, all of which must hold:
+
+- **The click travels as `{type: "pick_recipe", index: N}`.** The WS handler
+  calls `pick_proposal(deps, index)` — a **zero-LLM** path that indexes
+  `deps.last_proposals` directly. Never "simplify" this back into a chat turn: a
+  click is already unambiguous, and re-deriving it through a model can only lose
+  information. `content` still rides along as the fallback for a stale index.
+- **`pick_proposal` mirrors `get_recipe_details`' post-processing exactly** —
+  split detection, `last_recipe`, clearing `last_proposals`, `FinalRecipeEvent`.
+  Both entry points must leave identical state or a later turn diverges by how
+  the user picked. It short-circuits the model **only** in the clean case: a
+  split question or an `error` result emits no card, so those fall through to a
+  normal turn where the agent can actually speak (otherwise: a stuck spinner).
+- **The selection prompt sits ABOVE the `ob.complete` check**, like the split
+  branch and for the same reason: `has_concrete_dish()` searches immediately and
+  leaves four onboarding fields unset, so gating the branch on `ob.complete`
+  meant it never fired on the very path that shows proposals.
+- **`_select_proposal` matches names BEFORE scanning for digits, and refuses
+  ambiguity.** A name can contain a number ("fast-4"), so a digit anywhere is not
+  a card index. Substring matching returns a card only when exactly ONE matches —
+  it used to return the first overlap, so "Kotlet schabowy" beat "Kotlet schabowy
+  tradycyjny" every time. Ambiguous → `None` → `ModelRetry` → the agent asks.
 
 ## Servings (STEP 46 + 49) — where the target count comes from
 

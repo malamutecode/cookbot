@@ -511,10 +511,31 @@ def _select_proposal(
         idx = int(choice_stripped) - 1
         if 0 <= idx < len(proposals):
             return proposals[idx]
+    # Name matching, strictest first, and BEFORE any digit scan — a name may
+    # legitimately contain a number ("fast-4", "Chili nr 2"), so treating a
+    # digit anywhere in the string as a card index would pick the wrong card.
+    # Substring matching also used to run in proposal order and return the FIRST
+    # overlap, so with similarly-named cards ("Kotlet schabowy" / "Kotlet
+    # schabowy tradycyjny") a pick of #2 silently resolved to #1. Anything
+    # ambiguous now returns None so the caller asks.
     lower = choice_stripped.lower()
-    for p in proposals:
-        if lower in p.name.lower() or p.name.lower() in lower:
-            return p
+    exact = [p for p in proposals if p.name.lower() == lower]
+    if len(exact) == 1:
+        return exact[0]
+    contained = [
+        p for p in proposals
+        if lower in p.name.lower() or p.name.lower() in lower
+    ]
+    if len(contained) == 1:
+        return contained[0]
+    # No name matched. A bare number may still arrive wrapped in the user's
+    # phrasing ("wybieram 2", "poproszę nr 3") because `choice` is a
+    # MODEL-GENERATED argument. Accept it only when the text contains exactly
+    # ONE in-range number — two numbers means we'd be guessing which is the pick.
+    numbers = [int(n) for n in re.findall(r"\d+", choice_stripped)]
+    in_range = [n for n in numbers if 1 <= n <= len(proposals)]
+    if len(in_range) == 1:
+        return proposals[in_range[0] - 1]
     return None
 
 
@@ -880,6 +901,87 @@ def merged_recipe(pending: PendingSplit) -> Recipe:
     return pending.recipe.model_copy(update={"components": []})
 
 
+# ── Structured proposal pick (no LLM in the selection path) ──────────────────
+
+async def pick_proposal(
+    deps: ChatAgentDeps,
+    index: int,
+    *,
+    usage: RunUsage | None = None,
+) -> FoundRecipe | None:
+    """Resolve the proposal at 1-based `index` and update deps, with NO model call.
+
+    A click on card N is already an unambiguous selection. Routing it through the
+    ChatAgent meant an LLM had to turn "wybieram 2" back into choice="2", and a
+    wrong guess there silently delivered another recipe — and then stamped it on
+    the calendar, since add_to_calendar trusts `deps.last_recipe`.
+
+    Mirrors get_recipe_details' post-processing (split detection, last_recipe,
+    proposal clearing, FinalRecipeEvent) so both entry points leave identical
+    state. Returns None when the index isn't a live proposal, letting the caller
+    fall back to the conversational path rather than guessing.
+    """
+    if not deps.last_proposals or not 1 <= index <= len(deps.last_proposals):
+        log.info("pick_proposal_out_of_range",
+                 index=index, available=len(deps.last_proposals))
+        return None
+    selected = deps.last_proposals[index - 1]
+
+    try:
+        found = await resolve_recipe(
+            selected,
+            selected.name,
+            deps.onboarding,
+            config=deps.config,
+            site_filter=deps.search_site_filter,
+            allow_ai_generated=deps.allow_ai_generated,
+            usage=usage,
+        )
+    except Exception as exc:
+        # Leave proposals/last_recipe untouched so the user can simply retry.
+        log.exception("pick_proposal_failed", index=index, error=str(exc))
+        return FoundRecipe(
+            recipe=Recipe(
+                name=selected.name,
+                description="",
+                ingredients=[],
+                steps=[],
+                prep_time_minutes=0,
+                cook_time_minutes=0,
+                difficulty="Easy",
+                servings=deps.onboarding.servings or 2,
+                tips=[],
+            ),
+            source="error",
+        )
+
+    # Multi-recipe page (STEP 45) — the question belongs to the PAGE, so a
+    # structured pick must ask exactly as the tool path does. No card and no
+    # last_recipe yet; both wait for the answer.
+    pending, resolved_recipe = await detect_split_verified(
+        found.recipe, config=deps.config, usage=usage,
+    )
+    if pending is not None:
+        deps.pending_split = pending
+        deps.last_proposals = []
+        log.info("pick_proposal_split_question",
+                 index=index, standalone=pending.standalone_names)
+        return FoundRecipe(
+            recipe=resolved_recipe,
+            source=found.source,
+            web_pick_fell_back=found.web_pick_fell_back,
+            split_question=True,
+            split_options=[b.name for b in pending.blocks],
+        )
+
+    deps.last_recipe = found                     # durable — used by add_to_calendar
+    deps.last_proposals = []                     # clear so selection prompt doesn't repeat
+    if found.source in ("web_search", "ai_generated"):
+        deps.events.append(FinalRecipeEvent(recipe=found.recipe, source=found.source))
+    log.info("pick_proposal_resolved", index=index, name=found.recipe.name)
+    return found
+
+
 # ── Dynamic onboarding system prompt (module-level so it's unit-testable) ─────
 
 def onboarding_status_prompt(
@@ -921,20 +1023,31 @@ get_recipe_details, or get_recipe_from_url, and do NOT search the web for these
 dishes again. If the reply is genuinely unclear, ask once more; never guess.
 """
 
-    if ob.complete:
-        # If proposals were sent and the user is picking, mandate the tool call.
-        if last_proposals and last_recipe is None:
-            names = "\n".join(f"  {i+1}. {p.name}" for i, p in enumerate(last_proposals))
-            return f"""## RECIPE SELECTION IN PROGRESS
+    # ── Awaiting a recipe pick ───────────────────────────────────────────────
+    # BEFORE the ob.complete check, for the same reason as the split branch
+    # above: proposals routinely coexist with INCOMPLETE onboarding, because
+    # `has_concrete_dish()` lets "znajdź przepis na schabowego" search straight
+    # away and leaves servings/time/ingredients/free_notes unset. Nested under
+    # ob.complete this branch never fired on that path — the pick turn got the
+    # generic onboarding prompt, the model passed the dish NAME instead of the
+    # number, and substring matching resolved it to card #1 regardless of which
+    # card the user actually clicked.
+    if last_proposals and last_recipe is None:
+        names = "\n".join(f"  {i+1}. {p.name}" for i, p in enumerate(last_proposals))
+        return f"""## RECIPE SELECTION IN PROGRESS
 The user has been shown these recipe options:
 {names}
 
-If the user's message picks one of them (a number like "1" or a recipe name),
-call get_recipe_details immediately with their choice. Do not describe the
-chosen recipe — the full recipe card is displayed automatically after the tool
-call. If the message is instead a question or comment about the options, answer
-it directly and invite them to pick one by number or name.
+If the user's message picks one of them, call get_recipe_details immediately.
+Pass the NUMBER of the chosen option as `choice` (e.g. "2" for the second one) —
+a message like "wybieram 2" means choice="2". Only pass a name when the user
+named a recipe without any number. Do not describe the chosen recipe — the full
+recipe card is displayed automatically after the tool call. If the message is
+instead a question or comment about the options, answer it directly and invite
+them to pick one by number or name.
 """
+
+    if ob.complete:
         return ""  # onboarding done, no extra instructions needed
 
     # ── Direct recipe request fast path ──────────────────────────────────────

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 class WsMessageType(StrEnum):
     MESSAGE = "message"
+    PICK_RECIPE = "pick_recipe"
     TOKEN = "token"
     AGENT_UPDATE = "agent_update"
     HITL_CHECKPOINT = "hitl_checkpoint"
@@ -36,6 +37,11 @@ class WsInbound(BaseModel):
     modification: str | None = None
     add_missing: bool | None = None       # for spizarnia_response
     remove_used: bool | None = None       # for spizarnia_response
+    # 1-based index of the clicked proposal card, for type="pick_recipe". A card
+    # click is already an unambiguous selection, so it travels as DATA rather
+    # than as free text ("wybieram 2") that an LLM has to re-derive into a tool
+    # argument — that round-trip resolved the wrong card. None = not a pick.
+    index: int | None = None
     # NOTE (STEP 52): there is deliberately no `calendar` field. The server owns
     # the calendar (Firestore, loaded at the handshake); accepting a client copy
     # would mean trusting unvalidated state on every turn.

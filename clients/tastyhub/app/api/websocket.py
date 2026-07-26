@@ -11,6 +11,7 @@ from cookbot.agents.chat import (
     TurnEvent,
     build_chat_agent,
     dump_chat_state,
+    pick_proposal,
     restore_chat_state,
     stream_chat_response,
 )
@@ -331,6 +332,59 @@ async def websocket_endpoint(
 
             if msg.type in (WsMessageType.HITL_RESPONSE, WsMessageType.SPIZARNIA_RESPONSE):
                 continue
+
+            # ── Structured proposal pick — no LLM in the selection path ──────
+            # A card click carries its index as data, so the chosen recipe is
+            # resolved directly instead of an LLM re-deriving it from "wybieram
+            # 2". That round-trip resolved the wrong card, and add_to_calendar
+            # then persisted whatever `last_recipe` held. Falls through to the
+            # conversational path when the index is stale (e.g. a reconnect
+            # dropped the proposals), which re-asks rather than guessing.
+            if msg.type == WsMessageType.PICK_RECIPE and msg.index is not None:
+                deps.subtract_pantry = msg.subtract_pantry
+                deps.pantry = spizarnia_items
+                deps.reset_turn()
+                try:
+                    found = await pick_proposal(deps, msg.index)
+                except WebSocketDisconnect:
+                    raise
+                except Exception as exc:
+                    log.exception("ws_pick_error", session_id=session_id, error=str(exc))
+                    await ws_send_error(
+                        websocket, message="Something went wrong. Please try again."
+                    )
+                    continue
+                # Only the clean case short-circuits the model. A split question
+                # (STEP 45) and an error both need the agent to SPEAK — they
+                # emit no FinalRecipeEvent, so returning here would leave the
+                # user with a spinner and no message. Those fall through and are
+                # handled conversationally, exactly as before.
+                if found is not None and not found.split_question and found.source != "error":
+                    # Keep the conversation coherent: record the pick as a user
+                    # turn so a later "add it to the calendar" has the context.
+                    message_history.append(
+                        ModelRequest(parts=[UserPromptPart(
+                            content=f"[user picked option {msg.index}: {found.recipe.name}]"
+                        )])
+                    )
+                    for ev in deps.events:
+                        await _emit_event(websocket, ev, firestore, uid, calendar)
+                    try:
+                        await firestore.save_chat_state(
+                            session_id, dump_chat_state(deps, message_history)
+                        )
+                    except Exception as exc:
+                        log.warning("chat_state_save_failed",
+                                    session_id=session_id, error=str(exc))
+                    continue
+                # Fall through to the conversational path below. Two cases reach
+                # here: a stale index (found is None — deps untouched, the model
+                # re-asks), and a split/error result (deps already carry the
+                # pending split or the untouched proposals, and the model turn
+                # asks the question). The client sends `content` alongside the
+                # index so that turn has something to run on.
+                log.info("ws_pick_fallback", session_id=session_id, index=msg.index,
+                         resolved=found is not None)
 
             user_text = (msg.content or "").strip()
             if not user_text:

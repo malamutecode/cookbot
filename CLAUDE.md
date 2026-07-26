@@ -118,6 +118,7 @@ Key invariants (full detail, catalogue, state model, and the 8 hard rules live i
 - **Extraction is verbatim; scaling is separate** (RecipeScaleAgent runs *after* extraction).
 - **A page with two recipes asks the user** — the extractor only *reports* blocks; a pure heuristic classifies them and the ChatAgent asks before showing a card.
 - **Source URL is sacred** — provenance survives serving adaptation.
+- **A proposal CLICK is data, not a sentence** — it arrives as `pick_recipe` + `index` and resolves with no LLM turn; only a *typed* pick goes through `get_recipe_details`.
 - **AI generation is gated** by `allow_ai_generated`; respect the `not_found` fallback.
 - **Tools contain their failures** — return a structured failure, never crash the turn.
 - **The calendar is server-owned** (Firestore, `users/{uid}/calendar/entries`): the tool emits events, the WS handler persists them, and the client never uploads calendar state.

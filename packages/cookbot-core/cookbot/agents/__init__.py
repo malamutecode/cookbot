@@ -2,6 +2,7 @@ from cookbot.agents.chat import (
     ChatState,
     build_chat_agent,
     dump_chat_state,
+    pick_proposal,
     restore_chat_state,
     stream_chat_response,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "stream_chat_response",
     "dump_chat_state",
     "restore_chat_state",
+    "pick_proposal",
     "build_web_search_agent",
     "build_product_rerank_agent",
     "ReRankChoice",

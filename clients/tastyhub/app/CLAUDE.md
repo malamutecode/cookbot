@@ -51,6 +51,12 @@ await ws_send_hitl_checkpoint(websocket, checkpoint, ui.hitl)         # labels f
 await ws_send_error(websocket, message="Something went wrong.")
 ```
 
+Inbound, `type="pick_recipe"` carries `index` (1-based) — a proposal card click
+is resolved directly by `pick_proposal`, with **no LLM turn**, because routing it
+through the agent as `"wybieram 2"` resolved the wrong card and then stored that
+wrong recipe in the calendar. Rationale and the invariants in
+[agents/CLAUDE.md](../../../packages/cookbot-core/cookbot/agents/CLAUDE.md).
+
 In the chat flow, tools never call these directly — they append `TurnEvent`s to
 `deps.events` and the WS handler's `_emit_event` maps each event to its helper.
 See [cookbot-core agents/CLAUDE.md](../../../packages/cookbot-core/cookbot/agents/CLAUDE.md).
