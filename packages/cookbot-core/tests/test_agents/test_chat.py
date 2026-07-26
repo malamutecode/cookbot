@@ -192,6 +192,7 @@ def test_agent_registers_expected_tools() -> None:
         "propose_recipes",
         "get_recipe_details",
         "get_recipe_from_url",
+        "choose_recipe_split",
         "add_to_calendar",
         "remove_from_calendar",
         "get_shopping_list",

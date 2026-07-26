@@ -21,3 +21,19 @@ def _no_live_ddg_search(monkeypatch: pytest.MonkeyPatch) -> None:
         return []
 
     monkeypatch.setattr("cookbot.agents.chat.build_fast_proposals", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_page_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neuter the STEP 45 split cross-check's page fetch.
+
+    `detect_split_verified` re-fetches the page text (no LLM) to check whether the
+    extractor missed ingredient headings. That is a real HTTP call, so it would
+    silently un-hermetic the unit tier — the same trap the fast path sprang above.
+    Returning "" means "no cross-check available", which is the designed
+    fail-safe: behaviour falls back to trusting `components`.
+    """
+    async def _blocked(_url: str) -> str:
+        return ""
+
+    monkeypatch.setattr("cookbot.agents.chat.fetch_page_text", _blocked)

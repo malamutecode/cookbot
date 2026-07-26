@@ -21,10 +21,21 @@ for 4 — so the correct behaviour is that scaling is a NO-OP. That is exactly t
 distinction under test: the recipe's own serving count is tracked separately
 from the user's target, rather than quantities being blindly multiplied.
 
+STEP 45 changed what a one-shot request against THIS page does. The page hosts
+two independent recipes (curry "dla 4 osób" + naan "na 8 porcji"), so the turn no
+longer silently merges them and lands a calendar entry — it ASKS which the user
+wants, and the answer arrives on the next turn. The tests below were rewritten
+accordingly: the merged 21-ingredient result they used to assert is now reachable
+only by answering "razem". Nothing about extraction changed (it is still verbatim
+per Rule 5) — only what the ChatAgent does with a page carrying two dishes.
+
 Flakiness: measured 8/9 green runs on gpt-4o-mini. The two hermetic tests
-(truncation + URL pinning) are deterministic; the three LLM-driven ones depend on
-a live page and the model's tool choices, so an occasional failure is expected
-rather than a regression — re-run before investigating.
+(truncation + URL pinning) are deterministic; the LLM-driven ones depend on a
+live page and the model's tool choices, so an occasional failure is expected
+rather than a regression — re-run before investigating. The split tests add one
+more such dependency: the extractor must actually REPORT both blocks in
+`components`. The deterministic half of that contract is unit-tested in
+tests/test_recipe_blocks.py and tests/test_agents/test_chat_split.py.
 """
 import asyncio
 import datetime as _dt
@@ -150,6 +161,47 @@ async def test_extraction_reports_the_pages_own_servings(pl_config) -> None:
     assert recipe.source_url and recipe.source_url.startswith("http")
 
 
+async def test_extractor_reports_both_blocks_on_a_multi_recipe_page(pl_config) -> None:
+    """STEP 45: the page has TWO recipes and the extractor must say so.
+
+    This is the live half of the feature's contract — everything downstream
+    (the question, the split, the shopping list) keys off `components` being
+    populated here, and only a real extraction proves the model reports it.
+
+    Note what is NOT asserted: that the extractor decided anything. It reports
+    blocks verbatim (Rule 5); `models/recipe_blocks.py` classifies them, and that
+    pure logic is exhaustively unit-tested in tests/test_recipe_blocks.py.
+    """
+    from cookbot.models.recipe_blocks import has_standalone_blocks  # noqa: PLC0415
+
+    agent = build_web_fetch_agent(pl_config, pinned_url=_CURRY_URL)
+    recipe = (await agent.run(web_fetch_prompt(_CURRY_URL))).output
+
+    assert recipe is not None, "extraction returned None"
+    assert len(recipe.components) >= 2, (
+        "the page hosts a curry AND a naan bread, but the extractor reported "
+        f"{len(recipe.components)} block(s): {[b.name for b in recipe.components]}"
+    )
+
+    names = " | ".join(b.name for b in recipe.components).lower()
+    assert "naan" in names, f"the naan block was not reported: {names!r}"
+
+    # The naan's own "na 8 porcji" is the signal the whole heuristic rests on.
+    naan = next(b for b in recipe.components if "naan" in b.name.lower())
+    assert naan.servings == 8, (
+        f"naan states 'na 8 porcji'; extractor reported {naan.servings}"
+    )
+
+    # …and that is enough for the classifier to call it a separate dish.
+    assert has_standalone_blocks(recipe.components, recipe.servings), (
+        "curry (4) + naan (8) must classify as two standalone recipes"
+    )
+
+    # Reporting blocks must NOT hollow out the main extraction — `ingredients`
+    # still carries the whole page, which is what "keep together" reproduces.
+    assert "4 piersi z kurczaka" in _ingredients_text(recipe)
+
+
 async def test_resolve_recipe_for_4_people_does_not_rescale(pl_config) -> None:
     """User wants 4, page serves 4 → quantities must be left ALONE.
 
@@ -191,14 +243,21 @@ async def test_resolve_recipe_for_4_people_does_not_rescale(pl_config) -> None:
     assert recipe.source_url and recipe.source_url.startswith("http")
 
 
-async def test_prompt_adds_scaled_recipe_to_calendar(pl_config) -> None:
-    """The reported prompt, verbatim, in a single turn.
+async def test_multi_recipe_page_asks_before_committing(pl_config) -> None:
+    """STEP 45, end to end: the one-shot request now ASKS instead of merging.
 
     "Dodaj przepis do kalendarza dla 4 osób na 26.07 z <url>"
 
-    Must produce a calendar entry on 26 July of the current year, carrying the
-    recipe extracted from THAT url with real ingredients attached — that payload
-    is what the shopping list is later generated from.
+    Before STEP 45 this landed ONE calendar entry carrying 21 ingredients — a
+    4-person curry that also bought 8 portions of naan, with no indication why.
+    That silent merge is what must not happen.
+
+    Two outcomes are acceptable and the model legitimately picks between them:
+    it parks the question for the next turn, or — since this message already
+    implies intent — resolves the split immediately into two separate recipes.
+    Asserting one exact choreography would make this test fail on correct
+    behaviour, so it asserts the REQUIREMENT: the two dishes never arrive merged
+    into a single 21-ingredient recipe.
     """
     agent = build_chat_agent(pl_config)
     deps = ChatAgentDeps(config=pl_config, allow_ai_generated=False)
@@ -209,10 +268,114 @@ async def test_prompt_adds_scaled_recipe_to_calendar(pl_config) -> None:
         f"Dodaj przepis do kalendarza dla 4 osób na 26.07 z {_CURRY_URL}",
     )
 
-    add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
-    assert add_events, (
-        "expected a CalendarAddEvent from the one-shot request; "
+    cards = [e for e in events if isinstance(e, FinalRecipeEvent)]
+    asked = deps.pending_split is not None
+
+    assert asked or cards, (
+        "the page produced neither a question nor a recipe; "
         f"events: {[type(e).__name__ for e in events]} / reply: {reply!r}"
+    )
+
+    if asked:
+        # Parked for the next turn: nothing may be committed yet.
+        assert not cards, "no recipe card may be shown before the user chooses"
+        assert not [e for e in events if isinstance(e, CalendarAddEvent)], (
+            "nothing may land on the calendar before the user chooses"
+        )
+        assert "naan" in reply.lower(), f"the question does not name naan: {reply!r}"
+    else:
+        # Resolved in-turn: the dishes must be SEPARATE, never merged.
+        assert len(cards) >= 2, (
+            f"the page's two dishes were merged into {len(cards)} card(s) — "
+            "the silent-merge bug STEP 45 exists to prevent"
+        )
+        curry = cards[0].recipe
+        curry_text = _ingredients_text(curry)
+        for leaked in ("mąk", "drożdż"):
+            assert leaked not in curry_text, (
+                f"naan ingredient {leaked!r} on the curry: {curry.ingredients}"
+            )
+
+
+async def test_answering_split_yields_a_curry_without_naan_ingredients(pl_config) -> None:
+    """The acceptance criterion the whole step exists for.
+
+    After "rozdziel", the curry keeps servings=4 and carries NO flour or yeast —
+    so a 4-person curry no longer buys 8 portions of bread. The naan survives as
+    its own recipe at its own 8 portions, with the same source_url (Rule 5).
+    """
+    agent = build_chat_agent(pl_config)
+    deps = ChatAgentDeps(config=pl_config, allow_ai_generated=False)
+    history: list = []
+
+    await _say(agent, deps, history, f"Znajdź przepis dla 4 osób z {_CURRY_URL}")
+    assert deps.pending_split is not None, "expected the split question first"
+
+    reply, events = await _say(agent, deps, history, "Rozdziel je na osobne przepisy")
+
+    cards = [e for e in events if isinstance(e, FinalRecipeEvent)]
+    assert len(cards) == 2, (
+        f"expected two recipe cards after splitting, got {len(cards)}; reply: {reply!r}"
+    )
+
+    curry = cards[0].recipe
+    assert curry.servings == 4, f"curry should stay at 4 portions, got {curry.servings}"
+    curry_text = _ingredients_text(curry)
+    for leaked in ("mąk", "drożdż"):
+        assert leaked not in curry_text, (
+            f"naan ingredient {leaked!r} still on the 4-person curry: {curry.ingredients}"
+        )
+
+    naan = cards[1].recipe
+    assert "naan" in naan.name.lower(), f"second card is not the naan: {naan.name!r}"
+    assert naan.servings == 8, f"naan should keep its own 8 portions, got {naan.servings}"
+
+    # Provenance survives the split for BOTH dishes (Rule 5).
+    for card in cards:
+        assert card.recipe.source_url and card.recipe.source_url.startswith("http"), (
+            f"provenance lost on {card.recipe.name!r}"
+        )
+
+    assert deps.pending_split is None, "the question should be answered and cleared"
+
+
+async def test_answering_together_then_adds_the_merged_recipe(pl_config) -> None:
+    """Choosing "razem" reproduces the pre-STEP-45 behaviour exactly.
+
+    This is the assertion the old one-shot test carried: one merged recipe on the
+    calendar for 26 July, carrying real ingredients — the payload the shopping
+    list is later built from. It is still reachable, just no longer silent.
+    """
+    agent = build_chat_agent(pl_config)
+    deps = ChatAgentDeps(config=pl_config, allow_ai_generated=False)
+    history: list = []
+
+    await _say(
+        agent, deps, history,
+        f"Dodaj przepis do kalendarza dla 4 osób na 26.07 z {_CURRY_URL}",
+    )
+
+    # The model may park the question or resolve it in-turn (see
+    # test_multi_recipe_page_asks_before_committing). "Razem" is only meaningful
+    # while a question is pending; otherwise ask for the merge explicitly.
+    if deps.pending_split is not None:
+        reply, events = await _say(agent, deps, history, "Zostaw je razem jako jeden przepis")
+        cards = [e for e in events if isinstance(e, FinalRecipeEvent)]
+        assert len(cards) == 1, f"'razem' must give ONE card, got {len(cards)}"
+        merged_text = _ingredients_text(cards[0].recipe)
+        assert "kurczak" in merged_text and "mąk" in merged_text, (
+            f"the merged recipe should carry BOTH dishes: {cards[0].recipe.ingredients}"
+        )
+    else:
+        reply, events = await _say(agent, deps, history, "Dodaj oba przepisy na 26.07")
+
+    add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
+    if not add_events:
+        # The model may need one more nudge to complete the original request.
+        _reply, events = await _say(agent, deps, history, "Dodaj go na 26.07")
+        add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
+    assert add_events, (
+        f"expected the merged recipe to reach the calendar; reply: {reply!r}"
     )
     entry = add_events[0].entry
 
@@ -246,13 +409,17 @@ async def test_prompt_adds_scaled_recipe_to_calendar(pl_config) -> None:
 async def test_prompt_for_eight_people_scales_and_records_both_counts(pl_config) -> None:
     """The mirror of the no-op test: page serves 4, user asks for 8 (STEP 49).
 
-    Where `test_prompt_adds_scaled_recipe_to_calendar` proves we DON'T inflate
-    when the counts already match, this proves we DO scale when they differ — and,
-    crucially, that the entry records both numbers so the UI can say
+    Where `test_answering_together_then_adds_the_merged_recipe` proves we DON'T
+    inflate when the counts already match, this proves we DO scale when they
+    differ — and, crucially, that the entry records both numbers so the UI can say
     "Porcje: 8 (przeliczone z 4)" instead of an unverifiable "Porcje: 8".
 
     The ingredient list on the entry is what the shopping list is built from, so
     the doubled amounts landing here is the whole point of the feature.
+
+    STEP 45 inserts the split question ahead of all this, so the request is
+    answered with "razem" first: scaling a MERGED recipe is the behaviour STEP 49
+    pinned, and it must survive the new question unchanged.
     """
     agent = build_chat_agent(pl_config)
     deps = ChatAgentDeps(config=pl_config, allow_ai_generated=False)
@@ -263,7 +430,15 @@ async def test_prompt_for_eight_people_scales_and_records_both_counts(pl_config)
         f"Dodaj przepis do kalendarza dla 8 osób na 26.07 z {_CURRY_URL}",
     )
 
+    if deps.pending_split is not None:
+        reply, events = await _say(
+            agent, deps, history, "Zostaw je razem jako jeden przepis"
+        )
+
     add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
+    if not add_events:
+        reply, events = await _say(agent, deps, history, "Dodaj go na 26.07 dla 8 osób")
+        add_events = [e for e in events if isinstance(e, CalendarAddEvent)]
     assert add_events, (
         "expected a CalendarAddEvent for the 8-person request; "
         f"events: {[type(e).__name__ for e in events]} / reply: {reply!r}"

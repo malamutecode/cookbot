@@ -51,11 +51,24 @@ from cookbot.agents.recipe_search_fast import (
     is_fast_path_request,
 )
 from cookbot.agents.shopping_list import build_shopping_list_agent
-from cookbot.agents.web_search import build_web_fetch_agent, build_web_search_agent, web_fetch_prompt, web_search_prompt
+from cookbot.agents.web_search import (
+    build_web_fetch_agent,
+    build_web_search_agent,
+    fetch_page_markdown,
+    web_fetch_prompt,
+    web_fetch_prompt_split_retry,
+    web_search_prompt,
+)
 from cookbot.models.calendar import CalendarEntry, CalendarState, MealSlot
 from cookbot.models.pantry_math import PantryOutcome
 from cookbot.models.pantry_math import subtract_pantry as subtract_pantry_from_list
 from cookbot.models.recipe import ParsedIngredients, Recipe, RecipeSummary, UserIntent
+from cookbot.models.recipe_blocks import (
+    RecipeBlock,
+    classify_blocks,
+    page_declares_multiple_recipes,
+    serving_headings,
+)
 from cookbot.models.shopping import ShoppingList
 from cookbot.models.spizarnia import SpizarniaItem
 from cookbot.models.tenant import TenantConfig
@@ -144,6 +157,11 @@ class FoundRecipe(BaseModel):
     # True when the user picked a WEB proposal but the page couldn't be read, so
     # the content was AI-generated instead. The chat agent tells the user.
     web_pick_fell_back: bool = False
+    # Multi-recipe page (STEP 45): the page held a second STANDALONE dish, so no
+    # card was sent — the agent must ask whether to split before committing.
+    # `split_options` names the dishes so the question can be concrete.
+    split_question: bool = False
+    split_options: list[str] = []
 
 
 class OnboardingUpdateResult(BaseModel):
@@ -160,6 +178,31 @@ class ProposeRecipesResult(BaseModel):
     count: int
     names: list[str]
     message: str
+
+
+class PendingSplit(BaseModel):
+    """A multi-recipe page waiting on the user's split/keep-together answer.
+
+    Holds everything needed to produce EITHER outcome without re-fetching the
+    page — the extraction already cost a model call, and re-running it on the
+    answer turn would double the cost and could return something different.
+
+    Lives in `ChatState` (Architecture Rule 3), never a module global: the
+    question and the answer are two separate WS turns, and a reconnect between
+    them lands on a fresh Cloud Run container. Losing this would strand the user
+    holding a question nothing can answer.
+    """
+
+    recipe: Recipe                  # the merged extraction, verbatim ("together")
+    blocks: list[RecipeBlock]       # every block, main at [0] ("split")
+    standalone_names: list[str]     # which blocks the heuristic flagged as dishes
+
+
+class ChooseSplitResult(BaseModel):
+    mode: str                # "split" | "together"
+    recipe_count: int        # cards emitted (0 when nothing was pending)
+    recipe_names: list[str] = []
+    message: str = ""
 
 
 class CalendarAddResult(BaseModel):
@@ -258,6 +301,10 @@ class ChatAgentDeps:
     onboarding: OnboardingState = field(default_factory=OnboardingState)  # accumulates until complete
     last_recipe: FoundRecipe | None = None             # set by get_recipe_details, used by add_to_calendar
     last_proposals: list[RecipeSummary] = field(default_factory=list)  # proposals (1-4), consumed by get_recipe_details
+    # Multi-recipe page awaiting the user's answer (STEP 45). Set by the fetch
+    # tools, consumed by choose_recipe_split on a LATER turn — hence durable and
+    # part of the Firestore snapshot, so a reconnect mid-question still resolves.
+    pending_split: PendingSplit | None = None
 
     # ── 2. Per-turn input (refreshed each turn by the WS handler) ─────────────
     calendar: CalendarState = field(default_factory=CalendarState)  # current calendar from the WS payload
@@ -309,6 +356,7 @@ class ChatState(BaseModel):
     onboarding: OnboardingState = OnboardingState()
     last_recipe: FoundRecipe | None = None
     last_proposals: list[RecipeSummary] = []
+    pending_split: PendingSplit | None = None
 
 
 def dump_chat_state(
@@ -320,6 +368,7 @@ def dump_chat_state(
         onboarding=deps.onboarding,
         last_recipe=deps.last_recipe,
         last_proposals=deps.last_proposals,
+        pending_split=deps.pending_split,
     )
     return state.model_dump(mode="json")
 
@@ -333,6 +382,7 @@ def restore_chat_state(
     deps.onboarding = state.onboarding
     deps.last_recipe = state.last_recipe
     deps.last_proposals = state.last_proposals
+    deps.pending_split = state.pending_split
     return list(ModelMessagesTypeAdapter.validate_json(state.messages_json))
 
 
@@ -627,6 +677,205 @@ async def resolve_recipe(
     return FoundRecipe(recipe=recipe, source=source, web_pick_fell_back=web_pick_fell_back)
 
 
+# ── Multi-recipe pages (STEP 45) ──────────────────────────────────────────────
+
+def detect_split(recipe: Recipe, page_text: str = "") -> PendingSplit | None:
+    """Does this extraction hold a SECOND standalone dish worth asking about?
+
+    Returns None on the common path — a page with one ingredient list leaves
+    `components` empty, so this is a list check and nothing more: no extra model
+    call, no measurable cost on the overwhelmingly common case.
+
+    The judgement itself is the pure heuristic in `models/recipe_blocks.py`; this
+    only adapts it to the extractor's output. `components[0]` is the main block
+    by contract with the prompt, but a model can still return a single block or a
+    ragged list, so anything that doesn't clearly describe two dishes falls
+    through to None and behaves exactly as it does today.
+
+    `page_text` (the fetched markdown, when the caller has it) is a DETERMINISTIC
+    cross-check on that contract. Live runs showed gpt-4o-mini reporting
+    `components=[]` for the curry+naan page on roughly a third of turns even
+    though both headings are plainly in the text — and an empty list is
+    indistinguishable from a real single-recipe page, so the feature silently
+    degraded to the old merged behaviour. When the page's own headings contradict
+    the model, we trust the page and log it (`split_detect_model_missed_blocks`).
+    """
+    blocks = recipe.components
+    if len(blocks) < 2:
+        if page_text and page_declares_multiple_recipes(page_text):
+            log.info(
+                "split_detect_model_missed_blocks",
+                source_url=recipe.source_url,
+                headings=serving_headings(page_text),
+                reported_blocks=len(blocks),
+            )
+        return None
+
+    # Anchor on the Recipe's own serving count rather than blocks[0].servings:
+    # `servings` went through the same verbatim extraction the rest of the card
+    # is built from, so comparing against it keeps the question consistent with
+    # what the user will actually see.
+    verdict = classify_blocks(blocks, recipe.servings)
+    if not verdict.standalone_names:
+        return None
+
+    return PendingSplit(
+        recipe=recipe,
+        blocks=blocks,
+        standalone_names=verdict.standalone_names,
+    )
+
+
+async def detect_split_verified(
+    recipe: Recipe,
+    *,
+    config: TenantConfig,
+    usage: RunUsage | None = None,
+) -> tuple[PendingSplit | None, Recipe]:
+    """`detect_split`, with a deterministic second opinion when the model says "no".
+
+    Returns `(pending_or_None, recipe)` — the recipe too, because a successful
+    re-extraction replaces the one passed in.
+
+    Why this exists: `components` is the ONE part of the feature that depends on
+    model consistency, and live runs proved it inconsistent — the curry+naan page
+    came back with `components=[]` on a meaningful fraction of turns, silently
+    restoring the merged 21-ingredient behaviour. The page text is unambiguous
+    ("Składniki dla 4 osób" / "Składniki na 8 porcji"), so when a regex over the
+    fetched markdown contradicts an empty `components`, we re-ask ONCE with those
+    counts stated. The extra fetch is text-only; the extra model call happens only
+    on pages that demonstrably have multiple serving headings — never on the
+    common single-recipe path.
+
+    Fails safe in every direction: no source_url, a failed fetch, a page with one
+    heading, or a retry that still reports nothing all return the original recipe
+    and no question, i.e. exactly today's behaviour.
+    """
+    pending = detect_split(recipe)
+    if pending is not None or not recipe.source_url:
+        return pending, recipe
+
+    page_text = await fetch_page_text(recipe.source_url)
+    if not page_text or not page_declares_multiple_recipes(page_text):
+        return None, recipe
+
+    headings = serving_headings(page_text)
+    log.info("split_retry_extraction", source_url=recipe.source_url, headings=headings)
+    try:
+        retry_agent = build_web_fetch_agent(config, pinned_url=recipe.source_url)
+        retried = (await retry_agent.run(
+            web_fetch_prompt_split_retry(recipe.source_url, headings),
+            usage=usage,
+        )).output
+    except Exception as exc:  # noqa: BLE001 — Rule 7: contain it, keep the recipe
+        log.info("split_retry_failed", source_url=recipe.source_url, error=str(exc))
+        return None, recipe
+
+    if retried is None:
+        return None, recipe
+    if not retried.source_url:
+        retried.source_url = recipe.source_url
+
+    pending = detect_split(retried)
+    if pending is None:
+        # The model still won't report blocks. Keep the ORIGINAL extraction (the
+        # retry prompt pushes hard and a pushed model is likelier to distort) and
+        # stay silent — the merged card is wrong-ish, but inventing a split from a
+        # list we can't cleanly attribute would be worse.
+        log.info("split_retry_still_empty", source_url=recipe.source_url)
+        return None, recipe
+
+    log.info("split_retry_recovered", source_url=recipe.source_url,
+             standalone=pending.standalone_names)
+    return pending, retried
+
+
+async def fetch_page_text(url: str) -> str:
+    """Fetch a page's markdown with NO model call, for the deterministic checks.
+
+    Reuses `recipe_web_fetch_tool` so the text is byte-identical to what the
+    extractor saw (same noise-stripping, same cap) — a different fetch path would
+    make the cross-check compare against a different document.
+
+    Never raises: this only ever *adds* confidence, so a network hiccup must
+    degrade to "no cross-check", not to a failed turn (Rule 7).
+    """
+    try:
+        return await fetch_page_markdown(url)
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        log.info("fetch_page_text_failed", url=url, error=str(exc))
+        return ""
+
+
+def _block_to_recipe(block: RecipeBlock, page: Recipe, *, is_main: bool) -> Recipe:
+    """Turn one page block into a standalone Recipe.
+
+    Provenance is not negotiable (Rule 5): every dish produced from the page keeps
+    its `source_url` and `image_url`, because both really did come from there.
+
+    Serving counts stay VERBATIM per block — the curry's 4 and the naan's 8 are
+    each what their own block stated. Scaling to the user's target is a separate
+    step that runs after this, exactly as it does for a single-recipe page.
+    """
+    return Recipe(
+        name=block.name or page.name,
+        # Only the main dish inherits the page's description/tips/times — they
+        # describe the post as a whole, and stamping them onto the side dish
+        # would attribute the curry's cooking time to the bread.
+        description=page.description if is_main else "",
+        ingredients=list(block.ingredients),
+        steps=list(block.steps),
+        prep_time_minutes=page.prep_time_minutes if is_main else 0,
+        cook_time_minutes=page.cook_time_minutes if is_main else 0,
+        difficulty=page.difficulty,
+        servings=block.servings or page.servings,
+        tips=list(page.tips) if is_main else [],
+        source_url=page.source_url,
+        image_url=page.image_url,
+        original_servings=page.original_servings if is_main else None,
+    )
+
+
+def split_into_recipes(pending: PendingSplit) -> list[Recipe]:
+    """The "rozdziel" outcome: one Recipe per block, in page order.
+
+    Components are NOT dropped — a sauce block folds back into the main dish, so
+    splitting a curry+naan+sauce page yields two recipes (curry incl. its sauce,
+    and naan), never three. Only the blocks the heuristic flagged as standalone
+    become separate cards.
+    """
+    page = pending.recipe
+    standalone = set(pending.standalone_names)
+
+    main_block = pending.blocks[0]
+    main_ingredients = list(main_block.ingredients)
+    main_steps = list(main_block.steps)
+    others: list[Recipe] = []
+
+    for block in pending.blocks[1:]:
+        if block.name in standalone:
+            others.append(_block_to_recipe(block, page, is_main=False))
+        else:
+            # A component belongs to the main dish; keep it there.
+            main_ingredients.extend(block.ingredients)
+            main_steps.extend(block.steps)
+
+    merged_main = main_block.model_copy(
+        update={"ingredients": main_ingredients, "steps": main_steps}
+    )
+    return [_block_to_recipe(merged_main, page, is_main=True), *others]
+
+
+def merged_recipe(pending: PendingSplit) -> Recipe:
+    """The "razem" outcome: today's behaviour, unchanged.
+
+    The extraction already merged everything — that IS the current product
+    behaviour — so keeping them together is simply the verbatim Recipe, minus the
+    now-answered block reporting.
+    """
+    return pending.recipe.model_copy(update={"components": []})
+
+
 # ── Dynamic onboarding system prompt (module-level so it's unit-testable) ─────
 
 def onboarding_status_prompt(
@@ -635,12 +884,39 @@ def onboarding_status_prompt(
     *,
     last_proposals: list[RecipeSummary],
     last_recipe: FoundRecipe | None,
+    pending_split: PendingSplit | None = None,
 ) -> str:
     """Build the per-turn onboarding/routing system prompt.
 
-    Three branches: recipe-selection (proposals shown, awaiting pick), the direct
-    recipe fast path (user named a concrete dish → search now), and guided
-    onboarding (vague request → ask the next missing field)."""
+    Four branches, in priority order: an unanswered split question (STEP 45),
+    recipe-selection (proposals shown, awaiting pick), the direct recipe fast
+    path (user named a concrete dish → search now), and guided onboarding (vague
+    request → ask the next missing field)."""
+    # ── Awaiting a split answer (STEP 45) ────────────────────────────────────
+    # FIRST, before the ob.complete check: a pending split routinely coexists with
+    # INCOMPLETE onboarding (a pasted link fills almost nothing), so nesting this
+    # under ob.complete would silently skip it on exactly the common path.
+    #
+    # Without this branch the answer turn gets a generic prompt, and gpt-4o-mini
+    # falls back to its most familiar tool: observed live answering "Rozdziel je
+    # na osobne przepisy" with TWO propose_recipes calls that web-searched for
+    # brand-new curry and naan recipes, discarding the page it already had.
+    if pending_split is not None:
+        names = "\n".join(f"  - {b.name}" for b in pending_split.blocks)
+        return f"""## AWAITING A SPLIT ANSWER — do not call any other tool
+
+You asked the user whether this page's recipes should be split. The page holds:
+{names}
+
+The user's message is their ANSWER. Call `choose_recipe_split` NOW, this turn:
+  - "rozdziel" / "osobno" / "oddzielnie" / "tak" / naming one dish → mode="split"
+  - "razem" / "jeden" / "wszystko razem" / "nie" → mode="together"
+
+The recipes are ALREADY EXTRACTED and waiting — do NOT call propose_recipes,
+get_recipe_details, or get_recipe_from_url, and do NOT search the web for these
+dishes again. If the reply is genuinely unclear, ask once more; never guess.
+"""
+
     if ob.complete:
         # If proposals were sent and the user is picking, mandate the tool call.
         if last_proposals and last_recipe is None:
@@ -771,6 +1047,7 @@ You MUST respond exclusively in {config.language}. Never use another language.
   ("Dodałem na 26.07 — 8 porcji"), and if `source_servings` differs, say the
   amounts were converted from it. Never state a portion count the result did not
   give you; if `servings` is null, simply don't mention portions.
+- Answer a "one recipe or two?" question about a page → call choose_recipe_split.
 - Remove a meal from the calendar → call remove_from_calendar.
 - Build a shopping list for a date range → call get_shopping_list.
   When `pantry_subtracted` is true, the user asked for their pantry to be deducted,
@@ -822,6 +1099,17 @@ You MUST respond exclusively in {config.language}. Never use another language.
    - If a tool reports source="error" or an error message, a temporary technical
      problem occurred — no card is shown. Apologise briefly and ask the user to
      try again in a moment. Do not retry the tool yourself.
+5. MULTI-RECIPE PAGE: if get_recipe_from_url or get_recipe_details returns
+   split_question=true, that page holds TWO SEPARATE DISHES and NO card was shown
+   yet. Do not describe either recipe and do not call any other tool. Ask one
+   short question naming both dishes from `split_options` and offering the two
+   choices, e.g. "Ta strona zawiera dwa przepisy: Curry z kurczaka i Chlebek naan.
+   Chcesz oba osobno, czy jako jeden przepis razem?".
+   On the user's NEXT message call choose_recipe_split once: "osobno" / "rozdziel"
+   / "tylko curry" / naming one dish → mode="split"; "razem" / "jeden" / "wszystko"
+   → mode="together". If the reply is unclear, ask again rather than guessing.
+   After it returns, the cards are shown automatically — do not retell them; just
+   invite the next step (adding to the calendar) as in step 4.
 
 ## After the first recipe — free-chat mode
 Once a recipe has been delivered, stay in free-chat mode indefinitely:
@@ -889,6 +1177,7 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             questions,
             last_proposals=ctx.deps.last_proposals,
             last_recipe=ctx.deps.last_recipe,
+            pending_split=ctx.deps.pending_split,
         )
 
     # ── Tools ────────────────────────────────────────────────────────────────
@@ -1095,6 +1384,25 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
                 ),
                 source="error",
             )
+        # Multi-recipe page (STEP 45). The question belongs to the PAGE, not to
+        # how the user reached it, so a picked proposal asks exactly as a pasted
+        # link does. No card and no last_recipe yet — both wait for the answer.
+        pending, resolved_recipe = await detect_split_verified(
+            found.recipe, config=ctx.deps.config, usage=ctx.usage,
+        )
+        if pending is not None:
+            ctx.deps.pending_split = pending
+            ctx.deps.last_proposals = []
+            log.info("get_recipe_details_split_question",
+                     choice=choice, standalone=pending.standalone_names)
+            return FoundRecipe(
+                recipe=resolved_recipe,
+                source=found.source,
+                web_pick_fell_back=found.web_pick_fell_back,
+                split_question=True,
+                split_options=[b.name for b in pending.blocks],
+            )
+
         ctx.deps.last_recipe = found                 # durable — used by add_to_calendar
         ctx.deps.last_proposals = []                 # clear so selection prompt doesn't repeat
         # Emit the recipe card only when there is a real recipe to show
@@ -1161,6 +1469,35 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         if not recipe.source_url:
             recipe.source_url = url
 
+        # Persist the user's serving count BEFORE the split early-return below.
+        # `deps.onboarding.servings` is the single anchor everything scales from
+        # (STEP 46), and `choose_recipe_split` reads it on a LATER turn — so a
+        # `return` that skips this write silently drops the count. Observed live:
+        # "dodaj dla 8 osób z <url>" on the curry+naan page produced a calendar
+        # entry stamped 4 portions, because the split path returned before the
+        # write further down ever ran. Fill blanks only, never overwrite.
+        if servings > 0 and not ctx.deps.onboarding.servings:
+            ctx.deps.onboarding.servings = servings
+
+        # Multi-recipe page (STEP 45)? Ask BEFORE committing to a card — emitting
+        # the merged recipe and then asking would show exactly the 21-ingredient
+        # result this step exists to prevent. Scaling is deliberately deferred
+        # too: each dish is scaled after the user says which they want.
+        pending, recipe = await detect_split_verified(
+            recipe, config=cfg, usage=ctx.usage,
+        )
+        if pending is not None:
+            ctx.deps.pending_split = pending
+            ctx.deps.last_proposals = []
+            log.info("get_recipe_from_url_split_question", url=url,
+                     standalone=pending.standalone_names)
+            return FoundRecipe(
+                recipe=recipe,
+                source="web_search",
+                split_question=True,
+                split_options=[b.name for b in pending.blocks],
+            )
+
         # Scaling is a SEPARATE step from the verbatim extraction above (Rule 5).
         # The page states its OWN serving count; the user may want a different
         # number ("dla 4 osób"). Only when the two differ do we rescale — and
@@ -1192,6 +1529,67 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         ctx.deps.last_proposals = []                 # a pasted link isn't a selection
         ctx.deps.events.append(FinalRecipeEvent(recipe=recipe, source="web_search"))
         return found
+
+    @agent.tool
+    async def choose_recipe_split(
+        ctx: RunContext[ChatAgentDeps],
+        mode: str,
+    ) -> ChooseSplitResult:
+        """Answer the "one recipe or two?" question about a multi-recipe page.
+
+        Call this ONLY after a previous tool reported split_question=true and you
+        asked the user. mode="split" sends a separate recipe card per dish;
+        mode="together" sends one combined card.
+        """
+        pending = ctx.deps.pending_split
+        if pending is None:
+            # Rule 7: contain it. The model can reach for this tool with nothing
+            # pending — say so structurally rather than raising mid-turn.
+            return ChooseSplitResult(
+                mode=mode,
+                recipe_count=0,
+                message="No multi-recipe page is awaiting a choice — ignore this "
+                        "and continue the conversation normally.",
+            )
+
+        cfg: TenantConfig = ctx.deps.config
+        want_split = mode.strip().lower() != "together"
+        recipes = split_into_recipes(pending) if want_split else [merged_recipe(pending)]
+
+        # Scaling was deferred until now (Rule 5: it is separate from extraction,
+        # and there was no point scaling a recipe the user might discard). Each
+        # dish scales from its OWN stated count — the naan's 8 is not the curry's
+        # 4 — so a single target would be wrong for one of them. We only scale the
+        # MAIN dish to the user's target: they asked for "curry for 4", never for
+        # "naan for 4", and rescaling a side dish nobody asked about is the same
+        # class of silent edit this step is fixing.
+        target = ctx.deps.onboarding.servings or 0
+        if target > 0 and recipes:
+            scale_agent = _cached_agent(sub_agents, "recipe_scale", build_recipe_scale_agent, cfg)
+            try:
+                recipes[0] = await scale_recipe_to_servings(
+                    recipes[0], target, agent=scale_agent, usage=ctx.usage,
+                )
+            except Exception as exc:
+                # Unscaled amounts with a truthful serving count beat no recipe.
+                log.exception("choose_recipe_split_scale_failed", error=str(exc))
+
+        for recipe in recipes:
+            ctx.deps.events.append(FinalRecipeEvent(recipe=recipe, source="web_search"))
+
+        # add_to_calendar trusts last_recipe (STEP 49) — point it at the main dish,
+        # the one the user is most likely to add next.
+        ctx.deps.last_recipe = FoundRecipe(recipe=recipes[0], source="web_search")
+        ctx.deps.pending_split = None                # answered — never re-ask
+        log.info("choose_recipe_split", mode=mode, count=len(recipes))
+
+        return ChooseSplitResult(
+            mode="split" if want_split else "together",
+            recipe_count=len(recipes),
+            recipe_names=[r.name for r in recipes],
+            message="Recipe cards sent to the user — do NOT retell them; invite "
+                    "the next step (adding to the calendar).",
+        )
 
     @agent.tool
     async def add_to_calendar(

@@ -2,6 +2,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from cookbot.models.recipe_blocks import RecipeBlock
+
 
 class UserIntent(BaseModel):
     dish_type: str                   # free text: "pasta", "soup", "surprise me", etc.
@@ -32,6 +34,12 @@ class Recipe(BaseModel):
     image_url: str | None = None    # og:image or prominent photo from the recipe page
     original_servings: int | None = None  # serving count as written on the source page,
     # before any scaling to the user's requested servings. None = never scaled / unknown.
+    # Ingredient/step blocks the page carried, INCLUDING the main one at [0] (STEP 45).
+    # Populated only when the page had more than one — a normal single-recipe page
+    # leaves this empty, so the common path is untouched. The extractor merely
+    # REPORTS what it saw (Rule 5); `models/recipe_blocks.py` decides whether a
+    # block is a separate dish and the ChatAgent decides whether to ask.
+    components: list[RecipeBlock] = []
 
 
 class RecipeSummary(BaseModel):

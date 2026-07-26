@@ -50,6 +50,71 @@ def _strip_html_noise(html: str) -> str:
     return _HTML_NOISE_RE.sub(" ", html)
 
 
+async def _fetch_markdown(
+    url: str,
+    max_content_length: int = _MAX_PAGE_CONTENT,
+    *,
+    pinned_url: str | None = None,
+) -> WebFetchResult | BinaryContent:
+    """Shared fetch pipeline: SSRF-safe download → strip noise → markdown → cap.
+
+    The single implementation behind both `recipe_web_fetch_tool` (the agent-facing
+    Tool) and `fetch_page_markdown` (the plain coroutine). Kept in one place so the
+    split cross-check reads exactly the text the extractor read — two fetch paths
+    would eventually diverge and make the cross-check compare against a different
+    document than the one the model saw.
+    """
+    if pinned_url:
+        url = pinned_url
+    try:
+        response = await safe_download(
+            url,
+            allow_local=False,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+            headers={"Accept": "text/markdown, text/html;q=0.9, */*;q=0.8"},
+        )
+    except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
+        raise ModelRetry(f"Failed to fetch {url}: {e}") from e
+
+    media_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    if media_type not in ("", "text/html", "application/xhtml+xml"):
+        # JSON / markdown / binary: no noise problem — use the stock behaviour.
+        stock = WebFetchLocalTool(
+            max_content_length=max_content_length,
+            allow_local_urls=False,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+        )
+        return await stock(url)
+
+    html = response.text
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    title = title_match.group(1).strip() if title_match else ""
+
+    content = md(_strip_html_noise(html), strip=["img", "script", "style"])
+    content = _EXCESS_NEWLINES_RE.sub("\n\n", content).strip()
+    if len(content) > max_content_length:
+        content = content[:max_content_length]
+
+    return WebFetchResult(url=str(response.url), title=title, content=content)
+
+
+async def fetch_page_markdown(url: str, max_content_length: int = _MAX_PAGE_CONTENT) -> str:
+    """Fetch a page as cleaned markdown — no LLM, no Tool wrapper.
+
+    The same pipeline `recipe_web_fetch_tool` runs (noise-stripped HTML → markdown
+    → cap), exposed as a plain coroutine so non-agent callers can use it without
+    going through PydanticAI's `Tool`, whose `.function` is typed as possibly
+    ctx-taking. Used by the STEP 45 split cross-check, which needs the text the
+    extractor saw but has no model call to make.
+    """
+    # WebFetchResult is a TypedDict (hence dict access, not attributes); a
+    # BinaryContent response has no markdown to offer, so it yields "".
+    result = await _fetch_markdown(url, max_content_length, pinned_url=url)
+    if isinstance(result, dict):
+        return str(result.get("content", ""))
+    return ""
+
+
 def recipe_web_fetch_tool(
     max_content_length: int = _MAX_PAGE_CONTENT,
     pinned_url: str | None = None,
@@ -69,41 +134,9 @@ def recipe_web_fetch_tool(
     caller already knows the exact URL there is nothing for the model to decide,
     so we pin it rather than hope the retype is faithful.
     """
-    stock = WebFetchLocalTool(
-        max_content_length=max_content_length,
-        allow_local_urls=False,
-        timeout=_FETCH_TIMEOUT_SECONDS,
-    )
-
     async def web_fetch(url: str) -> WebFetchResult | BinaryContent:
         """Fetch the content of a web page at the given URL and return it as markdown."""
-        if pinned_url:
-            url = pinned_url
-        try:
-            response = await safe_download(
-                url,
-                allow_local=False,
-                timeout=_FETCH_TIMEOUT_SECONDS,
-                headers={"Accept": "text/markdown, text/html;q=0.9, */*;q=0.8"},
-            )
-        except (ValueError, httpx.HTTPStatusError, httpx.RequestError) as e:
-            raise ModelRetry(f"Failed to fetch {url}: {e}") from e
-
-        media_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
-        if media_type not in ("", "text/html", "application/xhtml+xml"):
-            # JSON / markdown / binary: no noise problem — use the stock behaviour.
-            return await stock(url)
-
-        html = response.text
-        title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip() if title_match else ""
-
-        content = md(_strip_html_noise(html), strip=["img", "script", "style"])
-        content = _EXCESS_NEWLINES_RE.sub("\n\n", content).strip()
-        if len(content) > max_content_length:
-            content = content[:max_content_length]
-
-        return WebFetchResult(url=str(response.url), title=title, content=content)
+        return await _fetch_markdown(url, max_content_length, pinned_url=pinned_url)
 
     return Tool(web_fetch, name="web_fetch")
 
@@ -116,8 +149,9 @@ _EXTRACT_INSTRUCTIONS = """
      as written on the page — do NOT recalculate, round, or scale them. Copy each
      line as-is. A real recipe has several ingredients — if you captured only 1-2,
      you missed the list; scan the page again. Include items under any sub-headers
-     (e.g. "sos", "do podania"). Common items are easy to overlook: onion (cebula),
-     garlic (czosnek), salt, pepper, oil/butter — double-check none are missing.
+     (e.g. "sos", "do podania") — and when you find such sub-headers, they also
+     each need an entry in `components` (step 3). Common items are easy to overlook:
+     onion (cebula), garlic (czosnek), salt, pepper, oil/butter — check none are missing.
      PRESERVE EVERY PRODUCT QUALIFIER EXACTLY — the specific product form is part of
      the ingredient and must never be dropped or generalised:
        * fat / percentage: "śmietanka 30%" is NOT "śmietana"; "mleko 3,2%" is not "mleko".
@@ -137,7 +171,32 @@ _EXTRACT_INSTRUCTIONS = """
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
-3. Only return null if the page genuinely has NO recipe (a 404 page, a paywall,
+   - components: see step 3 — this is REQUIRED whenever the page has more than
+     one ingredient heading.
+3. **Count the ingredient headings on the page, then fill `components`.**
+   Look for every separate ingredient list — headings like "Składniki",
+   "Składniki dla 4 osób", "Składniki na 8 porcji", "Sos", "Ciasto", "Krem", or a
+   named dish followed by its own list. Ask yourself literally: *how many separate
+   ingredient lists does this page have?*
+   - Exactly ONE → `components` MUST be an empty list `[]`. This is the usual case.
+   - TWO OR MORE → `components` MUST have ONE ENTRY PER LIST, in page order, with
+     the FIRST entry being the main recipe. Never return fewer entries than the
+     number of ingredient headings you found. For each block copy:
+       * name: the block's heading, or the dish it belongs to, as written on the
+         page ("Chlebek naan", "Sos czosnkowy", "Ciasto")
+       * servings: the count stated FOR THAT BLOCK — "Składniki na 8 porcji" → 8,
+         "Składniki dla 4 osób" → 4; use 0 only when that block states none
+       * ingredients / steps: that block's own items, verbatim
+     Yes, this repeats lines already in the main `ingredients` list. That is
+     intended — copy them again rather than leaving a block out.
+   Just REPORT what the page contains. Do NOT decide whether the blocks are one
+   dish or two, and do NOT drop a block because it looks like a component — that
+   judgement happens elsewhere.
+   Worked example — a page titled "Curry z chlebkiem naan" with "Składniki dla
+   4 osób" (curry) and "Składniki na 8 porcji" (naan) has TWO ingredient
+   headings, so `components` has exactly 2 entries: the curry (servings=4) and
+   the naan (servings=8).
+4. Only return null if the page genuinely has NO recipe (a 404 page, a paywall,
    a category/listing page, or an unrelated article). A normal recipe page —
    even one buried in lots of navigation, ads, or comments — must be extracted.
    Recipe sites often place ingredients and steps far down the markdown; read the
@@ -150,6 +209,9 @@ _EXTRACT_INSTRUCTIONS = """
   different number of people is a SEPARATE step handled elsewhere, not your job.
 - Do NOT stop early: capture the full ingredient list and every step.
 - Always set source_url to the exact URL fetched.
+- `ingredients` and `steps` must ALWAYS carry the whole page, even when you also
+  fill `components`. The two are not alternatives: components is extra reporting
+  ON TOP of the complete extraction, never a replacement for part of it.
 """
 
 _SEARCH_INSTRUCTIONS = """
@@ -174,6 +236,12 @@ _SEARCH_INSTRUCTIONS = """
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
+   - components: count the separate ingredient headings on the page. Exactly ONE
+     → `[]` (the usual case). TWO OR MORE (e.g. "Składniki dla 4 osób" for the
+     main dish and "Składniki na 8 porcji" for a bread) → one entry per list, in
+     page order, main recipe FIRST, each with its own name / servings /
+     ingredients / steps copied verbatim. Repeating lines from the main
+     `ingredients` list is intended. Report only; never judge or drop a block.
 5. If the page has no real recipe, try the second-best URL from step 1.
    If none work, return null.
 
@@ -181,6 +249,8 @@ _SEARCH_INSTRUCTIONS = """
 - NEVER invent ingredients or steps — extract only what is on the page.
 - NEVER scale or adjust quantities/servings — faithful extraction only.
 - Always set source_url to the exact URL fetched.
+- `ingredients`/`steps` always carry the WHOLE page, even when `components` is
+  filled — components is extra reporting on top, never a replacement.
 """
 
 
@@ -248,6 +318,31 @@ def web_search_prompt(ingredients: ParsedIngredients, intent: UserIntent, site_f
     if intent.free_notes:
         parts.append(f"Notes: {intent.free_notes}")
     return "\n".join(parts)
+
+
+def web_fetch_prompt_split_retry(url: str, servings: list[int]) -> str:
+    """Re-extract a page we KNOW has several serving-count headings.
+
+    Used only when a deterministic scan of the fetched text found headings the
+    model's `components` didn't report (see `models/recipe_blocks.py`). Measured
+    live: gpt-4o-mini leaves `components=[]` on the curry+naan page a fair share
+    of the time even with the counting instruction, and an empty list looks
+    exactly like a genuine single-recipe page — so the caller tells the model what
+    the page demonstrably contains rather than asking the same question twice.
+
+    The counts are stated as FACTS about the page, not as content to invent: the
+    model still copies every ingredient verbatim from the markdown (Rule 5).
+    """
+    counts = ", ".join(str(s) for s in servings)
+    return (
+        f"Fetch and extract the recipe from this URL, exactly as written: {url}\n\n"
+        f"IMPORTANT — this page contains SEVERAL ingredient lists. A scan of the "
+        f"page text found these serving-count headings, in order: {counts}. "
+        f"You MUST return one `components` entry per heading, in page order, the "
+        f"main recipe first, each with that heading's own serving count and its "
+        f"own ingredients/steps copied verbatim from the page. Do not return an "
+        f"empty `components` list, and do not merge the lists together."
+    )
 
 
 def web_fetch_prompt(url: str) -> str:

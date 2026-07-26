@@ -116,6 +116,7 @@ Key invariants (full detail, catalogue, state model, and the 8 hard rules live i
 - **ChatAgent orchestrates; sub-agents stay dumb.** New capability = a new ChatAgent tool.
 - **Onboarding is guided, never a form** — never block tool calls until 5 fields are set.
 - **Extraction is verbatim; scaling is separate** (RecipeScaleAgent runs *after* extraction).
+- **A page with two recipes asks the user** — the extractor only *reports* blocks; a pure heuristic classifies them and the ChatAgent asks before showing a card.
 - **Source URL is sacred** — provenance survives serving adaptation.
 - **AI generation is gated** by `allow_ai_generated`; respect the `not_found` fallback.
 - **Tools contain their failures** — return a structured failure, never crash the turn.

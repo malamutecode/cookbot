@@ -24,8 +24,8 @@ This replaced the original rigid 5-step pipeline (see [TASK.md](../../../../TASK
         ▼              ▼              ▼               ▼                  ▼
   propose_recipes  get_recipe_    add_to_calendar  get_shopping_list  update_onboarding
         │           details        remove_from_…     │                  (state only)
-        │           get_recipe_                      │
-        │           from_url                         │
+        │           get_recipe_   choose_recipe_     │
+        │           from_url        split            │
         ▼              ▼                             ▼
   fast path OR    WebSearch / WebFetch          ShoppingList
   RecipeOptions    / RecipeGen Agent               Agent
@@ -108,6 +108,12 @@ It sat in `agents/` until STEP 51, when `models/pantry_math.py` also needed it
 so a model importing from `agents/` is a circular import. **The layering is
 one-way: `agents/` → `models/`.** Anything pure and shared belongs in `models/`.
 
+`models/recipe_blocks.py` (STEP 45) follows the same layering rule for the same
+reason: deciding whether a second ingredient block is a sauce or a second dinner
+is mechanical, so it is pure Python the ChatAgent *calls*, never prompt
+instructions — a model asked to judge it will occasionally split a sauce off into
+its own "recipe". See "Multi-recipe pages" below.
+
 `models/pantry_math.py` (STEP 51) is the same idea one step further: pantry
 subtraction runs as **deterministic Python after `get_shopping_list`'s agent call
 returns**, never as prompt instructions. Three consequences worth preserving:
@@ -144,6 +150,70 @@ build the fetch agent as `build_web_fetch_agent(config, pinned_url=<url>)` and d
    saw only boilerplate. `recipe_web_fetch_tool` (web_search.py) cleans the HTML
    first, cutting it to ~82k with the ingredients at ~5.1k. Use that tool, never
    PydanticAI's `web_fetch_tool` directly, and prefer cleaning over raising the cap.
+
+## Multi-recipe pages (STEP 45) — when one URL holds two dishes
+
+Some pages host **two independent recipes** under one URL. The motivating case is
+a chilitonka post with a curry ("Składniki dla 4 osób") and a naan bread
+("Składniki na 8 porcji"): verbatim extraction correctly captures both and returns
+one `Recipe` with 21 ingredients and `servings=4`, so a 4-person curry silently
+buys 8 portions of bread and `servings` describes only half the card.
+
+**This is not an extraction bug.** The page really does contain both, so the fix
+is not to teach the extractor to drop one — it is to ask the user. The work splits
+across three layers, and the split is the point:
+
+| Layer | Job | Where |
+|---|---|---|
+| Extractor | **Reports** the blocks it saw, verbatim (Rule 5) | `Recipe.components`, filled by the fetch/search prompts |
+| Pure heuristic | Decides *component vs standalone* — no LLM | `models/recipe_blocks.py` |
+| ChatAgent | Decides whether to **ask**, and applies the answer | `detect_split` + the `choose_recipe_split` tool |
+
+- **`components` is empty on a normal page**, so the common path costs nothing:
+  `detect_split` is a list-length check, not a model call. Both fetch paths
+  (`get_recipe_from_url` and `get_recipe_details`) run it — the question belongs to
+  the *page*, not to how the user reached it.
+- **The model's `components` is verified against the page, not trusted.** Live runs
+  had gpt-4o-mini return `components=[]` for the curry+naan page on a good fraction
+  of turns, and an empty list is indistinguishable from a genuine single-recipe
+  page — so the feature silently degraded to the old merged behaviour with nothing
+  to notice it. `detect_split_verified` re-fetches the page text (no LLM) and, when
+  a regex finds serving headings the model didn't report, re-extracts **once** with
+  those counts stated. The extra model call only happens on pages that
+  demonstrably have multiple headings. Fails safe in every direction: no
+  `source_url`, a failed fetch, one heading, or a retry that still reports nothing
+  all fall back to today's behaviour.
+- **Standalone = its own serving count, different from the main recipe's, and a
+  heading that doesn't name a part of the dish** (sos/krem/marynata/polewa/farsz/…).
+  "na 8 porcji" is the signal that actually distinguished the two blocks here —
+  prefer it over an ingredient-count threshold. Every ambiguous case (no count, no
+  anchor, empty block) folds in, which is exactly today's behaviour and therefore
+  never wrong in a *new* way.
+- **Ask before committing to a card.** The tools return `split_question=True` and
+  emit **no** `FinalRecipeEvent` — showing the merged card and then asking would
+  display the very result the step prevents.
+- **The pending question is in `ChatState`** (`deps.pending_split`), not a module
+  global: question and answer are two WS turns and a reconnect between them lands
+  on a fresh container (Architecture Rule 3). It carries the whole extraction so
+  answering never re-fetches the page.
+- **Scaling is deferred to the answer**, and only the MAIN dish is scaled to the
+  user's target. The user asked for "curry for 4", never for "naan for 4" —
+  rescaling a side dish nobody asked about is the same silent edit being fixed.
+- **Splitting keeps components with their dish**: a curry+naan+sauce page yields
+  two recipes (curry incl. sauce, and naan), never three. Both keep `source_url`
+  (Rule 5).
+- **A pending split gets its own dynamic prompt branch, ahead of the `ob.complete`
+  check.** Without it the answer turn looks like any other turn and the model
+  reaches for its most familiar tool — observed live answering "rozdziel" with two
+  `propose_recipes` calls that web-searched for brand-new curry and naan recipes,
+  discarding the page already in `deps.pending_split`. The branch must come first
+  because a pasted link leaves onboarding almost empty, so nesting it under
+  `ob.complete` would skip it on exactly the common path.
+- **`get_recipe_from_url` persists `servings` BEFORE the split early-return.**
+  `deps.onboarding.servings` is the anchor `choose_recipe_split` scales from on a
+  *later* turn, so a `return` that skips the write silently drops the count — live,
+  "dodaj dla 8 osób" landed a calendar entry stamped 4. Any new early return in
+  that tool has to keep the write above it (STEP 46's rule, one layer deeper).
 
 ## Servings (STEP 46 + 49) — where the target count comes from
 
