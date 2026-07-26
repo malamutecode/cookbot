@@ -71,8 +71,7 @@ def _to_product(raw: dict[str, Any]) -> Product | None:
     price_obj = raw.get("price")
     price = price_obj.get("price") if isinstance(price_obj, dict) else None
 
-    primary_category = raw.get("primaryCategory")
-    category = _lang(primary_category.get("name")) if isinstance(primary_category, dict) else ""
+    category = _category_chain(raw)
 
     return Product(
         id=str(product_id),
@@ -89,14 +88,18 @@ def _to_product(raw: dict[str, Any]) -> Product | None:
     )
 
 
-def _search_category(raw: dict[str, Any]) -> str:
-    """Build the category text for a search hit.
+def _category_chain(raw: dict[str, Any]) -> str:
+    """Build the category text for a product, from the feed or from a search hit.
 
     ``primaryCategory`` is the *deepest leaf* ("Malinowe" for raspberry tomatoes,
-    "Jodowana" for iodised salt), which on its own loses the word a human would
+    "Do sushi" for sushi rice), which on its own loses the word a human would
     search for. The ``categories`` array carries the whole ancestry
-    (``Warzywa i owoce > Pomidory > Duże > Malinowe``), so join that instead —
-    it keeps the semantic anchor without discarding the specific leaf.
+    (``Spiżarnia > Sypkie i produkty zbożowe > Ryż > Do sushi``), so join that
+    instead — it keeps the semantic anchor without discarding the specific leaf.
+
+    Both payloads carry the same ``categories`` shape, so both paths use this;
+    using it only for search once left the feed path unable to tell "sushi rice
+    filed under Ryż" from a genuine mismatch.
 
     Falls back to the leaf alone when the chain is missing.
     """
@@ -126,7 +129,7 @@ def _search_hit_to_product(raw: dict[str, Any]) -> Product | None:
     price_obj = raw.get("price")
     price = price_obj.get("price") if isinstance(price_obj, dict) else None
 
-    category = _search_category(raw)
+    category = _category_chain(raw)
 
     return Product(
         id=str(product_id),

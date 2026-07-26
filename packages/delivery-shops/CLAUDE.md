@@ -79,8 +79,11 @@ Probed live 2026-07-25 against `commerce.frisco.pl`; spec at
   reconstructed as `https://www.frisco.pl/pid,{id}/stn,product` — the slugless form
   is confirmed 200. Don't try to rebuild the SEO slug.
 - `primaryCategory` is the **deepest leaf** (`Malinowe` for "Pomidory malinowe"),
-  which drops the searched word; `_search_category()` joins the whole `categories`
-  chain instead. This broke a live quality test once — keep the chain.
+  which drops the searched word; `_category_chain()` joins the whole `categories`
+  chain instead. This broke a live quality test twice — keep the chain. **Both the
+  feed and the search payload carry `categories`**, so both paths use that one
+  helper; applying it to search only left the feed matching "ryż" against leaf
+  `Do sushi` with no `ryż` anchor at all.
 - No throttling observed at concurrency 4/8/28, and no `Retry-After`. Absence of a
   limit today is not a guarantee — the semaphore stays.
 - **Add-to-basket is deliberately unimplemented.** `PUT /api/v1/visitor/cart` is a

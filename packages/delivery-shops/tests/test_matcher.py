@@ -102,3 +102,47 @@ def test_parse_feed_filters_unavailable_and_maps_fields() -> None:
     assert p.brand == "KANOKWAN"
     assert p.price == 5.89
     assert p.url == "https://www.frisco.pl/pid,41429/"
+
+
+def test_parse_feed_keeps_the_whole_category_chain() -> None:
+    """Real regression: 'Ryż do sushi' has primaryCategory 'Do sushi', which drops
+    the word "ryż" a user actually searches for. The feed carries the same
+    ``categories`` ancestry the search payload does — keep the chain, so a query
+    for "ryż" still has a category anchor to land on.
+    """
+    payload = {
+        "products": [
+            {
+                "id": "19449",
+                "name": {"pl": "Ryż do sushi"},
+                "isAvailable": True,
+                "productUrl": "https://www.frisco.pl/pid,19449/",
+                "primaryCategory": {"name": {"pl": "Do sushi"}},
+                "categories": [
+                    {"name": {"pl": "Spiżarnia"}},
+                    {"name": {"pl": "Sypkie i produkty zbożowe"}},
+                    {"name": {"pl": "Ryż"}},
+                    {"name": {"pl": "Do sushi"}},
+                ],
+            }
+        ],
+    }
+    products, _ = parse_feed(payload)
+    assert products[0].category == "Spiżarnia Sypkie i produkty zbożowe Ryż Do sushi"
+
+
+def test_parse_feed_falls_back_to_leaf_category() -> None:
+    """Older/partial entries without the chain still get the leaf."""
+    payload = {
+        "products": [
+            {
+                "id": "1",
+                "name": {"pl": "Masło"},
+                "isAvailable": True,
+                "productUrl": "https://www.frisco.pl/pid,1/",
+                "primaryCategory": {"name": {"pl": "Tradycyjne"}},
+            }
+        ],
+    }
+    products, _ = parse_feed(payload)
+    assert products[0].category == "Tradycyjne"
