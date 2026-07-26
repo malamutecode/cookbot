@@ -140,3 +140,59 @@ def test_extract_instructions_flag_commonly_missed_ingredients() -> None:
     # staples explicitly so the model double-checks them.
     lowered = _EXTRACT_INSTRUCTIONS.lower()
     assert "onion" in lowered or "cebula" in lowered
+
+
+# --- Yield-weight servings ("Liczba porcji: 2000g") ------------------------------
+# A large Polish recipe site reuses the portions label for the batch weight. The
+# extractor faithfully copies "the count stated on the page" → servings=2000, a
+# plausible int that then became the scaler's divisor (2/2000 = 0.001).
+
+
+def test_extract_instructions_reject_servings_with_a_unit() -> None:
+    lowered = _EXTRACT_INSTRUCTIONS.lower()
+    # The prompt must name the failing shape, not just say "a count".
+    assert "2000g" in lowered
+    assert "yield" in lowered
+
+
+def test_yield_weight_servings_is_sanitized_to_unknown() -> None:
+    """The output validator maps an implausible count to 0 = "page stated none"."""
+    result = _run(custom_output={**_RECIPE_DICT, "servings": 2000})
+    assert result is not None
+    assert result.servings == 0
+    # Only servings is corrected — extraction stays otherwise verbatim.
+    assert result.ingredients == ["200g chicken", "2 cloves garlic"]
+    assert result.name == "Garlic Chicken"
+
+
+def test_plausible_servings_passes_through_untouched() -> None:
+    result = _run(custom_output={**_RECIPE_DICT, "servings": 6})
+    assert result is not None
+    assert result.servings == 6
+
+
+def test_boundary_servings_is_kept() -> None:
+    result = _run(custom_output={**_RECIPE_DICT, "servings": 100})
+    assert result is not None
+    assert result.servings == 100
+
+
+def test_negative_servings_is_sanitized() -> None:
+    result = _run(custom_output={**_RECIPE_DICT, "servings": -3})
+    assert result is not None
+    assert result.servings == 0
+
+
+def test_component_block_servings_is_sanitized_too() -> None:
+    """A block's count feeds the split heuristic's "differs from main" test."""
+    result = _run(custom_output={
+        **_RECIPE_DICT,
+        "servings": 4,
+        "components": [
+            {"name": "Curry", "servings": 4, "ingredients": ["kurczak"], "steps": []},
+            {"name": "Ciasto", "servings": 2000, "ingredients": ["mąka"], "steps": []},
+        ],
+    })
+    assert result is not None
+    assert result.servings == 4
+    assert [b.servings for b in result.components] == [4, 0]

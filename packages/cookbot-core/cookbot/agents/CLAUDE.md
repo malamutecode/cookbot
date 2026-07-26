@@ -276,6 +276,47 @@ entries still parse; the three display states are defined once by
 `servings_are_known` / `servings_were_scaled` in `models/calendar.py` and rendered
 by `frontend/src/lib/servings.ts`.
 
+### Not every "porcje" on a page is a portion count
+
+A big Polish recipe site states **"Liczba porcji: 2000g"** — a *yield weight*
+reusing the portions label. The extractor did exactly as instructed ("copy the
+count stated on the page") and returned `servings=2000`; every guard in
+`scale_recipe_to_servings` was a **lower** bound, so asked for 2 portions the user
+got every quantity multiplied by 2/2000 = 0.001, on a card that otherwise looked
+perfect (right name, right source_url, right line count).
+
+Three layers now defend this, and the redundancy is the point — the prompt layer
+is probabilistic and must never be the only one:
+
+| Layer | Where | Job |
+|---|---|---|
+| Prompt | `_EXTRACT_INSTRUCTIONS` / `_SEARCH_INSTRUCTIONS` | A number with a UNIT (`2000g`, `1,5 kg`, `1 blacha`) is a yield → report `0` |
+| Sanitizer | `sanitize_servings` + the `output_validator` on **both** extraction agents | Maps anything `<0` or `> MAX_PLAUSIBLE_SERVINGS` (100) to `0` |
+| Scale guard | `_implausible_anchor` in `recipe_scale.py` | Refuses to divide by an absurd anchor or ratio; returns the verbatim recipe |
+
+- **The sanitizer maps to `0`, it does not raise.** `0` already means "the page
+  stated no count" throughout the codebase (scaling no-ops, `classify_blocks`
+  folds the block in, `servings_are_known` renders "nieokreślone"), so the bad
+  value collapses into a state every consumer already handles. A
+  `Field(le=100)` on `Recipe` was deliberately rejected: pydantic would raise
+  while parsing the extractor's output, turning an odd label into a crashed turn
+  — the opposite of Rule 7.
+- **It hangs off `agent.output_validator`, not the five `.output` call sites** in
+  `chat.py`. A check repeated five times is one that gets forgotten at a sixth.
+- **`components[].servings` is sanitized too**, because a block's count feeds
+  `classify_blocks`' "differs from the main" test — a `2000` there would invent a
+  split question on a single-recipe page.
+- **The scale guard fails toward NOT scaling.** Showing the source's own
+  quantities is always defensible; silently multiplying every amount by 0.001 is
+  not. Same reasoning as the existing line-count rejection right below it.
+- **The bounds are loose on purpose** (100 servings, ratio 0.02–50): real catering
+  batches reach the dozens, and rejecting a genuine 120-portion recipe costs one
+  unscaled card, while accepting a `2000` corrupts every ingredient.
+- **Both rejections log** (`extracted_servings_implausible`,
+  `recipe_scale_skipped_implausible`). Before this, the bug was invisible —
+  `get_recipe_details_scaled` logged `original_servings=2000` as a *successful*
+  scale, so there was no signal to count how often it fired.
+
 > **Every new `CalendarEntry` field must be optional.** The calendar now lives in
 > Firestore (STEP 52, `users/{uid}/calendar/entries`) rather than `localStorage`,
 > but the contract is unchanged: there is no migration step, so a required field

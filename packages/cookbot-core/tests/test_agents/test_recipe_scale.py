@@ -157,6 +157,69 @@ def test_line_count_mismatch_is_rejected() -> None:
     assert out.original_servings == 2
 
 
+# --- Implausible anchors: a yield weight wearing the "porcje" label -------------
+
+
+def test_no_scale_when_page_servings_is_a_yield_weight() -> None:
+    """The reported bug: a page states "Liczba porcji: 2000g" → servings=2000.
+
+    2000 is a plausible-looking int, so every lower-bound guard passes and the
+    scaler multiplied every quantity by 2/2000 = 0.001 — a card that looked
+    entirely legitimate (right name, right source, right line count) with
+    nonsense amounts. Keep the source's own quantities instead.
+    """
+    r = _recipe(2000, ["500 g mąki", "250 ml mleka", "2 jajka"])
+    out = _scale(r, target=2, scaled_output=["0.5 g mąki", "0.25 ml mleka", "0 jajka"])
+
+    assert out.ingredients == ["500 g mąki", "250 ml mleka", "2 jajka"]
+    assert out.servings == 2000  # untouched; the extraction stays faithful
+    assert out.original_servings == 2000
+
+
+def test_no_scale_when_target_is_absurd() -> None:
+    """The mirror case — a sane page count with a garbage target."""
+    r = _recipe(4, ["4 piersi z kurczaka", "1 cebula"])
+    out = _scale(r, target=5000, scaled_output=["WRONG", "WRONG"])
+    assert out.ingredients == ["4 piersi z kurczaka", "1 cebula"]
+    assert out.servings == 4
+
+
+def test_no_scale_when_ratio_is_extreme() -> None:
+    """Both counts under the cap, but 1 → 90 is not a serving adjustment."""
+    r = _recipe(1, ["100 g mąki"])
+    out = _scale(r, target=90, scaled_output=["9000 g mąki"])
+    assert out.ingredients == ["100 g mąki"]
+    assert out.servings == 1
+
+
+def test_large_but_plausible_batch_still_scales() -> None:
+    """The guard must not block real catering-size recipes.
+
+    60 → 30 is a legitimate halving; only the absurd band is rejected.
+    """
+    r = _recipe(60, ["6 kg mąki", "30 jajek"])
+    scaled = ["3 kg mąki", "15 jajek"]
+    out = _scale(r, target=30, scaled_output=scaled)
+    assert out.ingredients == scaled
+    assert out.servings == 30
+    assert out.original_servings == 60
+
+
+def test_boundary_servings_still_scales() -> None:
+    """Exactly MAX_PLAUSIBLE_SERVINGS is allowed — the cap is inclusive."""
+    r = _recipe(100, ["10 kg mąki"])
+    out = _scale(r, target=50, scaled_output=["5 kg mąki"])
+    assert out.servings == 50
+    assert out.original_servings == 100
+
+
+def test_implausible_original_servings_anchor_is_rejected() -> None:
+    """The bad count can also arrive via `original_servings`, the preferred anchor."""
+    r = _recipe(2, ["500 g mąki"], original=2000)
+    out = _scale(r, target=4, scaled_output=["WRONG"])
+    assert out.ingredients == ["500 g mąki"]
+
+
 # --- Prompt shape ---------------------------------------------------------------
 
 

@@ -2,7 +2,36 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from cookbot.models.recipe_blocks import RecipeBlock
+from cookbot.models.recipe_blocks import MAX_PLAUSIBLE_SERVINGS, RecipeBlock
+
+__all__ = [
+    "MAX_PLAUSIBLE_SERVINGS",
+    "ParsedIngredients",
+    "Recipe",
+    "RecipeSearchResult",
+    "RecipeSource",
+    "RecipeSummary",
+    "UserIntent",
+    "sanitize_servings",
+]
+
+
+def sanitize_servings(servings: int) -> int:
+    """Normalise an extracted serving count, mapping implausible values to 0.
+
+    Applied at the EXTRACTION boundary rather than as a `Field(le=...)` on
+    `Recipe`, deliberately. A validator would make pydantic *raise* while parsing
+    the model's output, turning a page with a odd portions label into a crashed
+    turn — the opposite of Rule 7 ("tools contain their failures"). Mapping to 0
+    instead reuses the meaning the schema already has: "the page stated no count",
+    which every downstream consumer (scaling, the split heuristic, the calendar,
+    `servings_are_known`) already handles as unknown.
+
+    Negative counts fold in too: they are nonsense, and 0 is what they mean.
+    """
+    if servings < 0 or servings > MAX_PLAUSIBLE_SERVINGS:
+        return 0
+    return servings
 
 
 class UserIntent(BaseModel):

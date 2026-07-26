@@ -1,7 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
 from cookbot.hitl.models import HITLCheckpoint, HITLOutcome, HITLResponse
-from cookbot.models.recipe import ParsedIngredients, Recipe, RecipeSearchResult, RecipeSource
+from cookbot.models.recipe import (
+    MAX_PLAUSIBLE_SERVINGS,
+    ParsedIngredients,
+    Recipe,
+    RecipeSearchResult,
+    RecipeSource,
+    sanitize_servings,
+)
 from cookbot.models.session import Message, Session, SessionStatus
 from cookbot.models.tenant import TenantConfig
 from cookbot.protocols.ws_messages import (
@@ -86,6 +93,34 @@ def test_recipe_serialisation() -> None:
     assert data["name"] == "Garlic Chicken"
     restored = Recipe.model_validate(data)
     assert restored == recipe
+
+
+# ── sanitize_servings ─────────────────────────────────────────────────────────
+
+def test_sanitize_servings_keeps_normal_counts() -> None:
+    for n in (0, 1, 2, 4, 8, 12, 100):
+        assert sanitize_servings(n) == n
+
+
+def test_sanitize_servings_zeroes_a_yield_weight() -> None:
+    # "Liczba porcji: 2000g" — a batch weight wearing the portions label.
+    assert sanitize_servings(2000) == 0
+    assert sanitize_servings(MAX_PLAUSIBLE_SERVINGS + 1) == 0
+
+
+def test_sanitize_servings_zeroes_negatives() -> None:
+    assert sanitize_servings(-1) == 0
+
+
+def test_recipe_still_accepts_any_int_without_raising() -> None:
+    """The bound is a sanitizer, NOT a pydantic validator — deliberately.
+
+    A `Field(le=...)` would raise while parsing the extractor's output, turning an
+    odd portions label into a crashed turn (agents/CLAUDE.md Rule 7). The model
+    must stay permissive; correction happens at the extraction boundary.
+    """
+    recipe = _sample_recipe().model_copy(update={"servings": 2000})
+    assert recipe.servings == 2000
 
 
 # ── RecipeSearchResult ────────────────────────────────────────────────────────

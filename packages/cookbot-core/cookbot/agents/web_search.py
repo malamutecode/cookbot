@@ -1,6 +1,7 @@
 import re
 
 import httpx
+import structlog
 from markdownify import markdownify as md
 from pydantic_ai import Agent
 from pydantic_ai._ssrf import safe_download
@@ -10,8 +11,15 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import BinaryContent
 from pydantic_ai.tools import Tool
 
-from cookbot.models.recipe import ParsedIngredients, Recipe, UserIntent
+from cookbot.models.recipe import (
+    ParsedIngredients,
+    Recipe,
+    UserIntent,
+    sanitize_servings,
+)
 from cookbot.models.tenant import TenantConfig
+
+log = structlog.get_logger()
 
 _WEB_SEARCH_MAX_RESULTS = 5
 _FETCH_TIMEOUT_SECONDS = 30
@@ -166,8 +174,17 @@ _EXTRACT_INSTRUCTIONS = """
      steps — one step is almost always wrong; re-scan for the full method.
    - prep_time_minutes, cook_time_minutes (integers)
    - difficulty: exactly "Easy", "Medium", or "Hard"
-   - servings: the serving count STATED ON THE PAGE (e.g. "porcje: 2" → 2). Do not
-     guess or change it. If the page gives none, use 0.
+   - servings: the NUMBER OF PORTIONS stated on the page (e.g. "porcje: 2" → 2).
+     Do not guess or change it. If the page gives none, use 0.
+     A number with a UNIT is a YIELD, not a portion count — recipe sites reuse the
+     "Liczba porcji" label for the batch weight or volume. Use 0 for these:
+       * "Liczba porcji: 2000g", "Porcje: 1,5 kg", "Liczba porcji: 500 ml" → 0
+       * "Porcje: 1 blacha", "Liczba porcji: 1 forma", "na 1 tortownicę" → 0
+     A bare number, or one followed by a portion word, IS a count:
+       * "Liczba porcji: 4", "Porcje: 6 osób", "4 porcje" → 4, 6, 4
+     For a range ("4-6 porcji") take the FIRST number (→ 4). Never report a
+     serving count above 100 — if the page's number is larger, it is a yield or a
+     typo, so use 0.
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
@@ -185,7 +202,8 @@ _EXTRACT_INSTRUCTIONS = """
        * name: the block's heading, or the dish it belongs to, as written on the
          page ("Chlebek naan", "Sos czosnkowy", "Ciasto")
        * servings: the count stated FOR THAT BLOCK — "Składniki na 8 porcji" → 8,
-         "Składniki dla 4 osób" → 4; use 0 only when that block states none
+         "Składniki dla 4 osób" → 4; use 0 when that block states none, and also
+         when its number carries a unit ("na 500 g ciasta" is a yield, not a count)
        * ingredients / steps: that block's own items, verbatim
      Yes, this repeats lines already in the main `ingredients` list. That is
      intended — copy them again rather than leaving a block out.
@@ -232,7 +250,12 @@ _SEARCH_INSTRUCTIONS = """
    - steps: numbered, actionable, as written on the page
    - prep_time_minutes, cook_time_minutes (integers)
    - difficulty: exactly "Easy", "Medium", or "Hard"
-   - servings: the serving count stated on the page (0 if none given); do not change it
+   - servings: the NUMBER OF PORTIONS stated on the page (0 if none given); do not
+     change it. A number with a UNIT is a YIELD, not a count — "Liczba porcji:
+     2000g", "Porcje: 1,5 kg", "Porcje: 1 blacha" all mean the page states no
+     portion count, so use 0. A bare number or one with a portion word ("Porcje: 4",
+     "6 osób") is a real count. For a range ("4-6") take the first number. Never
+     report a count above 100 — that is a yield or a typo, so use 0.
    - tips: practical tips from the page (empty list if none)
    - source_url: the URL you fetched (copy exactly)
    - image_url: og:image URL if visible in the markdown; otherwise null
@@ -254,9 +277,46 @@ _SEARCH_INSTRUCTIONS = """
 """
 
 
+def _sanitize_extracted_servings(recipe: Recipe | None) -> Recipe | None:
+    """Map implausible extracted serving counts to 0 ("page stated none").
+
+    Attached as an output validator to BOTH extraction agents, which is the one
+    place every extracted `Recipe` passes through — `chat.py` reads `.output` at
+    five separate call sites, and a check repeated five times is a check that
+    eventually gets forgotten at a sixth.
+
+    The case this exists for: a page whose portions field carries a yield weight
+    ("Liczba porcji: 2000g"). The extractor is doing exactly as instructed —
+    copying the count stated on the page — so the correction belongs here, after
+    faithful extraction, not as an exception carved into the verbatim rule (Rule 5).
+
+    A validator that RETURNS a corrected value rather than raising `ModelRetry` on
+    purpose: the extraction is good, only this one field is not a portion count,
+    and re-running the model would spend tokens re-reading the same label.
+    """
+    if recipe is None:
+        return None
+    clean = sanitize_servings(recipe.servings)
+    blocks = [
+        b.model_copy(update={"servings": sanitize_servings(b.servings)})
+        if sanitize_servings(b.servings) != b.servings
+        else b
+        for b in recipe.components
+    ]
+    if clean == recipe.servings and blocks == recipe.components:
+        return recipe
+    log.warning(
+        "extracted_servings_implausible",
+        source_url=recipe.source_url,
+        recipe_name=recipe.name,
+        reported_servings=recipe.servings,
+    )
+    return recipe.model_copy(update={"servings": clean, "components": blocks})
+
+
 def build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]:
     """Agent that searches DDG then fetches and extracts a recipe from the best result."""
-    return Agent(
+    agent = Agent(
         config.model_web_search,
         output_type=Recipe | None,
         defer_model_check=True,
@@ -271,6 +331,8 @@ def build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]:
             + _SEARCH_INSTRUCTIONS
         ),
     )
+    agent.output_validator(_sanitize_extracted_servings)
+    return agent
 
 
 def build_web_fetch_agent(
@@ -283,7 +345,7 @@ def build_web_fetch_agent(
     argument, which is a real corruption source on long slugs. Agents built with
     a pinned URL are per-URL and must NOT be cached across different URLs.
     """
-    return Agent(
+    agent = Agent(
         config.model_web_search,
         output_type=Recipe | None,
         defer_model_check=True,
@@ -295,6 +357,8 @@ def build_web_fetch_agent(
             + _EXTRACT_INSTRUCTIONS
         ),
     )
+    agent.output_validator(_sanitize_extracted_servings)
+    return agent
 
 
 def web_search_prompt(ingredients: ParsedIngredients, intent: UserIntent, site_filter: str = "") -> str:

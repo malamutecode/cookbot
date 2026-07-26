@@ -53,6 +53,21 @@ _COMPONENT_WORDS: frozenset[str] = frozenset({
 })
 
 
+# The largest number that can still be a PORTION COUNT rather than something else
+# wearing the portions label. Recipe pages reuse the field for a yield weight
+# ("Liczba porcji: 2000g"), a pack size, or a tray count, and the extractor —
+# correctly following "copy the count stated on the page" — passes the number
+# straight through. 2000 is a perfectly valid `int`, so nothing downstream noticed
+# until `scale_recipe_to_servings` divided by it.
+#
+# 100 is generous on purpose: catering batches and party bakes genuinely reach the
+# dozens, and the cost of being wrong differs sharply by direction. Rejecting a
+# real 120-serving recipe means showing the source's own quantities (fine);
+# accepting a 2000 means every amount is multiplied by 0.001 (a card that looks
+# legitimate and is entirely wrong).
+MAX_PLAUSIBLE_SERVINGS = 100
+
+
 class RecipeBlock(BaseModel):
     """One ingredient/step block as the extractor SAW it on the page.
 
