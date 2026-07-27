@@ -664,6 +664,86 @@ def _cached_agent(
     return cache[key]
 
 
+async def extract_with_retry(
+    fetch_agent: Any,
+    prompt: str,
+    url: str,
+    *,
+    usage: RunUsage | None = None,
+    page_cache: dict[str, str] | None = None,
+    log_event: str,
+) -> Recipe | None:
+    """Run a pinned fetch/extract agent, retrying ONCE only when a retry could help.
+
+    Extraction is the single most expensive operation in the product — one run on
+    a *light* 11.5k-char page measured ~27s / ~9.8k tokens
+    (`tests/integration/test_turn_latency_live.py`), and a heavy page is several
+    times worse. Both call sites (`resolve_recipe` and `get_recipe_from_url`) used
+    to retry a `None` unconditionally, which doubled that worst case. The loop
+    re-runs the IDENTICAL prompt against the IDENTICAL page, so it only ever pays
+    when the failure was model flakiness.
+
+    The condition is structural, not a guess: `page_cache` is written by
+    `recipe_web_fetch_tool` with the markdown of every page it actually downloads,
+    and only when that markdown is non-empty. So after attempt 1, a URL missing
+    from the cache means the fetch itself produced no text — a 404, an SSRF
+    refusal, a timeout, a binary response. A second identical attempt re-runs the
+    same failing download and cannot succeed, so we stop and let the caller's
+    `not_found` / `source="error"` fallback speak (Rule 7). When content DID
+    arrive the model saw a real page and returned nothing anyway; that is the
+    flakiness the retry exists for, so it still fires.
+
+    Deliberately NOT cut here: a well-formed `None` on a page whose text we did
+    fetch. That may be a correct "this page has no recipe", but it is also the
+    exact shape of the flake the retry was added for, and the two are
+    indistinguishable without traffic data — hence `extraction_retry_outcome`
+    below, which makes attempt-2 recovery countable before anything more is cut.
+
+    `log_event` names the caller so the two paths stay distinguishable in logs
+    while sharing one implementation — they must not diverge (STEP 54).
+    """
+    recipe: Recipe | None = None
+    for attempt in (1, 2):
+        log.info(log_event, url=url, attempt=attempt)
+        recipe = (await fetch_agent.run(prompt, usage=usage)).output
+        if recipe is not None:
+            if attempt > 1:
+                log.info("extraction_retry_outcome", url=url, attempt=attempt,
+                         recovered=True, content_length=_cached_page_length(page_cache, url),
+                         source=log_event)
+            return recipe
+
+        content_length = _cached_page_length(page_cache, url)
+        # `page_cache` is optional on this seam (tests and the odd caller pass
+        # nothing). With no cache there is no signal, so keep the old behaviour
+        # rather than silently suppressing a retry that might have worked.
+        retryable = page_cache is None or content_length > 0
+        log.info("extraction_retry_outcome", url=url, attempt=attempt,
+                 recovered=False, content_length=content_length,
+                 retryable=retryable, source=log_event)
+        if not retryable:
+            # Nothing was downloaded — attempt 2 would repeat the same failed
+            # fetch for another full extraction's cost and learn nothing.
+            log.info("extraction_retry_skipped_no_content", url=url, source=log_event)
+            return None
+    return recipe
+
+
+def _cached_page_length(cache: dict[str, str] | None, url: str) -> int:
+    """Length of the markdown this turn actually downloaded for `url`, else 0.
+
+    Falls back to the longest cached entry when the key misses: the fetch tool
+    keys on the URL it *resolved* (redirects included) as well as the pinned one,
+    and a pinned agent downloads exactly one page per turn, so a near-miss key
+    still describes the page in hand rather than an unrelated one.
+    """
+    if not cache:
+        return 0
+    if url in cache:
+        return len(cache[url])
+    return max((len(v) for v in cache.values()), default=0)
+
+
 async def resolve_recipe(
     selected: RecipeSummary | None,
     choice: str,
@@ -705,7 +785,8 @@ async def resolve_recipe(
 
         if selected.source_url:
             # The user picked a SPECIFIC page → that URL is the source of truth.
-            # Extraction is occasionally flaky, so retry once before giving up.
+            # Extraction is occasionally flaky, so retry once — but only when the
+            # fetch actually returned content (see `extract_with_retry`).
             # Do NOT fall back to a name-search here: returning a recipe from a
             # different site would mis-attribute it (wrong recipe under a wrong
             # "source" link). If both attempts fail, fall through to AI generation.
@@ -715,17 +796,14 @@ async def resolve_recipe(
                 config, pinned_url=selected.source_url, page_cache=page_cache
             )
             _progress(config.ui.progress_reading_page.format(dish=selected.name))
-            for attempt in (1, 2):
-                log.info("get_recipe_details_fetch_known_url",
-                         url=selected.source_url, attempt=attempt)
-                recipe = (await fetch_agent.run(
-                    web_fetch_prompt(selected.source_url),
-                    usage=usage,
-                )).output
-                if recipe is not None:
-                    break
-                log.info("get_recipe_details_fetch_attempt_empty",
-                         url=selected.source_url, attempt=attempt)
+            recipe = await extract_with_retry(
+                fetch_agent,
+                web_fetch_prompt(selected.source_url),
+                selected.source_url,
+                usage=usage,
+                page_cache=page_cache,
+                log_event="get_recipe_details_fetch_known_url",
+            )
         else:
             # The proposal had no URL → search the web by name (this is the only
             # way to reach a real page for this pick).
@@ -1740,12 +1818,17 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         recipe: Recipe | None = None
         ctx.deps.emit_progress(cfg.ui.progress_reading_page.format(dish=url))
         try:
-            # Extraction is occasionally flaky — retry once before giving up.
-            for attempt in (1, 2):
-                log.info("get_recipe_from_url_fetch", url=url, attempt=attempt)
-                recipe = (await fetch_agent.run(web_fetch_prompt(url), usage=ctx.usage)).output
-                if recipe is not None:
-                    break
+            # Extraction is occasionally flaky — retry once, but only when the
+            # fetch actually returned content (see `extract_with_retry`). Same
+            # helper as `resolve_recipe`: the two paths must not diverge.
+            recipe = await extract_with_retry(
+                fetch_agent,
+                web_fetch_prompt(url),
+                url,
+                usage=ctx.usage,
+                page_cache=ctx.deps.page_cache,
+                log_event="get_recipe_from_url_fetch",
+            )
         except Exception as exc:
             log.exception("get_recipe_from_url_failed", url=url, error=str(exc))
             return FoundRecipe(

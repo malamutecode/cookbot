@@ -1085,6 +1085,9 @@ async def test_resolve_recipe_known_url_fetch_retries_then_succeeds() -> None:
     web_recipe = _RECIPE.model_copy(update={"source_url": selected.source_url})
 
     calls: list[int] = []
+    # A real fetch records the page markdown here; a non-empty entry is the
+    # signal that says the model saw a real page and flaked (STEP 54).
+    page_cache: dict[str, str] = {str(selected.source_url): "# Makaron\n\nSkladniki..."}
 
     class _FlakyFetch:
         async def run(self, *_a, **_k):  # noqa: ANN202
@@ -1099,6 +1102,7 @@ async def test_resolve_recipe_known_url_fetch_retries_then_succeeds() -> None:
         found = await resolve_recipe(
             selected, "1", OnboardingState(servings=2),
             config=_CONFIG, site_filter="", allow_ai_generated=True,
+            page_cache=page_cache,
         )
 
     assert len(calls) == 2                 # retried once
@@ -1107,14 +1111,15 @@ async def test_resolve_recipe_known_url_fetch_retries_then_succeeds() -> None:
 
 
 async def test_resolve_recipe_known_url_fail_does_not_wander_to_other_site() -> None:
-    # When a SPECIFIC URL was picked and both fetch attempts fail, we must NOT
-    # run a name-search (which could return a recipe from a different site and
+    # When a SPECIFIC URL was picked and extraction fails, we must NOT run a
+    # name-search (which could return a recipe from a different site and
     # mis-attribute it). Fall back to AI, flagged.
     from cookbot.agents.chat import resolve_recipe
     selected = _summary("Makaron", source="web_search",
                         url="https://kwestiasmaku.com/pasta/x/przepis.html")
     fetch_factory, fetch_calls = _stub_agent_factory(None)   # always fails
     gen_factory, gen_calls = _stub_agent_factory(_RECIPE)
+    page_cache: dict[str, str] = {str(selected.source_url): "# Makaron\n\nSkladniki..."}
 
     def _search_boom(_config):  # noqa: ANN202
         raise AssertionError("must NOT name-search when a specific URL was picked")
@@ -1125,10 +1130,38 @@ async def test_resolve_recipe_known_url_fail_does_not_wander_to_other_site() -> 
         found = await resolve_recipe(
             selected, "1", OnboardingState(servings=2),
             config=_CONFIG, site_filter="", allow_ai_generated=True,
+            page_cache=page_cache,
         )
 
-    assert len(fetch_calls) == 2           # two attempts on the picked URL
+    assert len(fetch_calls) == 2           # content WAS fetched → the retry is real
     assert len(gen_calls) == 1             # then AI, not a wandering search
+    assert found.source == "ai_generated"
+    assert found.web_pick_fell_back is True
+
+
+async def test_resolve_recipe_known_url_no_content_fetched_does_not_retry() -> None:
+    # STEP 54: the retry re-runs the IDENTICAL prompt against the IDENTICAL page.
+    # When the fetch itself returned nothing (404 / timeout / SSRF refusal) the
+    # page_cache stays empty, attempt 2 cannot possibly succeed, and paying for it
+    # costs another full extraction (~27s / ~10k tokens on a LIGHT page).
+    from cookbot.agents.chat import resolve_recipe
+    selected = _summary("Makaron", source="web_search",
+                        url="https://kwestiasmaku.com/pasta/x/przepis.html")
+    fetch_factory, fetch_calls = _stub_agent_factory(None)
+    gen_factory, gen_calls = _stub_agent_factory(_RECIPE)
+    page_cache: dict[str, str] = {}        # nothing downloaded
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory), \
+         patch("cookbot.agents.chat.build_recipe_gen_agent", gen_factory):
+        found = await resolve_recipe(
+            selected, "1", OnboardingState(servings=2),
+            config=_CONFIG, site_filter="", allow_ai_generated=True,
+            page_cache=page_cache,
+        )
+
+    assert len(fetch_calls) == 1           # NOT retried
+    # The fallback still contains the failure (Rule 7) exactly as before.
+    assert len(gen_calls) == 1
     assert found.source == "ai_generated"
     assert found.web_pick_fell_back is True
 
@@ -1321,6 +1354,56 @@ async def test_get_recipe_from_url_not_found_emits_no_card() -> None:
         ctx.usage = None
         found = await fn(ctx, url="https://example.com/not-a-recipe")
 
+    assert found.source == "not_found"
+    assert _events_of(deps, FinalRecipeEvent) == []
+
+
+async def test_get_recipe_from_url_retries_when_the_page_was_fetched() -> None:
+    """STEP 54: content arrived but extraction returned None → genuine flake, retry.
+
+    Same rule as `resolve_recipe`; the two paths share `extract_with_retry` and
+    must not diverge.
+    """
+    from cookbot.agents.chat import FinalRecipeEvent
+    url = "https://kwestiasmaku.com/przepis/x"
+    deps = _make_deps()
+    deps.page_cache[url] = "# Makaron\n\nSkladniki..."   # the fetch DID return text
+    web_recipe = _RECIPE.model_copy(update={"source_url": url})
+    calls: list[int] = []
+
+    class _FlakyFetch:
+        async def run(self, *_a, **_k):  # noqa: ANN202
+            calls.append(1)
+            return MagicMock(output=None if len(calls) == 1 else web_recipe)
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", lambda _c, **_kw: _FlakyFetch()):
+        agent = build_chat_agent(_CONFIG)
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        found = await _get_tool(agent, "get_recipe_from_url")(ctx, url=url)
+
+    assert len(calls) == 2                 # retried, and recovered
+    assert found.source == "web_search"
+    assert len(_events_of(deps, FinalRecipeEvent)) == 1
+
+
+async def test_get_recipe_from_url_no_content_fetched_does_not_retry() -> None:
+    """STEP 54: nothing was downloaded → attempt 2 repeats the same failed fetch
+    for another full extraction's cost and cannot learn anything new. The
+    `not_found` fallback still contains the failure (Rule 7)."""
+    from cookbot.agents.chat import FinalRecipeEvent
+    deps = _make_deps()                    # page_cache stays empty
+    fetch_factory, fetch_calls = _stub_agent_factory(None)
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", fetch_factory):
+        agent = build_chat_agent(_CONFIG)
+        ctx = MagicMock()
+        ctx.deps = deps
+        ctx.usage = None
+        found = await _get_tool(agent, "get_recipe_from_url")(ctx, url="https://example.com/404")
+
+    assert len(fetch_calls) == 1           # NOT retried
     assert found.source == "not_found"
     assert _events_of(deps, FinalRecipeEvent) == []
 

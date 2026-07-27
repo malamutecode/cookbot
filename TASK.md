@@ -18,153 +18,31 @@
 Firebase Hosting frontend, scripted in `infra/`). Steps 1–52 are shipped; their
 history is in `git log` and their behaviour is documented in the `CLAUDE.md` files.
 
-**Current Step: STEP 53 / STEP 54** (below) — both are investigations first, not
-build steps. STEP 54 is the larger measured win: extraction dominates a recipe
-turn (~27s / ~10k tokens), and its retry can double that.
+**No step is in progress.** Steps 53 and 54 are both done; pick the next piece of
+work from PHASE 4 below, or from the deferred list.
 
----
+STEP 53 is **done**: `MODEL_CHAT` stays on `gpt-4o-mini`. Four models measured —
+`gpt-4o` mis-routed 6/12 (skipping `update_onboarding` while replying plausibly)
+and `gpt-5-mini` 3/12 in the opposite direction (searching on a question that
+wanted no search); `gpt-5.4-mini` tied on routing (0/18) but was slightly slower
+and pricier, so there was nothing to buy. The benchmark
+(`tests/integration/test_model_chat_bench_live.py`) and the numbers are in
+[`agents/CLAUDE.md`](packages/cookbot-core/cookbot/agents/CLAUDE.md).
 
-## STEP 53 — Measure whether the ChatAgent belongs on a faster model
+STEP 54 is **done**: the extraction retry is now conditional. Both paths share
+`extract_with_retry` (`agents/chat.py`), which skips attempt 2 when `page_cache`
+shows the fetch returned no content — a second identical attempt provably cannot
+succeed there, and it costs a full extraction (~27s / ~10k tokens on a *light*
+page). A well-formed `None` on a page that WAS fetched still retries; that call is
+deliberately left to traffic data, which the new `extraction_retry_outcome` log
+line now makes countable. Rationale in
+[`agents/CLAUDE.md`](packages/cookbot-core/cookbot/agents/CLAUDE.md).
 
-**Status:** `○` not started. Investigation first, change second — the deliverable
-is a decision backed by numbers, not a model swap.
-
-### Why
-
-Turn latency is dominated by a chain of serial LLM round-trips, and the ChatAgent
-sits on the critical path **twice** in a recipe turn: once to route to a tool, and
-again to narrate the result. Every other agent runs at most once. So the
-orchestrator's per-call latency is multiplied by two in exactly the turn users
-complain about.
-
-`MODEL_CHAT` is `gpt-4o-mini` today. Routing is also the one job where a wrong
-answer is maximally expensive: a mis-routed turn costs a full extra round-trip
-plus a re-ask, which is the single worst latency event in the product. That makes
-"cheap model for the orchestrator" a questionable default — it is worth measuring
-rather than assuming in either direction.
-
-Two prior measurements say latency work here pays off and that the fast path is
-where the wins are: the zero-LLM DDG path measured 3.50s vs 11.73s for the agent
-path, and the STEP 47 notes record a ~2600-token cost for that agent turn.
-
-### What to do
-
-1. **Get a baseline first.** `tests/test_agents/test_turn_performance.py` counts
-   round-trips but deliberately does not time anything. Extend the live tier
-   (`tests/integration/`) with a timing harness that records, per phase, wall-clock
-   and `RunUsage` — `usage=ctx.usage` already aggregates sub-agent tokens, so the
-   per-turn totals are available at the `stream_chat_response` boundary where
-   `chat_turn_usage` is already logged.
-2. **Vary only `model_chat`.** `TenantConfig` already has per-agent model fields,
-   so this needs no code change — set the env var and re-run. Keep every other
-   agent pinned so the comparison is clean.
-3. **Record three numbers per model**, over the same fixed set of prompts:
-   time-to-first-token, total turn wall-clock, and total tokens. TTFT matters most
-   — it is what the user actually experiences. Note that the mid-turn progress
-   events changed what the user *sees* during that window but not its length, so
-   TTFT is still the honest number to optimise.
-4. **Count re-asks / mis-routes**, not just speed. A model that is 200ms slower per
-   call but never mis-routes is faster in practice. This is the number most likely
-   to overturn the naive "bigger model = slower" conclusion.
-
-### Acceptance criteria
-
-- A repeatable timing script/test in `tests/integration/` that prints the three
-  numbers per model, runnable against at least two values of `MODEL_CHAT`.
-- A short written comparison (in this step, or folded into
-  `packages/cookbot-core/cookbot/agents/CLAUDE.md` if it changes the guidance)
-  covering: TTFT, total wall-clock, tokens, and observed mis-routes.
-- An explicit decision recorded — **including "keep `gpt-4o-mini`"**, which is a
-  valid and useful outcome. Do not swap the model without the numbers.
-- No behaviour change in the unit tier: this step must stay a config-level
-  experiment. If it turns into prompt edits, that is a different step.
-
-### Notes / traps
-
-- **Don't tune `MODEL_CHAT` and the prompt in the same experiment** — the ~2.6k-token
-  static instruction block is a separate lever (prompt-prefix caching wants the
-  static block first and volatile per-turn state last). Moving both at once makes
-  the result uninterpretable.
-- **The live tier is flaky by nature** (real DDG + OpenAI). Average several runs;
-  a single sample proves nothing about a few-hundred-ms difference.
-- **Cost is a real constraint, not a footnote** — STEP 42 meters per-user token
-  budgets, so a model that is faster but meaningfully pricier per turn changes
-  quota economics. Report tokens alongside latency.
-
----
-
-## STEP 54 — Make the extraction retry conditional (it currently doubles the worst case)
-
-**Status:** `○` not started. Measure first, then change — the log line is most of
-the work.
-
-### Why
-
-Both extraction paths retry unconditionally when the model returns `None`:
-
-- `resolve_recipe` — `for attempt in (1, 2)` (`agents/chat.py`)
-- `get_recipe_from_url` — the same loop
-
-Measured cost of ONE extraction on a *light* 11.5k-char page
-(`tests/integration/test_turn_latency_live.py`, 2026-07-27):
-
-```
-fetch + extract   26.93s   9,822 tokens (2 requests)
-TURN TOTAL        27.95s
-```
-
-So attempt 2 costs roughly **another ~27s and ~10k tokens** — on the single most
-expensive operation in the product, and a heavy page (~82k chars post-clean) is
-several times worse. That is the worst-case turn doubling.
-
-The retry loop re-runs the **identical prompt against the identical page**. When
-extraction returned `None` because the page has no recipe, or because the
-ingredient list fell past `_MAX_PAGE_CONTENT`, attempt 2 fails the same way — a
-full round-trip to learn nothing. It only pays when the failure was genuine model
-flakiness.
-
-Nobody currently knows which case dominates, because a `None` on attempt 1 is not
-logged distinctly from a `None` on attempt 2. **That is the first thing to fix.**
-
-### What to do
-
-1. **Instrument before changing anything.** Log attempt number and outcome so the
-   success rate of attempt 2 is countable — e.g. an `extraction_retry_outcome`
-   event with `attempt`, `recovered: bool`, and the fetched content length. Ship
-   this alone, read it against real traffic, and only then decide.
-2. **Then make the retry conditional on a signal that it could plausibly help.**
-   Candidates, cheapest first:
-   - Retry only when the fetch actually returned content (an empty/truncated fetch
-     will never extract on a second identical try).
-   - Retry only on an exception / malformed output, not on a well-formed `None` —
-     a confident `None` on a page with no recipe is a correct answer, and the
-     `not_found` path already exists to handle it.
-   - If content was truncated at `_MAX_PAGE_CONTENT`, that is a *different* bug
-     (see the fetch-truncation notes in `agents/CLAUDE.md`) and retrying is the
-     wrong response entirely.
-3. **Keep both call sites in step.** `resolve_recipe` and `get_recipe_from_url`
-   have the same loop for the same reason; they must not diverge.
-
-### Acceptance criteria
-
-- A log line that makes attempt-2 recovery rate countable, present in both paths.
-- The retry no longer fires on failures it demonstrably cannot fix, with the
-  chosen condition justified by the logged numbers — not by intuition.
-- A unit test per path proving: a retryable failure still retries, and a
-  non-retryable one does NOT (asserting the sub-agent was called once).
-- No change to user-visible behaviour on success, and the `not_found` /
-  `source="error"` fallbacks still contain their failures (Rule 7).
-
-### Notes / traps
-
-- **Do not simply delete the retry.** It was added because extraction is
-  genuinely flaky; the goal is to stop paying for it when it cannot help, not to
-  remove the recovery.
-- **This interacts with STEP 53** — a different `MODEL_CHAT`/`model_web_search`
-  changes the flake rate this step is tuning against. Do the instrumentation
-  first; it is useful to both steps.
-- **The `page_cache` dedup does NOT help here.** It removes a duplicate
-  *download*; this is a duplicate *extraction*, which is ~25x more expensive.
+**Open follow-up (needs production traffic, not code):** read
+`extraction_retry_outcome` for attempt-2 recovery rate. If recoveries are rare,
+the remaining retry is the next thing to cut. `model_web_search` is still
+unmeasured and would move that rate — don't change it and read the numbers in the
+same window.
 
 ---
 

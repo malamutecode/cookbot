@@ -449,6 +449,100 @@ download is the thing that actually regresses.
   - It does not make a turn faster. It makes it legible; the latency fix is
     fewer round-trips.
 
+## The extraction retry is conditional (STEP 54) — it used to double the worst case
+
+Extraction is the most expensive operation in the product: ONE run on a *light*
+11.5k-char page measured **26.93s / 9,822 tokens** out of a 27.95s turn
+(`tests/integration/test_turn_latency_live.py`), and a heavy page (~82k chars
+post-clean) is several times worse. Both fetch paths retried a `None`
+unconditionally, so the worst case was simply that, twice.
+
+The retry re-runs the **identical prompt against the identical page**, so it can
+only pay when the failure was model flakiness. Both paths now go through
+**`extract_with_retry`** in `chat.py` — one implementation, because
+`resolve_recipe` and `get_recipe_from_url` had the same loop for the same reason
+and must not diverge.
+
+- **The condition is structural, not a guess.** `recipe_web_fetch_tool` writes
+  `page_cache[url]` only when the download produced non-empty markdown. So a URL
+  missing from the cache after attempt 1 means the *fetch* failed — 404, timeout,
+  SSRF refusal, binary response — and attempt 2 re-runs that same failing
+  download. It cannot succeed, so it is skipped and the caller's `not_found` /
+  `source="error"` fallback speaks instead (Rule 7 is unchanged).
+- **A well-formed `None` on a page we DID fetch still retries.** That is exactly
+  the flake the retry was added for, and it is indistinguishable from a correct
+  "this page has no recipe" without traffic data. **Do not cut it on intuition** —
+  read the log line first.
+- **`extraction_retry_outcome` is what makes that decision countable**: `attempt`,
+  `recovered`, `content_length`, `retryable`, and `source` (which path). Before
+  it, a `None` on attempt 1 was logged identically to one on attempt 2, so
+  attempt-2's recovery rate was unknowable — which is why the previous behaviour
+  survived unexamined.
+- **No `page_cache` → old behaviour.** The parameter is optional on that seam, and
+  no signal must mean "retry as before", never a silently suppressed retry.
+- **A truncated fetch is a DIFFERENT bug.** If the ingredient list fell past
+  `_MAX_PAGE_CONTENT`, the answer is the noise-stripping/cap work above, not a
+  retry — the second attempt sees the same truncated text.
+- **`page_cache` dedup does not help here.** It removes a duplicate *download*;
+  this is a duplicate *extraction*, ~25x more expensive.
+- Four tests pin it, one pair per path (`test_chat.py`): content fetched → still
+  retries; nothing fetched → called exactly once.
+
+**Still unmeasured: `model_web_search`,** the model extraction actually runs on.
+STEP 53 settled `model_chat` only. Changing it moves the flake rate this tuning
+assumes, so re-read `extraction_retry_outcome` after any such change.
+
+## `MODEL_CHAT` stays on `gpt-4o-mini` (STEP 53) — measured, not assumed
+
+The ChatAgent is on the critical path **twice** in a recipe turn (route, then
+narrate) while every other agent runs at most once, so the orchestrator's
+per-call latency is the one worth questioning. It was measured rather than
+argued: `tests/integration/test_model_chat_bench_live.py` sweeps `model_chat`
+over a fixed prompt set and reports TTFT, wall-clock, tokens **and mis-routes**.
+
+Measured 2026-07-27, 3 cases per model, everything else pinned to `gpt-4o-mini`
+(4 repeats; the `gpt-5.4-mini` row re-run at 6 for the head-to-head):
+
+| `model_chat` | TTFT med | wall med | tokens med | **mis-routes** |
+|---|---|---|---|---|
+| `gpt-4o-mini` | 2.19s | 4.04s | 7,237 | **0/18** |
+| `gpt-5.4-mini` | 2.54s | 4.64s | 7,426 | **0/18** |
+| `gpt-4o` | 2.38s | 4.39s | 3,772 | **6/12** |
+| `gpt-5-mini` | 19.23s | 20.89s | 10,558 | **3/12** |
+
+**Decision: keep `gpt-4o-mini`.** The two failures are mirror images of each
+other, and neither shows up in the reply text — which is why the benchmark checks
+events and state, never wording:
+
+- **`gpt-4o` under-calls tools.** `"Gotuję dla 4 osób"` → **4/4** turns skipped
+  `update_onboarding` (1 request, not 2), leaving `onboarding.servings=None`;
+  `"Przepis na jagodzianki"` → **2/4** turns emitted no `RecipeOptionsEvent`. It
+  is ~0.4s faster to first token and about half the tokens, and both are the
+  symptom: the lower count is mostly the tool round-trip it never made. The reply
+  was a perfectly sensible next question, byte-for-byte what `gpt-4o-mini` gives,
+  while silently not recording the answer. `deps.onboarding.servings` is the
+  single anchor `scale_recipe_to_servings` reads (see "Servings"), so an empty
+  one scales every later quantity off the `or 2` default.
+- **`gpt-5-mini` over-calls them.** Asked a plain substitution question ("czym
+  zastąpić masło w cieście") it answered *and* fired `propose_recipes`, running a
+  DDG search for `"ciasto przepis"` and attaching 6 unrelated cards — 3 requests,
+  ~13k tokens, 22-44s turns. Its ~19s TTFT is that spurious tool chain, not raw
+  model speed.
+- **`gpt-5.4-mini` is a genuine tie** — 0/18 mis-routes, same as the incumbent,
+  ~0.35s slower to first token and ~4k more tokens on `direct_dish`. It is the
+  credible alternative, so revisit it (rather than `gpt-4o`) if the incumbent is
+  ever retired; on today's numbers there is nothing to buy.
+- **The mis-route column outranks the timing columns.** A mis-routed turn costs a
+  full extra round-trip plus a re-ask — far more than a sub-second per-call win.
+  Re-run the benchmark before revisiting this; never swap the model on latency
+  alone.
+- **This says nothing about the other agents.** Only `model_chat` varied;
+  `model_web_search` in particular is a separate, unmeasured question (and the
+  extraction cost that dominates a recipe turn is STEP 54's).
+- **Do not tune the model and the prompt in the same experiment.** The ~2.6k-token
+  static instruction block is a separate lever; moving both makes the result
+  uninterpretable.
+
 ## Hard rules for agent work
 
 1. **ChatAgent orchestrates; sub-agents stay dumb.** New capability = a new
