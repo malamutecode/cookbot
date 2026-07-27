@@ -213,6 +213,27 @@ across three layers, and the split is the point:
   discarding the page already in `deps.pending_split`. The branch must come first
   because a pasted link leaves onboarding almost empty, so nesting it under
   `ob.complete` would skip it on exactly the common path.
+- **…and the prompt is backed by a structural guard, because advice is not
+  enforcement.** The branch above was shipped alone and the model still escaped it:
+  live, answering "Rozdziel je na osobne przepisy" produced a fresh DDG search and
+  a menu of 3 curry + 4 naan variants. So while `deps.pending_split` is set, the
+  recipe-search tools **refuse**: `propose_recipes` returns
+  `split_refusal_message(...)` without searching, and `get_recipe_details` raises
+  `ModelRetry` with it. Same two-layer reasoning as the servings sanitizer — *the
+  prompt layer is probabilistic and must never be the only defence.* Three
+  properties matter, all pinned by tests in `test_chat_split.py`:
+  - **The refusal names `choose_recipe_split`.** Told only "no", the model just
+    tries a different tool; told which tool makes progress, it calls it (verified
+    live: `propose_recipes_refused_pending_split` fired, then two cards followed).
+  - **It refuses before doing the work**, so no DDG round-trip is paid for and
+    `last_proposals` is never overwritten.
+  - **`get_recipe_from_url` is guarded more narrowly**, by `_same_url`: re-fetching
+    the page already in `pending_split` is refused (the extraction is in hand and a
+    second fetch could drift), but a **different** link is a change of mind — it
+    proceeds and supersedes the stale question. Refusing every URL would strand a
+    user who pasted the wrong link. Never extend the guard to
+    `choose_recipe_split` itself: that deadlocks the conversation on a question
+    nothing can answer.
 - **`get_recipe_from_url` persists `servings` BEFORE the split early-return.**
   `deps.onboarding.servings` is the anchor `choose_recipe_split` scales from on a
   *later* turn, so a `return` that skips the write silently drops the count — live,

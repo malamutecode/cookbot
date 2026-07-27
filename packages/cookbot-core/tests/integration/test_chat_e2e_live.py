@@ -64,8 +64,18 @@ async def test_full_onboarding_to_web_recipe(pl_config) -> None:
     history: list = []
 
     # ── Turn 1: dish type ──────────────────────────────────────────────────
+    # "Obiad" is a MEAL SLOT, not a dish — it is in `_VAGUE_DISH_SENTINELS`
+    # precisely because searching for it returned basketball rules and a TikTok
+    # video as recipe cards. So this turn must NOT be asserted to fill dish_type:
+    # whether the model stores the vague word or leaves the field None, both read
+    # as "no dish named yet" and produce the same, correct flow. Pinning the
+    # field made the test fail on behaviour that is right. What actually matters
+    # is that onboarding advanced without searching.
     reply, events = await _say(agent, deps, history, "Obiad")
-    assert deps.onboarding.dish_type is not None, "dish_type not recorded after turn 1"
+    assert not deps.onboarding.has_concrete_dish(), (
+        "a meal slot must never count as a named dish — that fires a web search "
+        f"for 'obiad przepis'; got dish_type={deps.onboarding.dish_type!r}"
+    )
     assert _looks_like_question(reply), f"expected a follow-up question, got: {reply!r}"
     assert not events, "no side-effects expected mid-onboarding"
 

@@ -612,6 +612,171 @@ def test_no_pending_split_leaves_the_prompt_untouched() -> None:
     assert "choose_recipe_split" not in before
 
 
+# ── The structural guard behind the prompt ────────────────────────────────────
+#
+# The prompt branch above is ADVICE, and live runs prove gpt-4o-mini overrides
+# it: answering "Rozdziel je na osobne przepisy" it called propose_recipes and
+# web-searched for fresh curry and naan recipes, discarding the extracted page
+# and returning a menu of 3 curry + 4 naan variants instead of two cards. These
+# tests pin the enforcement layer, which is what actually makes it impossible.
+
+
+async def _deps_awaiting_split() -> ChatAgentDeps:
+    """A deps with a real pending split, produced the way the product does."""
+    page = _page(
+        servings=4, ingredients=_CURRY_INGREDIENTS, extra_blocks=[_naan_block()]
+    )
+    deps = ChatAgentDeps(config=_CONFIG)
+    with patch("cookbot.agents.chat.build_web_fetch_agent", _stub_fetch(page)):
+        agent = build_chat_agent(_CONFIG)
+        await _get_tool(agent, "get_recipe_from_url")(_ctx(deps), url=_URL)
+    assert deps.pending_split is not None, "fixture failed to park a question"
+    deps.reset_turn()
+    return deps
+
+
+async def test_propose_recipes_is_refused_while_a_split_is_pending() -> None:
+    """The exact live failure: a fresh web search discarding the extracted page.
+
+    Asserts no search ran at all (no proposals, no event) — being told "no" but
+    still paying for a DuckDuckGo round-trip would leave the user's answer turn
+    just as slow, and `last_proposals` overwritten.
+    """
+    from cookbot.agents.chat import RecipeOptionsEvent  # noqa: PLC0415
+
+    deps = await _deps_awaiting_split()
+    agent = build_chat_agent(_CONFIG)
+
+    result = await _get_tool(agent, "propose_recipes")(
+        _ctx(deps), dish_type="kurczak w kremowym sosie curry", ingredients=[],
+    )
+
+    assert result.count == 0
+    assert _events_of(deps, RecipeOptionsEvent) == [], "no options may be shown"
+    assert deps.last_proposals == [], "the search must not have run"
+    assert "choose_recipe_split" in result.message, (
+        "the refusal must name the tool that CAN make progress, or the model "
+        f"just tries something else: {result.message!r}"
+    )
+    assert deps.pending_split is not None, "the question must survive the refusal"
+
+
+async def test_get_recipe_details_is_refused_while_a_split_is_pending() -> None:
+    """The second escape hatch: resolving a 'pick' with no proposals live.
+
+    ModelRetry rather than a result, mirroring how this tool already handles an
+    unmatched choice — it steers the model instead of fabricating a recipe.
+    """
+    from pydantic_ai import ModelRetry  # noqa: PLC0415
+
+    deps = await _deps_awaiting_split()
+    agent = build_chat_agent(_CONFIG)
+
+    try:
+        await _get_tool(agent, "get_recipe_details")(_ctx(deps), choice="1")
+    except ModelRetry as exc:
+        assert "choose_recipe_split" in str(exc)
+    else:
+        raise AssertionError("get_recipe_details resolved during a pending split")
+
+    assert _events_of(deps, FinalRecipeEvent) == []
+    assert deps.pending_split is not None
+
+
+async def test_refetching_the_pending_page_is_refused() -> None:
+    """Re-fetching the page we already hold is waste, and can drift.
+
+    The extraction cost a model call and lives in `pending_split`; a second fetch
+    could return different blocks, so the parked question would no longer match
+    the page the user was asked about.
+    """
+    from pydantic_ai import ModelRetry  # noqa: PLC0415
+
+    deps = await _deps_awaiting_split()
+    before = deps.pending_split
+
+    calls: list[str] = []
+
+    def _factory(_config, **_kw):  # noqa: ANN202
+        class _Stub:
+            async def run(self, *_a, **_k):  # noqa: ANN202
+                calls.append("fetched")
+                return MagicMock(output=None)
+
+        return _Stub()
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", _factory):
+        agent = build_chat_agent(_CONFIG)
+        try:
+            await _get_tool(agent, "get_recipe_from_url")(_ctx(deps), url=_URL)
+        except ModelRetry as exc:
+            assert "choose_recipe_split" in str(exc)
+        else:
+            raise AssertionError("the pending page was re-fetched")
+
+    assert calls == [], "no fetch may fire for the page already extracted"
+    assert deps.pending_split is before, "the parked question must be untouched"
+
+
+async def test_a_different_url_supersedes_the_pending_question() -> None:
+    """The guard must not trap the user: a NEW link is a change of mind.
+
+    Refusing every URL would strand someone who pasted the wrong link and simply
+    pasted the right one. The new page proceeds normally and the stale question
+    is dropped, because the answer would have nothing left to apply to.
+    """
+    other = "https://kwestiasmaku.com/inne-danie/"
+    page = _page(servings=2, ingredients=["2 jajka"])
+    page.source_url = other
+
+    deps = await _deps_awaiting_split()
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", _stub_fetch(page)):
+        agent = build_chat_agent(_CONFIG)
+        found = await _get_tool(agent, "get_recipe_from_url")(_ctx(deps), url=other)
+
+    assert found.source == "web_search"
+    assert len(_events_of(deps, FinalRecipeEvent)) == 1, "the new page must show"
+    assert deps.pending_split is None, "the superseded question must be cleared"
+
+
+async def test_the_answer_tool_still_works_behind_the_guard() -> None:
+    """The guard blocks the search tools ONLY — the answer path stays open.
+
+    Guards the obvious way to break this: a check placed somewhere shared would
+    refuse `choose_recipe_split` too, deadlocking the conversation with a
+    question nothing can answer.
+    """
+    deps = await _deps_awaiting_split()
+    agent = build_chat_agent(_CONFIG)
+
+    result = await _get_tool(agent, "choose_recipe_split")(_ctx(deps), mode="split")
+
+    assert result.recipe_count == 2
+    assert len(_events_of(deps, FinalRecipeEvent)) == 2
+    assert deps.pending_split is None
+
+
+def test_same_url_ignores_cosmetic_differences() -> None:
+    """The model retypes URLs, so scheme/www/trailing slash/case must not matter.
+
+    If they did, a re-fetch of the SAME page would read as a different one and
+    slip past the guard — the exact hole the guard exists to close.
+    """
+    from cookbot.agents.chat import _same_url  # noqa: PLC0415
+
+    assert _same_url(_URL, _URL)
+    assert _same_url("https://chilitonka.com/a/", "http://www.chilitonka.com/a")
+    assert _same_url("https://Chilitonka.com/A/", "https://chilitonka.com/A")
+
+    assert not _same_url(_URL, "https://chilitonka.com/inne/")
+    assert not _same_url(None, _URL), "an unknown source must never match"
+    assert not _same_url("", ""), "two blanks are not the same page"
+    assert not _same_url("https://x.test/p?id=1", "https://x.test/p?id=2"), (
+        "a query can select a different recipe — do not strip it"
+    )
+
+
 # ── Proposal path parity ──────────────────────────────────────────────────────
 
 async def test_proposal_path_asks_too() -> None:

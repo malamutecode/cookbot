@@ -205,6 +205,31 @@ class ChooseSplitResult(BaseModel):
     message: str = ""
 
 
+def split_refusal_message(pending: PendingSplit) -> str:
+    """The instruction returned when a recipe-search tool fires mid-split.
+
+    The dynamic prompt branch already TELLS the model not to do this, and live
+    it still does (observed: answering "Rozdziel je na osobne przepisy" with a
+    `propose_recipes` DuckDuckGo search for brand-new curry and naan recipes,
+    discarding the page already sitting in `deps.pending_split`). A prompt is
+    advice; this is the enforcement, and both layers are deliberate — the same
+    reasoning as the servings sanitizer, where the prompt layer is probabilistic
+    and must never be the only defence.
+
+    Phrased as a structured instruction rather than an exception (Rule 7): the
+    turn survives and the model is told the one tool that can make progress.
+    """
+    names = ", ".join(b.name for b in pending.blocks)
+    return (
+        f"refused: a multi-recipe page ({names}) is still waiting for the user's "
+        "split answer, and its recipes are ALREADY EXTRACTED — searching again "
+        "would discard them. Do not call this tool or any other search tool now. "
+        "Call choose_recipe_split instead: mode=\"split\" for separate recipes, "
+        "mode=\"together\" for one combined card. If the user's message was not "
+        "an answer to that question, ask it again briefly."
+    )
+
+
 class CalendarAddResult(BaseModel):
     entry_id: str
     date: str
@@ -427,6 +452,28 @@ def _url_from_user_message(model_url: str, user_message: str) -> str:
 
 
 # ── Date normalisation ────────────────────────────────────────────────────────
+
+def _same_url(a: str | None, b: str | None) -> bool:
+    """Do two URLs point at the same page, ignoring cosmetic differences?
+
+    Used to tell "the user re-pasted the page we're already asking about" from
+    "the user pasted a DIFFERENT page", which is the difference between refusing
+    a wasted re-fetch and honouring a change of mind. The model retypes URLs, so
+    scheme, a `www.` prefix, a trailing slash and case in the host all vary
+    without meaning anything. Query and fragment are kept: on recipe sites they
+    can select a different page.
+    """
+    def _norm(u: str | None) -> str:
+        s = (u or "").strip()
+        if not s:
+            return ""
+        s = re.sub(r"(?i)^https?://", "", s)
+        s = re.sub(r"(?i)^www\.", "", s)
+        return s.rstrip("/").casefold()
+
+    left, right = _norm(a), _norm(b)
+    return bool(left) and left == right
+
 
 def _same_dish(resolved_name: str, entry_name: str) -> bool:
     """Do the resolved recipe and the calendar entry refer to the same dish?
@@ -1363,6 +1410,14 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
     ) -> ProposeRecipesResult:
         """Propose recipe options (4-6 cards). Call after onboarding is complete or on
         explicit user request. The options are sent to the frontend automatically."""
+        # A pending split outranks every search: the page is already extracted and
+        # waiting on an answer. See split_refusal_message.
+        if ctx.deps.pending_split is not None:
+            log.info("propose_recipes_refused_pending_split", dish=dish_type)
+            return ProposeRecipesResult(
+                count=0, names=[], message=split_refusal_message(ctx.deps.pending_split),
+            )
+
         cfg: TenantConfig = ctx.deps.config
         ob = ctx.deps.onboarding
         intent = UserIntent(
@@ -1461,6 +1516,13 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         choice: str,
     ) -> FoundRecipe:
         """Get the full recipe for the option the user chose. choice is a number (1-6) or the recipe name."""
+        # A pending split outranks a pick: `pending_split` is only ever set
+        # alongside `last_proposals = []`, so any choice here is the model
+        # re-entering the search flow. See split_refusal_message.
+        if ctx.deps.pending_split is not None:
+            log.info("get_recipe_details_refused_pending_split", choice=choice)
+            raise ModelRetry(split_refusal_message(ctx.deps.pending_split))
+
         selected = _select_proposal(ctx.deps.last_proposals, choice)
         if selected is None and ctx.deps.last_proposals:
             # Never resolve a guess — silently delivering the wrong card is worse
@@ -1548,6 +1610,21 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # producing a 404 and a bogus "page has no recipe". Recover the literal the
         # user actually pasted whenever this turn's message contains one.
         url = _url_from_user_message(url, ctx.deps.current_user_message)
+
+        # Narrower than the other two guards on purpose. Re-fetching the page
+        # that is ALREADY pending is pure waste — the extraction is in
+        # `pending_split` and a second fetch could even return something
+        # different. But a DIFFERENT link is the user changing their mind, which
+        # must go through: it falls past this branch and the stale question is
+        # cleared below, since the answer would no longer have a page to apply to.
+        pending = ctx.deps.pending_split
+        if pending is not None:
+            if _same_url(pending.recipe.source_url, url):
+                log.info("get_recipe_from_url_refused_pending_split", url=url)
+                raise ModelRetry(split_refusal_message(pending))
+            log.info("get_recipe_from_url_supersedes_pending_split",
+                     old=pending.recipe.source_url, new=url)
+            ctx.deps.pending_split = None
         # Pin the URL into the tool so the sub-agent cannot retype (and corrupt)
         # it either. Per-URL agent, so deliberately NOT cached.
         fetch_agent = build_web_fetch_agent(cfg, pinned_url=url)
