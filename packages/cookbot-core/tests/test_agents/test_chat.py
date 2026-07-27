@@ -985,6 +985,47 @@ async def test_pick_proposal_none_when_no_proposals() -> None:
     assert await pick_proposal(_make_deps(), 1) is None
 
 
+async def test_pick_proposal_not_found_emits_no_card_and_keeps_proposals() -> None:
+    """A click that resolves nothing must stay retryable and stay silent.
+
+    The reported bug: extraction returned None with AI generation off, so
+    resolve_recipe produced a `not_found` placeholder. That is not source="error",
+    so the WS handler's old `source != "error"` guard short-circuited the model
+    while pick_proposal had emitted NO FinalRecipeEvent — the click sent the user
+    nothing at all and left a spinner running. It also cleared last_proposals on
+    the way through, so the retry could not reuse the cards.
+    """
+    from cookbot.agents.chat import pick_proposal
+    props = [
+        _summary("Kotlet schabowy", source="web_search", url="https://x.test/one"),
+        _summary("Curry z kurczakiem", source="web_search", url="https://x.test/two"),
+    ]
+    deps = _make_deps(
+        last_proposals=props,
+        onboarding=OnboardingState(servings=2),
+        allow_ai_generated=False,          # so a failed extract cannot fall back to generation
+    )
+
+    def _factory(_config, **_kw):
+        class _Stub:
+            async def run(self, *_a, **_k):  # noqa: ANN202
+                return MagicMock(output=None)   # page yielded no recipe
+        return _Stub()
+
+    with patch("cookbot.agents.chat.build_web_fetch_agent", _factory):
+        found = await pick_proposal(deps, 2)
+
+    assert found is not None and found.source == "not_found"
+    # No card: the WS handler keys its short-circuit off this event, so emitting
+    # one here would show the user an empty placeholder recipe.
+    assert _events_of(deps, FinalRecipeEvent) == []
+    # Retryable — the conversational fallthrough turn reuses these cards instead
+    # of re-running a full search for a pick the user already made.
+    assert deps.last_proposals == props
+    # add_to_calendar trusts last_recipe; an empty placeholder must never land there.
+    assert deps.last_recipe is None
+
+
 # ── resolve_recipe (extracted decision tree) ──────────────────────────────────
 
 def _stub_agent_factory(output):

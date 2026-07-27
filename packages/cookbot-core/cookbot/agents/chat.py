@@ -1203,6 +1203,16 @@ async def pick_proposal(
             split_options=[b.name for b in pending.blocks],
         )
 
+    # A `not_found` placeholder resolved nothing: web search came back empty (or
+    # extraction failed) with AI generation off. Leave the proposals and
+    # `last_recipe` untouched — exactly as the exception path above does, and for
+    # the same reason. Clearing them stranded the fallthrough turn with no cards
+    # to reuse, so the agent re-ran a full DDG search to recover the pick the user
+    # had already made, and `add_to_calendar` would have trusted an empty recipe.
+    if found.source == "not_found":
+        log.info("pick_proposal_not_found", index=index, name=selected.name)
+        return found
+
     deps.last_recipe = found                     # durable — used by add_to_calendar
     deps.last_proposals = []                     # clear so selection prompt doesn't repeat
     if found.source in ("web_search", "ai_generated"):

@@ -371,12 +371,17 @@ async def websocket_endpoint(
             # then persisted whatever `last_recipe` held. Falls through to the
             # conversational path when the index is stale (e.g. a reconnect
             # dropped the proposals), which re-asks rather than guessing.
-            if msg.type == WsMessageType.PICK_RECIPE and msg.index is not None:
+            # Bind the index rather than a bool so the `is not None` check still
+            # narrows it to `int` for pick_proposal below (pyright strict).
+            pick_index = (
+                msg.index if msg.type == WsMessageType.PICK_RECIPE else None
+            )
+            if pick_index is not None:
                 deps.subtract_pantry = msg.subtract_pantry
                 deps.pantry = spizarnia_items
                 deps.reset_turn()
                 try:
-                    found = await pick_proposal(deps, msg.index)
+                    found = await pick_proposal(deps, pick_index)
                 except WebSocketDisconnect:
                     raise
                 except Exception as exc:
@@ -385,17 +390,27 @@ async def websocket_endpoint(
                         websocket, message="Something went wrong. Please try again."
                     )
                     continue
-                # Only the clean case short-circuits the model. A split question
-                # (STEP 45) and an error both need the agent to SPEAK — they
-                # emit no FinalRecipeEvent, so returning here would leave the
-                # user with a spinner and no message. Those fall through and are
-                # handled conversationally, exactly as before.
-                if found is not None and not found.split_question and found.source != "error":
+                # Only the clean case short-circuits the model, and "clean" is
+                # defined by what the pick actually PRODUCED — a card — never by
+                # enumerating the sources that don't count. A split question
+                # (STEP 45), an error, and a `not_found` placeholder all need the
+                # agent to SPEAK; none of them emits a FinalRecipeEvent, so
+                # short-circuiting would send the user nothing at all and leave a
+                # spinner running until they gave up and clicked again.
+                #
+                # `source != "error"` was that enumeration, and it missed
+                # `not_found` (web search found nothing / extraction failed with
+                # AI generation off). That click drained zero events and
+                # `continue`d in silence. Keying off the event makes the guard
+                # match the invariant it was always meant to express, so a new
+                # non-card source can't reopen the same hole.
+                emitted_card = any(isinstance(ev, FinalRecipeEvent) for ev in deps.events)
+                if found is not None and not found.split_question and emitted_card:
                     # Keep the conversation coherent: record the pick as a user
                     # turn so a later "add it to the calendar" has the context.
                     message_history.append(
                         ModelRequest(parts=[UserPromptPart(
-                            content=f"[user picked option {msg.index}: {found.recipe.name}]"
+                            content=f"[user picked option {pick_index}: {found.recipe.name}]"
                         )])
                     )
                     for ev in deps.events:
@@ -414,7 +429,7 @@ async def websocket_endpoint(
                 # pending split or the untouched proposals, and the model turn
                 # asks the question). The client sends `content` alongside the
                 # index so that turn has something to run on.
-                log.info("ws_pick_fallback", session_id=session_id, index=msg.index,
+                log.info("ws_pick_fallback", session_id=session_id, index=pick_index,
                          resolved=found is not None)
 
             user_text = (msg.content or "").strip()
@@ -427,8 +442,15 @@ async def websocket_endpoint(
             deps.subtract_pantry = msg.subtract_pantry
             deps.pantry = spizarnia_items
 
-            # Clear per-turn output collectors (contract lives in reset_turn)
-            deps.reset_turn()
+            # Clear per-turn output collectors (contract lives in reset_turn).
+            # Skipped when a pick already reset and then populated them above: a
+            # fallthrough pick (stale index, split question, error, not_found)
+            # carries ProgressEvents it already emitted and a page_cache holding
+            # the page it just downloaded. Resetting here discarded both, so the
+            # conversational turn re-fetched the same page and the user never saw
+            # the progress notes for work that had already happened.
+            if pick_index is None:
+                deps.reset_turn()
 
             # Per-user token quota (STEP 42). Refuse the next turn once a budget
             # is exhausted; a turn already in flight is not interrupted. Only
