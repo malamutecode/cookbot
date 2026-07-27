@@ -93,10 +93,22 @@ Three invariants to preserve:
   AND no constraint keyword in the raw message. A constraint appended to a DDG
   query is a keyword, not an honoured requirement, so "jagodzianki bez cukru"
   must reach the reasoning agent. It also fails closed on an empty message.
-- **Both stages are time-boxed.** DDG is a ~1.9-2.8s floor we do not control;
-  enrichment is capped as a whole (`_ENRICH_TOTAL_BUDGET_SECONDS`) because six
-  concurrent fetches are bounded by the slowest host — one stalling site was
-  measured pushing a turn from 2.9s to 6.2s. A card without its photo still works.
+- **Both stages are time-boxed, and enrichment is bounded PER PAGE.** DDG is a
+  ~1.9-2.8s floor we do not control; each page's `<head>` fetch is capped by
+  `_ENRICH_TOTAL_BUDGET_SECONDS` because six concurrent fetches are otherwise
+  bounded by the slowest host — one stalling site was measured pushing a turn from
+  2.9s to 6.2s. A card without its photo still works.
+  **Never collapse this into one `asyncio.wait_for` around one `asyncio.gather`.**
+  It reads as equivalent and is not: the timeout cancels *every* task, so pages
+  that already returned are discarded along with the slow one. That shipped, and
+  live "jagodzianki" went to **0/6 images** while four pages had answered in ~0.2s
+  each. Concurrency means per-page bounding costs no extra wall time — the stage
+  still ends within the budget, it just keeps what arrived. Keep
+  `_HEAD_FETCH_TIMEOUT` **below** the budget so httpx stops a slow host first and
+  the outer bound stays a backstop; they shipped inverted (3.0s under 2.5s), which
+  is why one bad host could burn the whole stage. `test_recipe_search_fast.py`
+  pins all three properties — note that an all-hosts-slow test cannot catch this,
+  so the regression test deliberately makes the result set mixed.
 
 The unit tier must never reach the network: `tests/test_agents/conftest.py` has an
 autouse fixture that neuters the fast path unless a test stubs it explicitly.

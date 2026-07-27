@@ -299,6 +299,84 @@ async def test_slow_site_cannot_blow_the_latency_budget() -> None:
     assert all(p.image_url is None for p in props)
 
 
+async def test_one_slow_host_does_not_discard_the_fast_ones() -> None:
+    """The bug the all-slow test above could never catch.
+
+    The budget used to wrap ONE `asyncio.gather` in ONE `asyncio.wait_for`, which
+    looks equivalent to a per-page bound and is not: the timeout cancels every
+    task, so pages that ALREADY RETURNED are thrown away with the slow one.
+    Measured live on "jagodzianki" — four of six pages produced an og:image in
+    ~0.2s each, one host stalled, and coverage was 0/6 instead of 4/6. That is
+    invisible when every host is slow (nothing would survive anyway), so this
+    test makes the result set MIXED, which is the real-world shape.
+    """
+    import asyncio
+
+    results = [_r(f"https://site{i}.test/przepis/x") for i in range(4)]
+
+    async def _one_stalls(_client, url):  # noqa: ANN202
+        if url.startswith("https://site3."):
+            await asyncio.sleep(30)
+            raise AssertionError("the stalling host should have been bounded")
+        return PageMeta(image_url=f"{url}/img.jpg", description="d")
+
+    with patch("cookbot.agents.recipe_search_fast._ddg_search", return_value=results), \
+         patch("cookbot.agents.recipe_search_fast._ENRICH_TOTAL_BUDGET_SECONDS", 0.2), \
+         patch("cookbot.agents.recipe_search_fast.enrich_from_page_head", _one_stalls):
+        props = await build_fast_proposals("x przepis", limit=6)
+
+    with_image = [p for p in props if p.image_url]
+    assert len(with_image) == 3, (
+        "the three healthy pages were discarded along with the slow one; "
+        f"got {len(with_image)}/4 images"
+    )
+    assert props[3].image_url is None, "the stalling host must yield no metadata"
+    assert len(props) == 4, "every card survives regardless of enrichment"
+
+
+async def test_per_page_budget_still_bounds_the_whole_stage() -> None:
+    """Per-page bounding must not turn into per-page SERIAL waiting.
+
+    The pages are fetched concurrently, so N stalling hosts must still cost about
+    one budget, not N of them — otherwise fixing the discard would trade a visual
+    regression for a latency one.
+    """
+    import asyncio
+
+    results = [_r(f"https://site{i}.test/przepis/x") for i in range(6)]
+
+    async def _all_stall(_client, _url):  # noqa: ANN202
+        await asyncio.sleep(30)
+
+    with patch("cookbot.agents.recipe_search_fast._ddg_search", return_value=results), \
+         patch("cookbot.agents.recipe_search_fast._ENRICH_TOTAL_BUDGET_SECONDS", 0.2), \
+         patch("cookbot.agents.recipe_search_fast.enrich_from_page_head", _all_stall):
+        started = asyncio.get_running_loop().time()
+        props = await build_fast_proposals("x przepis", limit=6)
+        elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 2.0, (
+        f"six stalling hosts took {elapsed:.2f}s — enrichment is running serially"
+    )
+    assert len(props) == 6
+    assert all(p.image_url is None for p in props)
+
+
+def test_page_timeout_is_below_the_enrich_budget() -> None:
+    """httpx must be what stops a slow host, not the outer backstop.
+
+    These shipped inverted (3.0s per page under a 2.5s batch budget), so the
+    per-page timeout could never fire first and one stalling host reliably burned
+    the entire stage. Ordering them is the invariant; the exact values are free.
+    """
+    from cookbot.agents.recipe_search_fast import (
+        _ENRICH_TOTAL_BUDGET_SECONDS,
+        _HEAD_FETCH_TIMEOUT,
+    )
+
+    assert _HEAD_FETCH_TIMEOUT < _ENRICH_TOTAL_BUDGET_SECONDS
+
+
 async def test_search_failure_returns_empty_not_raises() -> None:
     """A DDG outage must degrade to the slow path, never crash the turn (Rule 7)."""
     with patch("cookbot.agents.recipe_search_fast._ddg_search", side_effect=RuntimeError("ddg down")):

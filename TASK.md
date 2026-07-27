@@ -22,40 +22,6 @@ history is in `git log` and their behaviour is documented in the `CLAUDE.md` fil
 
 ---
 
-## Known defect — split-answer turn falls into the fast path
-
-`○` **`test_answering_split_yields_a_curry_without_naan_ingredients` fails live**
-(`tests/integration/test_url_servings_calendar_live.py`). Not flakiness and not
-caused by the pick-recipe fix: **verified by stashing that change and reproducing
-the identical failure on a clean tree.**
-
-- **Symptom:** 0 `FinalRecipeEvent` cards instead of 2 after the user answers the
-  split question. The assertion is `expected two recipe cards after splitting, got 0`.
-- **Mechanism:** extraction and the split question both work — the logs show
-  `split_retry_recovered standalone=['Naan bread']`, so the question is asked
-  correctly. The failure is one step later: answering "Rozdziel je na osobne
-  przepisy" routes into the **zero-LLM DuckDuckGo proposal fast path** (searching
-  `"Kurczak w kremowym sosie curry na ostro przepis"`) instead of emitting the two
-  cards from the content already sitting in `deps.pending_split`. The reply lists
-  fresh search results and asks the user to pick one.
-- **Why this matters:** this is exactly the regression the `pending_split` prompt
-  branch was added to prevent (see "Multi-recipe pages" in
-  [agents/CLAUDE.md](packages/cookbot-core/cookbot/agents/CLAUDE.md)) — the model
-  reaching for its most familiar tool and discarding the page it already has. The
-  branch *is* ordered first and does fire; the answer turn escapes it anyway, so
-  the guard is incomplete rather than missing.
-- **Note the docs are wrong about this test.** The flaky-test note in
-  agents/CLAUDE.md describes an *extraction* miss ("couldn't read the page"). That
-  is a different failure mode from this one. An earlier run did show the
-  extraction-miss variant, so the test likely has two distinct failure paths —
-  don't assume the documented one when triaging.
-- **Start at:** `onboarding_status_prompt`'s `pending_split` branch and the
-  `choose_recipe_split` tool in `cookbot/agents/chat.py`; check whether the fast
-  path in `propose_recipes` is reachable while `deps.pending_split` is set (it
-  should be refused outright).
-
----
-
 # PHASE 4 — DEFERRED
 
 Do not implement until Phase 3 is live in production.

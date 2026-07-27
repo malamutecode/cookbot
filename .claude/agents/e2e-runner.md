@@ -109,12 +109,28 @@ Delete `.pytest_e2e_report.xml` when you're done — it is a scratch artifact.
   of the code under test. With `-n 8` the suite finishes in ~90s, so a 300s
   timeout is generous; if you fall back to serial, raise it to 400s.
 - **Known-flaky (measured 2026-07-26), on `gpt-4o-mini`:**
-  `test_answering_split_yields_a_curry_without_naan_ingredients` and
-  `test_extractor_reports_both_blocks_on_a_multi_recipe_page`. Both depend on the
+  `test_answering_split_yields_a_curry_without_naan_ingredients`,
+  `test_answering_together_then_adds_the_merged_recipe` and
+  `test_extractor_reports_both_blocks_on_a_multi_recipe_page`. All depend on the
   model reporting `components` for the live chilitonka curry+naan page, which it
   does inconsistently — the file's own docstring records ~8/9 green. Confirmed to
   fail serially too, so **do not attribute these to parallelism**. Report them as
   `flaky` unless the failure names a different cause.
+
+  These tests had a SECOND failure mode — the answer turn escaping into a fresh
+  DuckDuckGo search — which was a real bug, fixed 2026-07-27 by the structural
+  refusal in `propose_recipes` / `get_recipe_details`. If one fails again with a
+  reply full of *new* search results or a "pick one of these variants" menu,
+  that is a **regression of that guard, not flakiness** — report it as a failure
+  and say the guard did not hold.
+
+- **`test_image_coverage_is_usable` is a coverage RATIO, so it is inherently
+  noisy** — it needs >=3 of 6 pages to yield an og:image, and which sites DDG
+  returns varies per run (403 bot-blocks and pages genuinely lacking the tag both
+  count against it). Measured after the 2026-07-27 fix: 5/6, 4/6, 3/6 across
+  dishes. A single failure just under the line is flaky; **0/6 is not** — that
+  was the all-or-nothing enrichment discard, and it means the per-page budget in
+  `build_fast_proposals` has regressed to bounding the whole batch again.
 
 ## Report format (this is all the caller sees)
 

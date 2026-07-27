@@ -44,11 +44,17 @@ log = structlog.get_logger()
 # de-duplicates by domain, so the raw list must be able to absorb those losses.
 _DDG_MAX_RESULTS = 20
 
-_HEAD_FETCH_TIMEOUT = 3.0     # per page; metadata is nice-to-have, fail fast
-# Ceiling for the whole concurrent enrichment stage. Measured: DDG search alone is
-# a ~1.9-2.8s floor, and enrichment ranged 0.19-2.77s depending on whether a slow
-# host was in the result set. Capping the stage keeps the tail predictable — a
+_HEAD_FETCH_TIMEOUT = 2.0     # per page; metadata is nice-to-have, fail fast
+# Ceiling for the enrichment stage, applied PER PAGE (see build_fast_proposals for
+# why not to the batch). Measured: DDG search alone is a ~1.9-2.8s floor, and a
+# healthy page's <head> arrives in ~0.2s. Capping keeps the tail predictable — a
 # card without its photo still works, a 6s wait does not.
+#
+# Keep this ABOVE _HEAD_FETCH_TIMEOUT. httpx's own timeout should be what stops a
+# slow host, so the failure is a clean per-page None; this outer bound is only the
+# backstop for a stall httpx doesn't catch (e.g. a body that trickles bytes
+# forever, never idling long enough to trip a read timeout). Inverted — as it was,
+# 3.0s per page under a 2.5s budget — httpx could never fire first.
 _ENRICH_TOTAL_BUDGET_SECONDS = 2.5
 _HEAD_MAX_BYTES = 120_000     # og:* lives in <head>; JSON-LD sometimes trails it
 _HEAD_FETCH_HEADERS = {
@@ -360,18 +366,38 @@ async def build_fast_proposals(query: str, limit: int) -> list[RecipeSummary]:
     # the slowest of them, and a single stalling host was measured pushing the turn
     # from ~2.9s to 6.2s. Cards are already complete without metadata, so when the
     # budget runs out we ship what arrived rather than make the user wait.
+    #
+    # The budget is applied PER PAGE, not to the batch as a whole. Wrapping one
+    # `gather` in one `wait_for` looks equivalent and is not: the timeout cancels
+    # every task, so pages that already finished are discarded along with the slow
+    # one. Measured live on "jagodzianki" — four of six pages returned og:image in
+    # ~0.2s each, one host stalled, and image coverage went to 0/6 instead of 4/6.
+    # Since these run concurrently, the wall-clock ceiling is unchanged: the stage
+    # still ends after at most the budget, it just keeps what arrived in time.
+    async def _bounded(url: str, client: httpx.AsyncClient) -> PageMeta | None:
+        try:
+            return await asyncio.wait_for(
+                enrich_from_page_head(client, url), timeout=_ENRICH_TOTAL_BUDGET_SECONDS,
+            )
+        except (TimeoutError, asyncio.CancelledError):
+            return None
+
     metas: list[Any] = [None] * len(proposals)
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=_HEAD_FETCH_TIMEOUT) as client:
-            metas = await asyncio.wait_for(
-                asyncio.gather(
-                    *(enrich_from_page_head(client, p.source_url or "") for p in proposals),
-                    return_exceptions=True,
-                ),
-                timeout=_ENRICH_TOTAL_BUDGET_SECONDS,
+            metas = await asyncio.gather(
+                *(_bounded(p.source_url or "", client) for p in proposals),
+                return_exceptions=True,
             )
-    except TimeoutError:
-        log.warning("fast_path_enrich_timeout", query=query, budget=_ENRICH_TOTAL_BUDGET_SECONDS)
+    except Exception as exc:
+        # Rule 7: metadata is a bonus — a failure here must never lose the cards.
+        log.warning("fast_path_enrich_failed", query=query, error=str(exc))
+
+    timed_out = sum(1 for m in metas if m is None)
+    if timed_out:
+        log.warning("fast_path_enrich_timeout", query=query,
+                    budget=_ENRICH_TOTAL_BUDGET_SECONDS,
+                    timed_out=timed_out, total=len(proposals))
 
     for p, meta in zip(proposals, metas):
         if not isinstance(meta, PageMeta):
