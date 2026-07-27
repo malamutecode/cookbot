@@ -427,7 +427,7 @@ async def test_empty_components_are_retried_when_the_page_says_otherwise(
         servings=4, ingredients=_CURRY_INGREDIENTS, extra_blocks=[_naan_block()]
     )
 
-    async def _page_text(_url: str) -> str:
+    async def _page_text(_url: str, cache: dict[str, str] | None = None) -> str:
         return "Składniki dla 4 osób:\n- kurczak\n\nSkładniki na 8 porcji:\n- mąka"
 
     monkeypatch.setattr("cookbot.agents.chat.fetch_page_text", _page_text)
@@ -462,7 +462,7 @@ async def test_no_retry_when_the_page_has_one_heading(monkeypatch) -> None:
     """
     page = _page(servings=4, ingredients=_CURRY_INGREDIENTS)
 
-    async def _page_text(_url: str) -> str:
+    async def _page_text(_url: str, cache: dict[str, str] | None = None) -> str:
         return "Składniki dla 4 osób:\n- kurczak"
 
     monkeypatch.setattr("cookbot.agents.chat.fetch_page_text", _page_text)
@@ -498,7 +498,7 @@ async def test_retry_that_still_reports_nothing_keeps_todays_behaviour(
     """
     missed = _page(servings=4, ingredients=_CURRY_INGREDIENTS)
 
-    async def _page_text(_url: str) -> str:
+    async def _page_text(_url: str, cache: dict[str, str] | None = None) -> str:
         return "Składniki dla 4 osób:\n- kurczak\n\nSkładniki na 8 porcji:\n- mąka"
 
     monkeypatch.setattr("cookbot.agents.chat.fetch_page_text", _page_text)

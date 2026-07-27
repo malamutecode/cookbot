@@ -61,6 +61,15 @@ In the chat flow, tools never call these directly — they append `TurnEvent`s t
 `deps.events` and the WS handler's `_emit_event` maps each event to its helper.
 See [cookbot-core agents/CLAUDE.md](../../../packages/cookbot-core/cookbot/agents/CLAUDE.md).
 
+**`ProgressEvent` is the one event drained mid-turn.** `_drain_progress` runs
+inside the streaming loop (and once before the first token, which is where the
+long silent stretch actually is), because a "still working" note delivered after
+the turn is worthless. It reuses `ws_send_agent_update` — the widget already
+renders that as a status line, so this needed no new `WsMessageType` and no
+frontend change. Sends are best-effort: a failed status line must never take down
+a turn that is otherwise working. Every other event still drains after the run,
+in order, so side-effect ordering is unchanged.
+
 ## Grocery matching (`api/grocery.py`)
 
 `POST /v1/grocery/{shop}/match` is the reference consumer of the `delivery-shops`

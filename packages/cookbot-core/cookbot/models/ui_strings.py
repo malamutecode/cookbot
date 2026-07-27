@@ -109,6 +109,15 @@ class UiStrings:
     password_change_mismatch: str = "Hasła nie są takie same."
     password_change_error: str = "Nie udało się zmienić hasła. Spróbuj ponownie."
     password_change_success: str = "Hasło zostało zmienione."
+    # Mid-turn progress notes (ProgressEvent). A recipe turn chains a page fetch,
+    # an extraction and a rescale before `run_stream` emits its first token, so
+    # these are all the user has to look at during the slowest turn in the
+    # product. Keep them SHORT and honest about the current phase — a note that
+    # over-promises ("prawie gotowe") reads worse than the spinner it replaced.
+    progress_reading_page: str = "Czytam przepis: {dish}…"
+    progress_searching_web: str = "Szukam przepisu: {dish}…"
+    progress_scaling: str = "Przeliczam składniki…"
+    progress_generating: str = "Układam przepis…"
 
 
 _PL = UiStrings(
@@ -242,6 +251,10 @@ _EN = UiStrings(
     quota_daily_reached="You've used your daily token limit. It resets {resets}.",
     quota_monthly_reached="You've used your monthly token limit. It resets {resets}.",
     quota_disabled="Your account has been disabled. Please contact an administrator.",
+    progress_reading_page="Reading the recipe: {dish}…",
+    progress_searching_web="Searching for a recipe: {dish}…",
+    progress_scaling="Recalculating the ingredients…",
+    progress_generating="Putting a recipe together…",
     password_change_heading="Set your own password",
     password_change_intro=(
         "Your account was created by an administrator with a temporary password. "

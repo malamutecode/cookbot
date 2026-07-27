@@ -408,6 +408,47 @@ write in the same arm that sends the WS message. Three consequences to preserve:
 > **Rule:** deps is connection-scoped working memory; the Firestore `ChatState`
 > snapshot and the session/calendar/prefs documents are the source of truth.
 
+## Perceived latency — progress events and the per-turn page cache
+
+A recipe turn is a serial chain (route → fetch → extract → maybe re-extract →
+scale → narrate), and two properties of it are now load-bearing. Both are guarded
+by `tests/test_agents/test_turn_performance.py`, which counts round-trips rather
+than timing anything — wall-clock is far too noisy to gate on, and a repeat
+download is the thing that actually regresses.
+
+- **A page is fetched ONCE per turn.** `deps.page_cache` (URL → markdown) is
+  written by `recipe_web_fetch_tool` and read by `fetch_page_text`, so the STEP 45
+  split cross-check reuses the extractor's download instead of repeating it. This
+  also *strengthens* the cross-check: it now compares against byte-identical text
+  rather than a second fetch that could differ.
+  - **Per-TURN, not per-connection** (cleared by `reset_turn`). Pages change and a
+    chat connection is long-lived, so a connection-scoped cache would serve stale
+    content indefinitely; the entire win is intra-turn.
+  - **Not in the Firestore snapshot** — a resumed conversation should re-read
+    pages, and page text would bloat the session document for no benefit.
+  - **A failed fetch is never cached.** `""` means "no cross-check available", and
+    memoizing that would suppress a legitimate retry.
+  - The fetch tool only *records*; it never serves FROM the cache. A model asking
+    to fetch a page twice in one turn is a signal worth honouring, not deduping.
+- **Slow tools announce themselves.** `agent.run_stream` emits no token until the
+  whole tool chain returns, so without this the user watches a bare spinner for
+  the full chain. Tools call `deps.emit_progress(...)`; the WS handler drains via
+  `deps.drain_progress()` **during** streaming and maps each note onto the
+  existing `agent_update` message the widget already renders — no new
+  `WsMessageType`, no frontend change.
+  - **Progress is the ONLY event drained mid-turn.** Every other `TurnEvent`
+    describes a *completed* side-effect whose order relative to the final answer
+    matters (a recipe card, a calendar write), so those stay batched until the
+    turn ends.
+  - **Only announce work that will actually happen.** The scaling note is gated on
+    the scaler having an anchor to scale from — `scale_recipe_to_servings` no-ops
+    with no LLM call when the page states no count or already matches, and a
+    "recalculating…" line for work that never runs is noise.
+  - **Copy lives in `UiStrings`** (`progress_*`), never inline in an agent —
+    same rule as every other user-facing string.
+  - It does not make a turn faster. It makes it legible; the latency fix is
+    fewer round-trips.
+
 ## Hard rules for agent work
 
 1. **ChatAgent orchestrates; sub-agents stay dumb.** New capability = a new
@@ -420,6 +461,8 @@ write in the same arm that sends the WS message. Three consequences to preserve:
    `*Result` models in `chat.py`.
 4. **Side effects go through deps collectors, never direct WS sends from a tool.**
    Tools append to `deps.events`; the WS handler emits the messages in order.
+   `ProgressEvent` is the one kind drained MID-turn (see "Perceived latency"
+   below) — it still travels the same rail, so this rule is unchanged.
 5. **Source URL is sacred.** A web-sourced recipe must keep `source_url` even
    after serving adaptation. Adaptation never rewrites provenance.
    **Extraction is verbatim; scaling is separate.** The fetch/search agents copy

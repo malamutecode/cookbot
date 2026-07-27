@@ -1409,7 +1409,10 @@ async def test_events_preserve_tool_call_order() -> None:
     await add_cal(ctx, recipe_name="Test Pasta",
                   ingredients=["pasta"], target_date="2026-06-01")
 
-    kinds = [ev.kind for ev in deps.events]
+    # Progress notes are interleaved decoration, not side-effects — this is an
+    # assertion about the ORDER OF SIDE-EFFECTS, so filter them out rather than
+    # bake the current progress-emission points into an unrelated test.
+    kinds = [ev.kind for ev in deps.events if ev.kind != "progress"]
     assert kinds == ["final_recipe", "calendar_add"]
 
 

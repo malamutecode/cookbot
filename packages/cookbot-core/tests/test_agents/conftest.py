@@ -33,7 +33,7 @@ def _no_live_page_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
     Returning "" means "no cross-check available", which is the designed
     fail-safe: behaviour falls back to trusting `components`.
     """
-    async def _blocked(_url: str) -> str:
+    async def _blocked(_url: str, cache: dict[str, str] | None = None) -> str:
         return ""
 
     monkeypatch.setattr("cookbot.agents.chat.fetch_page_text", _blocked)

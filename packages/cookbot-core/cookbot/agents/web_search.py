@@ -126,6 +126,7 @@ async def fetch_page_markdown(url: str, max_content_length: int = _MAX_PAGE_CONT
 def recipe_web_fetch_tool(
     max_content_length: int = _MAX_PAGE_CONTENT,
     pinned_url: str | None = None,
+    page_cache: dict[str, str] | None = None,
 ) -> Tool[None]:
     """`web_fetch` that strips script/style noise BEFORE markdown conversion.
 
@@ -141,10 +142,27 @@ def recipe_web_fetch_tool(
     extraction return null and told the user the page had no recipe. When the
     caller already knows the exact URL there is nothing for the model to decide,
     so we pin it rather than hope the retype is faithful.
+
+    `page_cache` (pass `deps.page_cache`) records the markdown of every page this
+    tool downloads, keyed by the URL actually fetched. The STEP 45 split
+    cross-check reads that cache instead of downloading the same page a second
+    time — see `chat.fetch_page_text`. Recording only; this tool never serves
+    FROM the cache, because a model asking to fetch a page twice within one turn
+    is a signal worth honouring, not deduping.
     """
     async def web_fetch(url: str) -> WebFetchResult | BinaryContent:
         """Fetch the content of a web page at the given URL and return it as markdown."""
-        return await _fetch_markdown(url, max_content_length, pinned_url=pinned_url)
+        result = await _fetch_markdown(url, max_content_length, pinned_url=pinned_url)
+        # WebFetchResult is a TypedDict; BinaryContent has no markdown to cache.
+        # Key on the URL we actually fetched (pinned wins, and redirects resolve),
+        # so the cross-check's lookup on `recipe.source_url` hits.
+        if page_cache is not None and isinstance(result, dict):
+            content = str(result.get("content", ""))
+            if content:
+                page_cache[str(result.get("url", "")) or (pinned_url or url)] = content
+                if pinned_url:
+                    page_cache[pinned_url] = content
+        return result
 
     return Tool(web_fetch, name="web_fetch")
 
@@ -336,7 +354,9 @@ def build_web_search_agent(config: TenantConfig) -> Agent[None, Recipe | None]:
 
 
 def build_web_fetch_agent(
-    config: TenantConfig, pinned_url: str | None = None
+    config: TenantConfig,
+    pinned_url: str | None = None,
+    page_cache: dict[str, str] | None = None,
 ) -> Agent[None, Recipe | None]:
     """Agent that fetches a known URL and extracts the recipe — no search needed.
 
@@ -344,12 +364,19 @@ def build_web_fetch_agent(
     proposal's source_url): the fetch tool then ignores the model's retyped URL
     argument, which is a real corruption source on long slugs. Agents built with
     a pinned URL are per-URL and must NOT be cached across different URLs.
+
+    Pass `page_cache` (`deps.page_cache`) so the split cross-check can reuse this
+    agent's download instead of repeating it.
     """
     agent = Agent(
         config.model_web_search,
         output_type=Recipe | None,
         defer_model_check=True,
-        tools=[recipe_web_fetch_tool(_MAX_PAGE_CONTENT, pinned_url=pinned_url)],
+        tools=[
+            recipe_web_fetch_tool(
+                _MAX_PAGE_CONTENT, pinned_url=pinned_url, page_cache=page_cache
+            )
+        ],
         instructions=(
             f"You are {config.persona}.\n"
             f"You MUST respond exclusively in {config.language}. "

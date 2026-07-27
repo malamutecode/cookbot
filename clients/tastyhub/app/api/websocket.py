@@ -6,6 +6,7 @@ from cookbot.agents.chat import (
     CalendarRemoveEvent,
     ChatAgentDeps,
     FinalRecipeEvent,
+    ProgressEvent,
     RecipeOptionsEvent,
     ShoppingListEvent,
     TurnEvent,
@@ -32,6 +33,7 @@ from cookbot.models.user import DEFAULT_SOURCES, UserSearchPrefs
 from cookbot.protocols.ws_messages import (
     WsInbound,
     WsMessageType,
+    ws_send_agent_update,
     ws_send_calendar_add,
     ws_send_calendar_remove,
     ws_send_error,
@@ -63,6 +65,25 @@ async def _persist_calendar(coro, uid: str) -> None:
         await coro
     except Exception as exc:
         log.warning("ws_calendar_persist_failed", uid=uid, error=str(exc))
+
+
+async def _drain_progress(websocket: WebSocket, deps) -> None:
+    """Send any progress notes tools have emitted since the last drain.
+
+    Progress is the ONE event kind sent mid-turn. Everything else describes a
+    completed side-effect whose order relative to the final answer matters (a
+    recipe card, a calendar write), so those stay batched until the turn ends.
+
+    Best-effort: a failed status line must never take down a turn that is
+    otherwise working — it is decoration over a spinner, not content.
+    """
+    try:
+        for message in deps.drain_progress():
+            await ws_send_agent_update(websocket, agent="", status=message)
+    except WebSocketDisconnect:
+        raise
+    except Exception as exc:
+        log.warning("ws_progress_send_failed", error=str(exc))
 
 
 async def _emit_event(
@@ -111,6 +132,16 @@ async def _emit_event(
             await ws_send_shopping_list_update(
                 websocket, flat, replace=True, structured=ev.shopping_list
             )
+        case ProgressEvent():
+            # Reuses the existing `agent_update` status channel, which the widget
+            # already renders — no new message type and no frontend change. The
+            # agent field is blank because the frontend formats "{agent}: {status}"
+            # and the phase name alone reads better than "chat: Czytam przepis…".
+            #
+            # Normally drained mid-turn by _drain_progress (see the streaming
+            # loop); this arm covers the pick_recipe path, which resolves a card
+            # outside run_stream and drains its events only at the end.
+            await ws_send_agent_update(websocket, agent="", status=ev.message)
 
 
 async def _check_quota(firestore, uid: str, config: TenantConfig) -> tuple[bool, BudgetStatus | None, bool]:
@@ -441,8 +472,13 @@ async def websocket_endpoint(
                 async with stream_chat_response(
                     agent, deps, message_history, user_text + spiz_suffix
                 ) as tokens:
+                    # Progress emitted by tools BEFORE the first token — the whole
+                    # point of the event is to fill the silent fetch→extract→scale
+                    # stretch, and by the time a token arrives that stretch is over.
+                    await _drain_progress(websocket, deps)
                     async for token in tokens:
                         await ws_send_token(websocket, content=token)
+                        await _drain_progress(websocket, deps)
             except WebSocketDisconnect:
                 raise
             except Exception as exc:

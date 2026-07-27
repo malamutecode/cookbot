@@ -291,12 +291,34 @@ class ShoppingListEvent(BaseModel):
     shopping_list: ShoppingList
 
 
+class ProgressEvent(BaseModel):
+    """A "still working" note emitted while a slow tool runs.
+
+    `agent.run_stream` yields no token until the ENTIRE tool chain has returned,
+    so a turn that fetches a page, extracts a recipe and rescales it shows the
+    user a bare spinner for its whole duration — the single worst part of the
+    perceived latency, and the one the user actually complains about.
+
+    This does not make a turn faster; it makes it legible. It rides the existing
+    ordered-events rail (Rule 4) rather than sending on the websocket from inside
+    a tool, so ordering and testability are unchanged.
+
+    Unlike every other TurnEvent this one is emitted *mid-tool* rather than after
+    it, which is precisely why the WS handler drains it eagerly — see
+    `drain_progress` and its use in the handler.
+    """
+
+    kind: Literal["progress"] = "progress"
+    message: str
+
+
 TurnEvent = (
     FinalRecipeEvent
     | RecipeOptionsEvent
     | CalendarAddEvent
     | CalendarRemoveEvent
     | ShoppingListEvent
+    | ProgressEvent
 )
 
 
@@ -360,6 +382,23 @@ class ChatAgentDeps:
     # stream_chat_response after the stream; the WS handler meters it against the
     # user's quota. 0 until a turn completes.
     last_turn_total_tokens: int = 0
+    # Fetched page markdown, keyed by URL, deduplicating downloads WITHIN one turn.
+    # The extractor's `web_fetch` and the STEP 45 split cross-check read the same
+    # page microseconds apart, so without this the slowest turn in the product
+    # downloads and markdownifies a large page twice (one live page measured at
+    # ~238k chars before cleaning).
+    #
+    # Deliberately per-TURN, not per-connection: pages change and a chat
+    # connection is long-lived, so a connection-scoped cache would serve stale
+    # content indefinitely. The entire win is intra-turn, so the entire lifetime
+    # is intra-turn. It is NOT part of the Firestore snapshot — a resumed
+    # conversation should re-read pages, and dumping page text into the session
+    # document would bloat it for no benefit.
+    page_cache: dict[str, str] = field(default_factory=dict)
+    # How many progress events the WS handler has already sent this turn. Progress
+    # is emitted MID-tool, so the handler drains incrementally rather than after
+    # the run like every other event; this is the drain cursor.
+    progress_sent: int = 0
 
     def reset_turn(self) -> None:
         """Clear the per-turn output events. Call once at the start of every WS
@@ -367,6 +406,28 @@ class ChatAgentDeps:
         per-turn-input fields are intentionally left untouched."""
         self.events = []
         self.last_turn_total_tokens = 0
+        self.page_cache = {}
+        self.progress_sent = 0
+
+    def emit_progress(self, message: str) -> None:
+        """Announce slow work from inside a tool (see ProgressEvent)."""
+        self.events.append(ProgressEvent(message=message))
+
+    def drain_progress(self) -> list[str]:
+        """Return progress messages not yet sent, advancing the cursor.
+
+        Only ProgressEvents are drainable mid-turn. Every other event describes a
+        COMPLETED side-effect whose ordering relative to the final answer matters
+        (a recipe card, a calendar write), so those stay batched until the turn
+        ends and the handler drains them in order as before.
+        """
+        pending = [
+            ev.message
+            for ev in self.events[self.progress_sent:]
+            if isinstance(ev, ProgressEvent)
+        ]
+        self.progress_sent = len(self.events)
+        return pending
 
 
 # ── Durable conversation state (Firestore-backed, Architecture Rule 3) ────────
@@ -613,6 +674,8 @@ async def resolve_recipe(
     allow_ai_generated: bool,
     usage: RunUsage | None = None,
     agent_cache: dict[str, Any] | None = None,
+    page_cache: dict[str, str] | None = None,
+    on_progress: Callable[[ProgressEvent], None] | None = None,
 ) -> FoundRecipe:
     """Resolve a chosen proposal to a full Recipe.
 
@@ -625,8 +688,17 @@ async def resolve_recipe(
 
     `usage` is the parent run's RunUsage (pass ctx.usage from the tool) so
     sub-agent tokens aggregate into the chat turn's usage and limits.
+
+    `on_progress` is called before each slow phase so the caller can tell the
+    user what is happening — `run_stream` emits no token until this whole chain
+    returns, so without it the user sees a spinner for the entire fetch →
+    extract → scale sequence. Optional: passing nothing keeps the old behaviour.
     """
     recipe: Recipe | None = None
+
+    def _progress(message: str) -> None:
+        if on_progress is not None:
+            on_progress(ProgressEvent(message=message))
 
     if selected and selected.source == "web_search":
         servings = ob.servings or 2
@@ -639,7 +711,10 @@ async def resolve_recipe(
             # "source" link). If both attempts fail, fall through to AI generation.
             # Pin the proposal's URL into the fetch tool: the model retyping a long
             # slug into the tool argument corrupts it and 404s. Per-URL, so not cached.
-            fetch_agent = build_web_fetch_agent(config, pinned_url=selected.source_url)
+            fetch_agent = build_web_fetch_agent(
+                config, pinned_url=selected.source_url, page_cache=page_cache
+            )
+            _progress(config.ui.progress_reading_page.format(dish=selected.name))
             for attempt in (1, 2):
                 log.info("get_recipe_details_fetch_known_url",
                          url=selected.source_url, attempt=attempt)
@@ -663,6 +738,7 @@ async def resolve_recipe(
             )
             ws_parsed = ParsedIngredients(items=[], must_use=[], dietary_hints=[], missing_staples=[])
             ws_agent = _cached_agent(agent_cache, "web_search", build_web_search_agent, config)
+            _progress(config.ui.progress_searching_web.format(dish=selected.name))
             recipe = (await ws_agent.run(
                 web_search_prompt(ws_parsed, ws_intent, site_filter),
                 usage=usage,
@@ -686,6 +762,12 @@ async def resolve_recipe(
         if recipe is not None:
             scale_agent = _cached_agent(agent_cache, "recipe_scale", build_recipe_scale_agent, config)
             before = recipe.servings
+            # Only announce when scaling will actually call the model — the scaler
+            # no-ops (no LLM, instant) when the page states no count, or already
+            # matches the target. A "recalculating…" note for work that never
+            # happens is noise.
+            if recipe.original_servings or recipe.servings:
+                _progress(config.ui.progress_scaling)
             recipe = await scale_recipe_to_servings(
                 recipe, servings, agent=scale_agent, usage=usage,
             )
@@ -725,6 +807,7 @@ async def resolve_recipe(
 
     if recipe is None and allow_ai_generated:
         gen_agent = _cached_agent(agent_cache, "recipe_gen", build_recipe_gen_agent, config)
+        _progress(config.ui.progress_generating)
         generated: Recipe = (await gen_agent.run(recipe_gen_prompt(parsed, intent), usage=usage)).output
         recipe = generated
         source = "ai_generated"
@@ -803,6 +886,7 @@ async def detect_split_verified(
     *,
     config: TenantConfig,
     usage: RunUsage | None = None,
+    page_cache: dict[str, str] | None = None,
 ) -> tuple[PendingSplit | None, Recipe]:
     """`detect_split`, with a deterministic second opinion when the model says "no".
 
@@ -827,14 +911,16 @@ async def detect_split_verified(
     if pending is not None or not recipe.source_url:
         return pending, recipe
 
-    page_text = await fetch_page_text(recipe.source_url)
+    page_text = await fetch_page_text(recipe.source_url, cache=page_cache)
     if not page_text or not page_declares_multiple_recipes(page_text):
         return None, recipe
 
     headings = serving_headings(page_text)
     log.info("split_retry_extraction", source_url=recipe.source_url, headings=headings)
     try:
-        retry_agent = build_web_fetch_agent(config, pinned_url=recipe.source_url)
+        retry_agent = build_web_fetch_agent(
+            config, pinned_url=recipe.source_url, page_cache=page_cache
+        )
         retried = (await retry_agent.run(
             web_fetch_prompt_split_retry(recipe.source_url, headings),
             usage=usage,
@@ -862,21 +948,37 @@ async def detect_split_verified(
     return pending, retried
 
 
-async def fetch_page_text(url: str) -> str:
+async def fetch_page_text(url: str, cache: dict[str, str] | None = None) -> str:
     """Fetch a page's markdown with NO model call, for the deterministic checks.
 
     Reuses `recipe_web_fetch_tool` so the text is byte-identical to what the
     extractor saw (same noise-stripping, same cap) — a different fetch path would
     make the cross-check compare against a different document.
 
+    Pass `deps.page_cache` to reuse a download already made THIS TURN. The
+    extractor's own `web_fetch` records every page it pulls there, and the split
+    cross-check almost always asks for that exact URL microseconds later, so
+    without the cache the slowest turn in the product downloads and converts the
+    same large page twice. Sharing the cache also strengthens the cross-check's
+    core guarantee: it now compares against the byte-identical text the model
+    saw, rather than a second fetch that could differ.
+
     Never raises: this only ever *adds* confidence, so a network hiccup must
-    degrade to "no cross-check", not to a failed turn (Rule 7).
+    degrade to "no cross-check", not to a failed turn (Rule 7). A failure is
+    deliberately NOT cached — an empty string means "no cross-check available",
+    and memoizing that would suppress a legitimate later retry.
     """
+    if cache is not None and url in cache:
+        log.info("fetch_page_text_cache_hit", url=url)
+        return cache[url]
     try:
-        return await fetch_page_markdown(url)
+        text = await fetch_page_markdown(url)
     except Exception as exc:  # noqa: BLE001 — best-effort by design
         log.info("fetch_page_text_failed", url=url, error=str(exc))
         return ""
+    if cache is not None and text:
+        cache[url] = text
+    return text
 
 
 def _block_to_recipe(block: RecipeBlock, page: Recipe, *, is_main: bool) -> Recipe:
@@ -983,6 +1085,8 @@ async def pick_proposal(
             site_filter=deps.search_site_filter,
             allow_ai_generated=deps.allow_ai_generated,
             usage=usage,
+            page_cache=deps.page_cache,
+            on_progress=deps.events.append,
         )
     except Exception as exc:
         # Leave proposals/last_recipe untouched so the user can simply retry.
@@ -1006,7 +1110,7 @@ async def pick_proposal(
     # structured pick must ask exactly as the tool path does. No card and no
     # last_recipe yet; both wait for the answer.
     pending, resolved_recipe = await detect_split_verified(
-        found.recipe, config=deps.config, usage=usage,
+        found.recipe, config=deps.config, usage=usage, page_cache=deps.page_cache,
     )
     if pending is not None:
         deps.pending_split = pending
@@ -1538,6 +1642,8 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
                 selected,
                 choice,
                 ctx.deps.onboarding,
+                page_cache=ctx.deps.page_cache,
+                on_progress=ctx.deps.events.append,
                 config=ctx.deps.config,
                 site_filter=ctx.deps.search_site_filter,
                 allow_ai_generated=ctx.deps.allow_ai_generated,
@@ -1568,6 +1674,7 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # link does. No card and no last_recipe yet — both wait for the answer.
         pending, resolved_recipe = await detect_split_verified(
             found.recipe, config=ctx.deps.config, usage=ctx.usage,
+            page_cache=ctx.deps.page_cache,
         )
         if pending is not None:
             ctx.deps.pending_split = pending
@@ -1627,8 +1734,11 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
             ctx.deps.pending_split = None
         # Pin the URL into the tool so the sub-agent cannot retype (and corrupt)
         # it either. Per-URL agent, so deliberately NOT cached.
-        fetch_agent = build_web_fetch_agent(cfg, pinned_url=url)
+        fetch_agent = build_web_fetch_agent(
+            cfg, pinned_url=url, page_cache=ctx.deps.page_cache
+        )
         recipe: Recipe | None = None
+        ctx.deps.emit_progress(cfg.ui.progress_reading_page.format(dish=url))
         try:
             # Extraction is occasionally flaky — retry once before giving up.
             for attempt in (1, 2):
@@ -1678,7 +1788,7 @@ Once a recipe has been delivered, stay in free-chat mode indefinitely:
         # result this step exists to prevent. Scaling is deliberately deferred
         # too: each dish is scaled after the user says which they want.
         pending, recipe = await detect_split_verified(
-            recipe, config=cfg, usage=ctx.usage,
+            recipe, config=cfg, usage=ctx.usage, page_cache=ctx.deps.page_cache,
         )
         if pending is not None:
             ctx.deps.pending_split = pending
